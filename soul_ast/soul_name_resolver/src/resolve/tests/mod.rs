@@ -9,6 +9,7 @@ mod lambda_type_tests;
 mod redeclaration_tests;
 mod return_type_tests;
 mod struct_constructor_tests;
+mod trait_impl_tests;
 mod undefined_name_tests;
 mod variable_order_tests;
 mod variable_type_backfill_tests;

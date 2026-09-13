@@ -35,6 +35,12 @@ pub struct DeclareStore {
     functions: VecMap<FunctionId, (InnerFunctionSignature, ModuleId)>,
     /// All function declarations, indexed by their ID.
     function_names: HashMap<SharedStr, Vec<FunctionId>>,
+    /// The synthetic `NodeId` name resolution bound `this`/`self` to inside a
+    /// non-static method's body (`this` isn't a real `Parameter` in the AST —
+    /// see `collect_function`'s `insert_value("this", ..)` — so a later pass
+    /// like MIR lowering has no other way to find the id it needs to map a
+    /// `this` local onto).
+    receiver_bindings: VecMap<FunctionId, NodeId>,
     /// Variable type information, indexed by node ID.
     variable_type: VecMap<NodeId, (TypeModifier, Option<SoulType>, ModuleId)>,
     /// Resolved type of an expression, indexed by its ID.
@@ -59,6 +65,7 @@ impl DeclareStore {
             intrinsic_resolves: VecMap::new(),
             expression_types: VecMap::new(),
             type_aliases: HashMap::new(),
+            receiver_bindings: VecMap::new(),
         }
     }
 
@@ -83,6 +90,18 @@ impl DeclareStore {
         self.functions.get(index)
     }
 
+    /// Records the synthetic `NodeId` a non-static method's `this` resolves
+    /// to inside its own body.
+    pub fn insert_receiver_binding(&mut self, function: FunctionId, this_node: NodeId) {
+        self.receiver_bindings.insert(function, this_node);
+    }
+
+    /// Retrieves the synthetic `this` `NodeId` for a non-static method,
+    /// if any.
+    pub fn get_receiver_binding(&self, function: FunctionId) -> Option<NodeId> {
+        self.receiver_bindings.get(function).copied()
+    }
+
     /// Retrieves the resolved function-call info for a call-expression node.
     pub fn get_call_resolve(&self, id: NodeId) -> Option<&FunctionResolve> {
         self.function_resolves.get(id)
@@ -93,10 +112,40 @@ impl DeclareStore {
         self.variable_resolves.get(id).copied()
     }
 
-    /// Finds a function by name and optional owner type (for method resolution).
-    pub fn find_function(&self, name: &str, owner_type: Option<&SoulType>) -> Option<FunctionId> {
-        self.find_function_with_module(name, owner_type)
-            .map(|(id, _)| id)
+    /// Finds a function by name and optional owner type (for method
+    /// resolution) — e.g. two different trait impls on the same type each
+    /// defining a same-named method are `Ambiguous`, not "pick the first".
+    ///
+    /// Each function is registered twice (once from `collect_function`, once
+    /// from `resolve_function`), so a matching `FunctionId` seen more than
+    /// once is not itself a collision — only a match against a *different*
+    /// `FunctionId` is.
+    pub fn find_function(&self, name: &str, owner_type: Option<&SoulType>) -> FunctionLookup {
+        let Some(functions) = self.function_names.get(name) else {
+            return FunctionLookup::NotFound;
+        };
+
+        let mut found: Option<FunctionId> = None;
+        for id in functions {
+            let (signature, _) = &self.functions[*id];
+            let is_match = match owner_type {
+                Some(owner) => &signature.method_type == owner,
+                None => matches!(signature.method_type, SoulType::None),
+            };
+            if !is_match {
+                continue;
+            }
+            match found {
+                None => found = Some(*id),
+                Some(prev) if prev == *id => {}
+                Some(_) => return FunctionLookup::Ambiguous,
+            }
+        }
+
+        match found {
+            Some(id) => FunctionLookup::Found(id),
+            None => FunctionLookup::NotFound,
+        }
     }
 
     /// try Inserts a enum into the store.
@@ -184,28 +233,6 @@ impl DeclareStore {
         self.intrinsic_resolves.get(node_id).copied()
     }
 
-    /// Finds a function by name and optional owner type (for method
-    /// resolution), also returning the module it was declared in.
-    pub fn find_function_with_module(
-        &self,
-        name: &str,
-        owner_kind: Option<&SoulType>,
-    ) -> Option<(FunctionId, ModuleId)> {
-        let functions = self.function_names.get(name)?;
-        for id in functions {
-            let (signature, module) = &self.functions[*id];
-            match owner_kind {
-                Some(owner) if &signature.method_type == owner => return Some((*id, *module)),
-                None if matches!(signature.method_type, SoulType::None) => {
-                    return Some((*id, *module));
-                }
-                _ => continue,
-            }
-        }
-
-        None
-    }
-
     /// Finds a function declared by `name` within a specific module.
     pub fn find_function_in_module(&self, name: &str, module: ModuleId) -> Option<FunctionId> {
         let functions = self.function_names.get(name)?;
@@ -262,6 +289,17 @@ impl DeclareStore {
     pub fn get_type_alias(&self, name: &str) -> Option<&SoulType> {
         self.type_aliases.get(name)
     }
+}
+
+/// Outcome of a name+owner-type function/method lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionLookup {
+    Found(FunctionId),
+    NotFound,
+    /// More than one function named `name` matches this owner type — e.g.
+    /// two different trait impls on the same type each defining a
+    /// same-named method. Ambiguous, not resolvable by "pick the first".
+    Ambiguous,
 }
 
 /// The resolved target of a function call.

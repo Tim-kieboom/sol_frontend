@@ -223,8 +223,75 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
     - `scripts/run_codegen_tests.py`'s `// expect_stdout:` was single-shot (first match only, later
       ones silently ignored) — generalized to collect every `expect_stdout` line in a file so a test
       can assert both the message and the location independently.
-- [ ] Finish MIR lowering coverage for M1 language surface (non-generic traits) — div-by-zero is now
-      handled (see the `/`/`%` overflow-checking entry above), so this is just traits now
+- [x] Non-generic trait support (static dispatch only, no `Trait<T>`) — proven via
+      `26_trait_impl_dispatch.soul` (a real `impl Greeter for Bar` method called through a `Bar`
+      value, returning the receiver's own field).
+  - `soul_name_resolver`: entirely resolver-level, as scoped — dispatch itself needed no new
+    mechanism, since `impl Trait { .. }` methods already got `method_type` set to the concrete
+    implementing struct (same as a plain inherent `use Bar { .. }` method) and resolved through the
+    existing name+owner-type lookup; traits only add conformance checking on top of that.
+  - New `resolve_use_block`-driven `check_impl_conformance` (resolve phase, hard error): an
+    `impl Trait for X` must supply **exactly** `Trait`'s declared method set — no fewer (`Impl
+    MissingTraitMethod`), no extra (`ImplHasExtraTraitMethod`) — each with a matching signature
+    compared **positionally by type only** (parameter types + return type; names don't have to
+    match). Safe to run as a single resolve-phase pass with no extra ordering mechanism, because
+    collect always fully finishes (recursively, across all imports) before any resolve/typecheck
+    runs — a trait's full method list is already known by the time any of its impls are checked.
+  - The signature comparison deliberately **excludes the receiver**: a trait method's `method_type`
+    is parsed (`from_keyword.rs`) as a `Stub` carrying the *trait's own name* (there's no real
+    `Self`/`This` placeholder yet — see the `This` type entry below), while the impl method's
+    `method_type` is the concrete implementing type — the two are never expected to be equal, by
+    construction, not by bug.
+  - `find_function`/`find_function_with_module` in `DeclareStore` collapsed into one
+    ambiguity-aware `find_function` returning a new `FunctionLookup { Found, NotFound, Ambiguous }`
+    — the old "return the first name+owner-type match" silently picked a winner when two different
+    trait impls on the same type both defined a same-named method; now that's a hard
+    `AmbiguousMethodCall` resolve error instead (deliberately *not* disambiguated via a Rust-`<X as
+    Trait>::method()`-style qualified-call syntax — that's fast-follow work, see below). Had to
+    dedupe by `FunctionId` while doing this: each function is registered into `DeclareStore` twice
+    (once from `collect_function`, once from `resolve_function`), so a same-`FunctionId` match
+    seen twice is not itself a collision — only a match against a genuinely different `FunctionId`
+    is.
+  - `mir_parser`/`mir_codegen`: no trait-specific changes at all, exactly as scoped — but proving
+    the feature via a *real running exe* (not just a resolver-level test) surfaced a separate,
+    pre-existing gap this pass had to fix anyway: **no receiver method call
+    (`receiver.method(args)`) had ever lowered to MIR**, trait or not — `lower_call` unconditionally
+    rejected any call with a callee expression. Fixed generally (not trait-specific):
+    - `lower_call` (`function/statement.rs`) now accepts a `FunctionCalleeKind::Expression` callee,
+      lowers it as the receiver operand, and prepends it ahead of the explicit call arguments —
+      gated on the *callee function's own* `function_kind` (`!Static && !Ctor && !ArrayCtor`), not
+      on the resolver's `ignore_callee` flag (which only reflects whether the callee looked like a
+      type-qualifier at the call site, not whether the resolved target actually expects a
+      receiver). A `FunctionCalleeKind::Type` callee (`Type::method()`-style explicit qualification)
+      is still rejected — out of scope here, unrelated to traits.
+    - The callee side needed a `this` local to exist at all: `this` was never a real AST
+      `Parameter` (`collect_function` binds it as a synthetic scope-only `NodeId` via
+      `node_generator.alloc()`), so `mir_parser` had no way to find it. New
+      `DeclareStore::{insert,get}_receiver_binding(FunctionId, NodeId)` exposes that same synthetic
+      id; `FunctionLowerer::lower` (`function/mod.rs`) allocates a `this` local from it — always
+      **argument 0** (`locals[0..arg_count]` are parameters *by position*, so the callee's `this`
+      local has to line up with the receiver operand `lower_call` prepends at the call site) —
+      whenever `function_kind` isn't `Static`/`Ctor`/`ArrayCtor`.
+    - Mutability (`&this`/`this`/`&mut this`) is **not** distinguished — every receiver is passed
+      as a plain by-value copy of the struct, same "not enforced yet, M2 borrow checker's job"
+      simplification already accepted elsewhere in this lowerer (struct field mutability through a
+      reference, etc.). No exe test exercises mutation through `&mut this`, so this isn't yet a
+      proven gap, just a known one.
+  - Deliberately deferred to a fast-follow (each cuts real scope, not laziness):
+    - Default trait method bodies (`trait Foo { fn bar() { .. } }`) — the AST already models a
+      bodied vs. signature-only function (`FunctionKind::Normal`/`Signature`) and reuses it for
+      trait methods, but the trait-body parser (`from_keyword.rs`) hardcodes
+      `FunctionKind::Signature` and never checks for a following `{ }` block.
+    - A `This` type (Soul's `Self`-equivalent, for a trait method parameter that needs to refer to
+      "whatever type eventually implements this trait", e.g. `fn eq(&this, other: This): bool`) —
+      doesn't exist anywhere yet (only unrelated `This.(..)`/`This.[T](..)` constructor-call syntax
+      does); would need new tokenizer/parser/AST/resolver work.
+    - `<X as Trait>::method(x)`-style qualified-call syntax to disambiguate the
+      same-named-method-across-traits case that's currently just a hard `AmbiguousMethodCall`
+      error.
+  - `Trait<T>` / generic trait bounds are explicitly out of scope for M1 entirely — this pass is
+    static dispatch only, no generics; see M3's "Full trait resolution" and "Extend borrow checker
+    to generic MIR with `AutoCopy` bounds" entries below for where that lands.
 - [x] `soul_mir/mir_codegen` — LLVM IR emission via `inkwell` (`features = ["llvm16-0"]`, Windows
       only) implemented for scalar/pointer/struct locals, arithmetic/comparison/logical ops, if/while,
       function calls, `extern "C"` functions (incl. `cstr`/pointer params and correct C-vs-Soul
@@ -257,7 +324,7 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       `clang.exe` (`C:\llvm-16\bin\clang.exe`) over the emitted `.ll`, then runs the resulting exe
       and checks both exit code (`// expect: N`) and stdout (`// expect_stdout: <substring>`); this
       is currently the real correctness oracle for the pipeline (`soul_tester/soul/src/codegen_tests/`,
-      24 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
+      26 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
 - [ ] Establish positive+negative test pairs as typecheck/MIR lowering lands (currently unclear
       whether existing parser/resolver suites cover rejection cases — see "Testing strategy" in
       compiler-pipeline-plan.md)
@@ -273,6 +340,9 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
 
 ### M3 — unions, generics, full traits (not started)
 
+- [ ] Generic functions/structs (`f<T>(x: T)`, `struct Box<T> { .. }`) and generic trait bounds
+      (`Trait<T>`) — explicitly out of scope for M1's non-generic trait support (static dispatch
+      only, no `Trait<T>`, see M1 above); needs monomorphization (below) to reach codegen at all
 - [ ] Monomorphization (expansion to concrete types before LLVM)
 - [ ] Full trait resolution incl. multi-impl-by-output-type-generic case (§7)
 - [ ] `Res` / `.pass` / `?T` / match-chains

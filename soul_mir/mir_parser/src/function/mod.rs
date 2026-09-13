@@ -79,6 +79,32 @@ impl<'a> FunctionLowerer<'a> {
             .get_function(signature.id)
             .map(|(_, module)| *module);
 
+        // `this` — when present — is always argument 0: `lower_call` prepends
+        // the receiver operand ahead of the explicit call arguments, so the
+        // callee's own locals need it first too (`locals[0..arg_count]` are
+        // parameters *by position*, see `mir::Function::arg_count`). Not a
+        // real `Parameter` in the AST (`this` is a synthetic scope binding —
+        // see `collect_function`), so it's looked up via
+        // `get_receiver_binding` instead of `signature.parameters`; mutability
+        // (`&this`/`this`/`&mut this`) isn't distinguished here, same as
+        // elsewhere in this lowerer (M2 borrow checker's job).
+        let expects_receiver = !matches!(
+            signature.function_kind,
+            ast::FunctionThisKind::Static
+                | ast::FunctionThisKind::Ctor
+                | ast::FunctionThisKind::ArrayCtor
+        );
+        let mut has_receiver_local = false;
+        if expects_receiver
+            && let Some(this_node) = self.declares.get_receiver_binding(signature.id)
+        {
+            let span = signature.name.span();
+            self.require_lowerable(&signature.method_type, span)?;
+            let local = self.alloc_local(signature.method_type.clone(), TypeModifier::Mut, span);
+            self.node_to_local.insert(this_node, local);
+            has_receiver_local = true;
+        }
+
         for parameter in &signature.parameters {
             let span = parameter.name.span();
             self.require_lowerable(&parameter.ty, span)?;
@@ -87,7 +113,7 @@ impl<'a> FunctionLowerer<'a> {
             self.node_to_local.insert(parameter.id, local);
         }
 
-        let arg_count = signature.parameters.len();
+        let arg_count = signature.parameters.len() + has_receiver_local as usize;
         // A `none`(void)-returning function has nothing to hold a return value
         // in, so it gets no `return_local` at all — see `Function::return_local`.
         let is_none_return = matches!(signature.return_type, SoulType::None);

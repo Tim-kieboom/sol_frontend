@@ -1,7 +1,7 @@
 use ast_model::{
     ExpressionId, ExpressionKind, FieldAccess, FunctionCall, FunctionCallee, FunctionCalleeKind,
     ImportItem, ImportKind, SoulType, Stub, VariableExpression,
-    declare_store::{FunctionResolve, IntrinsicResolve},
+    declare_store::{FunctionLookup, FunctionResolve, IntrinsicResolve},
     scope::{ScopeModuleEntry, ScopeTypeEntryKind, ScopeValue},
 };
 use ast_parser::fault::AstErrorKind;
@@ -219,7 +219,27 @@ impl<'a> NameResolver<'a> {
         let owner_type = self.get_owner_kind(type_qualifier.as_ref(), call);
         let has_owner_type = owner_type.is_some();
         let resolved = if has_owner_type {
-            self.declares.find_function(name, owner_type.as_ref())
+            match self.declares.find_function(name, owner_type.as_ref()) {
+                FunctionLookup::Found(id) => Some(id),
+                FunctionLookup::NotFound => None,
+                FunctionLookup::Ambiguous => {
+                    self.log_error(
+                        AstErrorKind::AmbiguousMethodCall {
+                            name: call.name.as_shared_str(),
+                        },
+                        Some(call.name.span()),
+                    );
+                    self.declares.insert_function_resolve(
+                        call.id,
+                        FunctionResolve {
+                            id: FunctionId::ERROR,
+                            is_defer: false,
+                            ignore_callee,
+                        },
+                    );
+                    return;
+                }
+            }
         } else {
             self.lookup_function(name)
         };

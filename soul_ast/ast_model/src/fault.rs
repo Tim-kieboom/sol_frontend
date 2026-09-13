@@ -317,6 +317,34 @@ pub enum AstErrorKind {
     #[error("cannot assign to an immutable variable")]
     AssignToImmutableVariable,
 
+    #[error("`{name}` is not a trait, so it cannot be used in `impl {name} for ...`")]
+    ImplTargetIsNotATrait { name: SharedStr },
+
+    #[error("impl of trait `{trait_name}` is missing required method `{method_name}`")]
+    ImplMissingTraitMethod {
+        trait_name: SharedStr,
+        method_name: SharedStr,
+    },
+
+    #[error(
+        "impl of trait `{trait_name}` defines `{method_name}`, which `{trait_name}` does not declare"
+    )]
+    ImplHasExtraTraitMethod {
+        trait_name: SharedStr,
+        method_name: SharedStr,
+    },
+
+    #[error(
+        "method `{method_name}` in `impl {trait_name}` does not match the trait's declared signature"
+    )]
+    ImplTraitMethodSignatureMismatch {
+        trait_name: SharedStr,
+        method_name: SharedStr,
+    },
+
+    #[error("call to `{name}` is ambiguous: more than one method named `{name}` matches this type")]
+    AmbiguousMethodCall { name: SharedStr },
+
     #[error("assignment type mismatch: expected `{expected}`, got `{got}`")]
     AssignmentTypeMismatch { expected: Box<str>, got: Box<str> },
 

@@ -203,8 +203,9 @@ impl<'a> NameResolver<'a> {
 
         self.push_scope(function.block);
         if signature.function_kind != FunctionThisKind::Static {
-            let id = self.node_generator.alloc();
-            self.insert_value("this", id, signature.name.span(), ScopeValue::Variable);
+            let this_id = self.node_generator.alloc();
+            self.insert_value("this", this_id, signature.name.span(), ScopeValue::Variable);
+            self.declares.insert_receiver_binding(id, this_id);
         }
 
         for parameter in signature.parameters.iter() {

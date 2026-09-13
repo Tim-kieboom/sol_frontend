@@ -120,9 +120,11 @@ impl<'a> FunctionLowerer<'a> {
         Ok(())
     }
 
-    /// Lowers a free-function call `name(args...)`. Only the plain shape is
-    /// supported this slice: no method-call callee, no generics, no named
-    /// arguments, no `defer f()` — each of those gets `UnsupportedCallShape`.
+    /// Lowers a free-function call `name(args...)` or a receiver method call
+    /// `receiver.name(args...)`. Only these plain shapes are supported this
+    /// slice: no type-qualified callee (`Type::method()`), no generics, no
+    /// named arguments, no `defer f()` — each of those gets
+    /// `UnsupportedCallShape`.
     ///
     /// A call is a *terminator* (`mir_model::Terminator::Call`), not a plain
     /// statement, because it can diverge — so this seals the current block
@@ -138,7 +140,23 @@ impl<'a> FunctionLowerer<'a> {
         span: Span,
         want_result: bool,
     ) -> MirResult<Option<mir::Operand>> {
-        if call.callee.is_some() || !call.generics.is_empty() {
+        let receiver_expr = match &call.callee {
+            None => None,
+            Some(ast::FunctionCallee {
+                kind: ast::FunctionCalleeKind::Expression(id),
+                ..
+            }) => Some(*id),
+            Some(ast::FunctionCallee {
+                kind: ast::FunctionCalleeKind::Type(_),
+                ..
+            }) => {
+                return Err(Fault::error_with_kind(
+                    MirErrorKind::UnsupportedCallShape,
+                    Some(span),
+                ));
+            }
+        };
+        if !call.generics.is_empty() {
             return Err(Fault::error_with_kind(
                 MirErrorKind::UnsupportedCallShape,
                 Some(span),
@@ -165,8 +183,32 @@ impl<'a> FunctionLowerer<'a> {
             ));
         };
         let return_type = signature.return_type.clone();
+        // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
+        // declares its receiver as — the mutability/by-ref distinction isn't
+        // enforced anywhere yet (M2 borrow checker's job, same as struct
+        // field mutability elsewhere in this lowerer), so every non-static
+        // receiver is passed the same way: a plain by-value copy.
+        let expects_receiver = !matches!(
+            signature.function_kind,
+            ast::FunctionThisKind::Static
+                | ast::FunctionThisKind::Ctor
+                | ast::FunctionThisKind::ArrayCtor
+        );
 
-        let mut args = Vec::with_capacity(call.arguments.len());
+        let mut args = Vec::with_capacity(call.arguments.len() + expects_receiver as usize);
+        if expects_receiver {
+            let Some(receiver_expr) = receiver_expr else {
+                // Defensive: the resolver only ever matches a receiver-typed
+                // function against a call whose callee actually supplied a
+                // receiver value — trust that, same as elsewhere in this
+                // lowerer.
+                return Err(Fault::error_with_kind(
+                    MirErrorKind::FunctionCallHasNoResolvedTarget,
+                    Some(span),
+                ));
+            };
+            args.push(self.lower_operand(receiver_expr)?);
+        }
         for argument in &call.arguments {
             if argument.name.is_some() {
                 return Err(Fault::error_with_kind(
