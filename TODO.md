@@ -17,7 +17,7 @@ lexer → parser → AST → name/typecheck → MIR → LLVM IR (inkwell) → .e
 
 ## Milestones
 
-### M1 — first real exe (in progress)
+### M1 — first real exe (complete)
 
 Concrete, non-generic subset: ints, arithmetic, `println`, functions, structs, non-generic traits.
 No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
@@ -444,9 +444,21 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
     the latter two were only caught by re-running the full exe suite (`12_slice_index.soul`/
     `13_slice_bounds_check.soul` briefly regressed before the `combine_resolved_operand_types` fix
     above), underscoring why that suite — not just resolver unit tests — is the real oracle here.
-- [ ] `PlatformInfo` (`soul_utils::compiler_options`) only has one constructor
-      (`new_windows_x86_64`, 64-bit pointers / 32-bit C `int`) — no actual cross-platform selection
-      logic exists yet, it's just a named default
+- [x] `PlatformInfo` (`soul_utils::compiler_options`) gained a real (if still one-armed)
+      selection mechanism, `PlatformInfo::host()` — a `const fn` that picks `new_windows_x86_64()`
+      only when `cfg!(all(target_os = "windows", target_arch = "x86_64"))`, and `panic!`s (a
+      compile-time error in a `const` context) on anything else, instead of every call site just
+      reaching for `new_windows_x86_64()` by name. There's still no cross-compilation support
+      anywhere in this compiler (the clang invocation, panic exit codes, and forced LLVM target
+      triple are all Windows-specific too), so "the build target" and "the machine `mir_codegen`
+      emits code for" are always the same one — `host()` is the right frame for that, not a
+      hypothetical `--target` flag. `CompilerOptions::const_default()`,
+      `soul_tester::config::COMPILER_OPTIONS`, and the pipeline benchmark's `COMPILER_OPTIONS` all
+      route through it now. A real second target still needs its own arm added directly in
+      `host()`, not a caller choosing a different named constructor.
+  - Proven via 2 new `soul_utils::compiler_options_tests` cases (`host()` matches
+    `new_windows_x86_64()`'s values on this target; `CompilerOptions::const_default()`'s platform
+    matches `host()`).
 
 ### M2 — borrow/move checking (not started)
 

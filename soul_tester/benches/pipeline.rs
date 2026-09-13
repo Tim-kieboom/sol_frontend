@@ -36,7 +36,7 @@ const COMPILER_OPTIONS: CompilerOptions = CompilerOptions {
     mir: MIR_OPTIONS,
     panic_mode: PanicMode::Exit,
     fail_level: Severity::Error,
-    platform: PlatformInfo::new_windows_x86_64(),
+    platform: PlatformInfo::host(),
 };
 
 struct Input {

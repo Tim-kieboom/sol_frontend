@@ -1,7 +1,8 @@
 
+int.add(this, a: int): int => this + a
+
 main(): i32 {
-    value := f"hello"
-    ref := &value
-    condition := ref == "hello" 
+    mut value := 1
+    value = value.add(1)
     return 0
 }

@@ -21,7 +21,7 @@ pub static COMPILER_OPTIONS: LazyLock<CompilerOptions> = LazyLock::new(|| Compil
     mir: MIR_OPTIONS,
     fail_level: Severity::Error,
     panic_mode: parse_panic_mode_arg().unwrap_or(PanicMode::Exit),
-    platform: PlatformInfo::new_windows_x86_64(),
+    platform: PlatformInfo::host(),
 });
 
 /// Looks for a `--panic-mode=<abort|exit>` flag among the process's own CLI

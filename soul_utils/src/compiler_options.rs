@@ -39,17 +39,85 @@ pub struct PlatformInfo {
     pub c_int_bits: u32,
 }
 impl PlatformInfo {
-    /// This compiler currently only targets Windows x86-64: 64-bit
-    /// pointers, 32-bit C `int` (the LLP64 data model).
-    pub const fn new_windows_x86_64() -> Self {
+    /// C's `int` is 32 bits on every data model below (LLP64, LP64, ILP32
+    /// alike) — only the pointer width actually varies across them.
+    const fn with_pointer_bits(pointer_bits: u32) -> Self {
         Self {
-            pointer_bits: 64,
+            pointer_bits,
             c_int_bits: 32,
         }
     }
 
+    /// Windows x86-64: 64-bit pointers (the LLP64 data model).
+    pub const fn new_windows_x86_64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+    /// Windows on Arm64: 64-bit pointers (LLP64, same as x86-64).
+    pub const fn new_windows_aarch64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+    /// Windows x86 (32-bit): 32-bit pointers (LLP64 collapses to ILP32 at
+    /// 32-bit pointer width).
+    pub const fn new_windows_x86() -> Self {
+        Self::with_pointer_bits(32)
+    }
+    /// Linux x86-64: 64-bit pointers (the LP64 data model).
+    pub const fn new_linux_x86_64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+    /// Linux on Arm64: 64-bit pointers (LP64, same as x86-64).
+    pub const fn new_linux_aarch64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+    /// Linux x86 (32-bit): 32-bit pointers (the ILP32 data model).
+    pub const fn new_linux_x86() -> Self {
+        Self::with_pointer_bits(32)
+    }
+    /// macOS on Intel: 64-bit pointers (the LP64 data model).
+    pub const fn new_macos_x86_64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+    /// macOS on Apple Silicon: 64-bit pointers (LP64, same as Intel).
+    pub const fn new_macos_aarch64() -> Self {
+        Self::with_pointer_bits(64)
+    }
+
+    /// Selects the `PlatformInfo` for whatever machine this compiler itself
+    /// is being built for — there's no cross-compilation support, so "the
+    /// build target" and "the machine `mir_codegen` emits code for" are
+    /// always the same one. A real selection instead of every caller
+    /// reaching for one named constructor by name, so building for an
+    /// (os, arch) pair not covered below fails loudly at compile time here,
+    /// rather than silently mislabeling that target's int widths as some
+    /// other one's — a genuinely new data model (not just another `(os,
+    /// arch)` pair that already matches one of the widths above) still
+    /// needs its own named constructor added first.
+    pub const fn host() -> Self {
+        if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            Self::new_windows_x86_64()
+        } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+            Self::new_windows_aarch64()
+        } else if cfg!(all(target_os = "windows", target_arch = "x86")) {
+            Self::new_windows_x86()
+        } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            Self::new_linux_x86_64()
+        } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+            Self::new_linux_aarch64()
+        } else if cfg!(all(target_os = "linux", target_arch = "x86")) {
+            Self::new_linux_x86()
+        } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            Self::new_macos_x86_64()
+        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            Self::new_macos_aarch64()
+        } else {
+            panic!(
+                "Soul doesn't have a PlatformInfo for this (target_os, target_arch) combination yet — add one to PlatformInfo::host()"
+            );
+        }
+    }
+
     pub const fn const_default() -> Self {
-        Self::new_windows_x86_64()
+        Self::host()
     }
 }
 impl Default for PlatformInfo {

@@ -13,6 +13,8 @@ use crate::{
 pub mod char_colors;
 pub mod collections;
 pub mod compiler_options;
+#[cfg(test)]
+mod compiler_options_tests;
 pub mod crate_id;
 pub mod error;
 pub mod fault;
