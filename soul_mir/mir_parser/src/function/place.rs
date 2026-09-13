@@ -122,6 +122,34 @@ impl<'a> FunctionLowerer<'a> {
         ))
     }
 
+    /// Borrows a `&this`/`&mut this` call-site receiver into a temp
+    /// `Reference` local, mirroring `lower_ref`'s non-array path (a receiver
+    /// is always a struct instance, never array-typed, so the array-to-slice
+    /// bifurcation there doesn't apply here).
+    pub(super) fn lower_receiver_ref(
+        &mut self,
+        expr_id: ast::ExpressionId,
+        mutable: bool,
+        span: Span,
+    ) -> MirResult<mir::Operand> {
+        let (place, value_ty) = self.resolve_place_expression(expr_id, span)?;
+        let ref_ty = SoulType::Reference(ast::ReferenceType {
+            inner: Box::new(value_ty),
+            lifetime: None,
+            mutable: if mutable {
+                soul_utils::Mutable::Mut
+            } else {
+                soul_utils::Mutable::Immut
+            },
+        });
+        let ref_temp = self.alloc_local(ref_ty, TypeModifier::Immut, span);
+        self.statements.push(mir::Statement::Assign(
+            mir::Place::local(ref_temp),
+            mir::Rvalue::Ref { mutable, place },
+        ));
+        Ok(mir::Operand::Copy(mir::Place::local(ref_temp)))
+    }
+
     /// Lowers `*ptr` into a `Place` with a `Deref` projection appended onto
     /// the pointer/reference's own place. `ptr` must itself resolve to a
     /// `Reference`/`Pointer` type; the resulting place's own type is

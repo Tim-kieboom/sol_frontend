@@ -81,9 +81,13 @@ impl<'a> FunctionLowerer<'a> {
         // parameters *by position*, see `mir::Function::arg_count`). Not a
         // real `Parameter` in the AST (`this` is a synthetic scope binding —
         // see `collect_function`), so it's looked up via
-        // `get_receiver_binding` instead of `signature.parameters`; mutability
-        // (`&this`/`this`/`&mut this`) isn't distinguished here, same as
-        // elsewhere in this lowerer (M2 borrow checker's job).
+        // `get_receiver_binding` instead of `signature.parameters`.
+        // `&this`/`&mut this` receive an actual reference — the local itself
+        // is `Reference(method_type)`, so `this.field` auto-derefs through it
+        // via `auto_deref`, same as any other reference-typed place (see
+        // `resolve_field_place`/`resolve_index_place`). `this` (by value)
+        // keeps the bare `method_type` local, matching `lower_call`'s
+        // corresponding by-value-copy branch.
         let expects_receiver = !matches!(
             signature.function_kind,
             ast::FunctionThisKind::Static
@@ -96,7 +100,20 @@ impl<'a> FunctionLowerer<'a> {
         {
             let span = signature.name.span();
             self.require_lowerable(&signature.method_type, span)?;
-            let local = self.alloc_local(signature.method_type.clone(), TypeModifier::Mut, span);
+            let receiver_ty = match signature.function_kind {
+                ast::FunctionThisKind::MutRef => SoulType::Reference(ast::ReferenceType {
+                    inner: Box::new(signature.method_type.clone()),
+                    lifetime: None,
+                    mutable: soul_utils::Mutable::Mut,
+                }),
+                ast::FunctionThisKind::ConstRef => SoulType::Reference(ast::ReferenceType {
+                    inner: Box::new(signature.method_type.clone()),
+                    lifetime: None,
+                    mutable: soul_utils::Mutable::Immut,
+                }),
+                _ => signature.method_type.clone(),
+            };
+            let local = self.alloc_local(receiver_ty, TypeModifier::Mut, span);
             self.node_to_local.insert(this_node, local);
             has_receiver_local = true;
         }

@@ -198,10 +198,12 @@ impl<'a> FunctionLowerer<'a> {
         };
         let return_type = signature.return_type.clone();
         // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
-        // declares its receiver as — the mutability/by-ref distinction isn't
-        // enforced anywhere yet (M2 borrow checker's job, same as struct
-        // field mutability elsewhere in this lowerer), so every non-static
-        // receiver is passed the same way: a plain by-value copy.
+        // declares its receiver as: `&this`/`&mut this` borrow the receiver
+        // (matching the callee's own `Reference`-typed local set up in
+        // `FunctionLowerer::lower`), `this` still passes a plain by-value
+        // copy. Enforcing that the caller doesn't e.g. pass `&mut` into a
+        // `&this` call, or mutate through a shared borrow, is still the
+        // borrow checker's job (M2), not this lowerer's.
         let expects_receiver = !matches!(
             signature.function_kind,
             ast::FunctionThisKind::Static
@@ -221,7 +223,16 @@ impl<'a> FunctionLowerer<'a> {
                     Some(span),
                 ));
             };
-            args.push(self.lower_operand(receiver_expr)?);
+            let receiver_operand = match signature.function_kind {
+                ast::FunctionThisKind::MutRef => {
+                    self.lower_receiver_ref(receiver_expr, true, span)?
+                }
+                ast::FunctionThisKind::ConstRef => {
+                    self.lower_receiver_ref(receiver_expr, false, span)?
+                }
+                _ => self.lower_operand(receiver_expr)?,
+            };
+            args.push(receiver_operand);
         }
         for argument in &call.arguments {
             if argument.name.is_some() {

@@ -497,12 +497,25 @@ that landing first, in order.
   - Proven via `29_deref_places.soul` (explicit deref read+write, plus field access through a
     reference) and 3 new `mir_parser` unit tests (`deref_read_...`, `deref_write_...`,
     `dereferencing_a_non_reference_is_rejected`).
-- [ ] Fix `&this`/`&mut this` receiver lowering to actually pass a reference instead of a
-      by-value copy — depends on the deref-places work above (the callee's `this` local becomes
-      reference-typed, so every `this.field` access inside the method body needs the auto-deref
-      this just added). Currently every receiver, regardless of `&this`/`&mut this`/`this`, is
-      passed the same way (`lower_call` unconditionally does `lower_operand(receiver_expr)`) —
-      logged as a known M1 shortcut when receiver method calls first landed.
+- [x] Fix `&this`/`&mut this` receiver lowering to actually pass a reference instead of a
+      by-value copy. `FunctionLowerer::lower` now allocates the `this` local as
+      `Reference(method_type)` (mutable for `&mut this`, immutable for `&this`) instead of a bare
+      `method_type` value; `this` (consuming) is unchanged. `lower_call`'s receiver-passing branch
+      now matches on the callee's `function_kind`: `&this`/`&mut this` build an actual borrow via
+      new `lower_receiver_ref` (mirrors `lower_ref`'s non-array path — resolves the receiver
+      expression's place, emits an `Rvalue::Ref` into a fresh reference-typed temp, passes that),
+      `this` still goes through the existing `lower_operand` by-value copy.
+  - No new auto-deref machinery needed: `this.field`/`this.field = ..` inside a `&this`/`&mut
+    this` method body already goes through `resolve_field_place`'s existing `auto_deref` call
+    (built for the deref-places item above) once `this`'s own local is reference-typed — proven by
+    a new unit test asserting the exact `[Deref, Field(0)]` projection.
+  - Proven via `30_mut_receiver.soul` (a `&mut this` method mutating a field across two calls,
+    then a `&this` method reading it back — this is the concrete case the by-value-copy shortcut
+    silently broke: the mutation used to land on a throwaway copy and never persist) and 4 new
+    `mir_parser` unit tests (`mut_this_receiver_is_passed_as_a_mutable_reference`,
+    `const_this_receiver_is_passed_as_an_immutable_reference`,
+    `mut_this_body_accesses_fields_through_a_deref_projection`,
+    `consuming_this_receiver_is_still_passed_by_value`).
 - [ ] Straight-line-only `Drop`/`SetDropFlag` lowering: every local gets an unconditional `Drop`
       at function-end, `SetDropFlag(true)` after every `Assign` — no `if`/`for`/early-exit
       handling yet (needs a real scope stack in `FunctionLowerer` first, tracked as its own

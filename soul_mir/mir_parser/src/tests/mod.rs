@@ -488,6 +488,138 @@ fn dereferencing_a_non_reference_is_rejected() {
 }
 
 #[test]
+fn mut_this_receiver_is_passed_as_a_mutable_reference() {
+    let mir = lower_source(
+        "struct Counter {\n    n: int\n    increment(&mut this) {\n        this.n = this.n + 1\n    }\n}\nf(): int {\n    mut c: Counter = Counter{n: 0}\n    c.increment()\n    return c.n\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    let Operand::Copy(ref_place) = &arguments[0] else {
+        panic!(
+            "expected the receiver argument to be a Copy of a reference temp, got {:#?}",
+            arguments[0]
+        );
+    };
+
+    // The temp holding the reference (a fresh local distinct from `c`'s own
+    // local) must be populated via a *mutable* `Ref` rvalue ahead of the
+    // call — not a by-value copy of `c` itself.
+    let built_via_mutable_ref = mir.blocks.entries().any(|(_, block)| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                mir_model::Statement::Assign(place, Rvalue::Ref { mutable: true, .. })
+                if place.local == ref_place.local
+            )
+        })
+    });
+    assert!(
+        built_via_mutable_ref,
+        "expected the receiver arg to be built via a mutable Ref rvalue, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn const_this_receiver_is_passed_as_an_immutable_reference() {
+    let mir = lower_source(
+        "struct Number {\n    n: int\n    get(&this): int {\n        return this.n\n    }\n}\nf(): int {\n    c: Number = Number{n: 5}\n    return c.get()\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    let Operand::Copy(ref_place) = &arguments[0] else {
+        panic!(
+            "expected the receiver argument to be a Copy of a reference temp, got {:#?}",
+            arguments[0]
+        );
+    };
+    let built_via_immutable_ref = mir.blocks.entries().any(|(_, block)| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                mir_model::Statement::Assign(place, Rvalue::Ref { mutable: false, .. })
+                if place.local == ref_place.local
+            )
+        })
+    });
+    assert!(
+        built_via_immutable_ref,
+        "expected the receiver arg to be built via an immutable Ref rvalue, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn mut_this_body_accesses_fields_through_a_deref_projection() {
+    let ast = resolve_source(
+        "struct Counter {\n    n: int\n    increment(&mut this) {\n        this.n = this.n + 1\n    }\n}\nf(): int {\n    mut c: Counter = Counter{n: 0}\n    c.increment()\n    return c.n\n}\n",
+    );
+    let method_id = find_function(&ast.crates.store, "increment");
+    let mir = lower_function(&ast.crates.store, &ast.declares, method_id)
+        .expect("expected successful lowering");
+
+    // `this` itself is argument 0 and is `Reference`-typed now, so
+    // `this.n = ..` must project through a `Deref` before the `Field`, same
+    // as any other reference-typed place.
+    let found = mir.blocks.entries().any(|(_, block)| {
+        block.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                mir_model::Statement::Assign(place, _)
+                if matches!(
+                    place.projection.as_slice(),
+                    [mir_model::PlaceElem::Deref, mir_model::PlaceElem::Field(0)]
+                )
+            )
+        })
+    });
+    assert!(
+        found,
+        "expected an assign through [Deref, Field(0)], got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn consuming_this_receiver_is_still_passed_by_value() {
+    let mir = lower_source(
+        "struct Number {\n    n: int\n    intoN(this): int {\n        return this.n\n    }\n}\nf(): int {\n    c: Number = Number{n: 5}\n    return c.intoN()\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    // A plain `this` receiver is still a direct Copy of the caller's own
+    // local (no Ref rvalue involved) — unlike `&this`/`&mut this` above.
+    assert!(matches!(&arguments[0], Operand::Copy(place) if place.projection.is_empty()));
+}
+
+#[test]
 fn slice_index_read_lowers_to_a_place_with_an_index_projection() {
     let mir = lower_source(
         "f(s: [&]int): int {\n    i: uint = 0\n    return s[i]\n}\n",
