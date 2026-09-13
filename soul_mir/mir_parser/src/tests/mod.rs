@@ -326,6 +326,32 @@ fn struct_constructor_lowers_to_an_aggregate_in_declared_field_order() {
 }
 
 #[test]
+fn untyped_struct_constructor_declaration_infers_its_type_and_lowers_successfully() {
+    // Unlike the sibling test above (`p: Point = ..`, an explicit
+    // annotation), this is `:=` with no annotation at all — the type has to
+    // come from `expression_type`'s `StructConstructor` arm backfilling it,
+    // not from a declared type. Previously `expression_type` had no
+    // `StructConstructor` arm at all, so this panicked mid-lowering with
+    // "variable has no resolved type" instead of erroring cleanly, let alone
+    // succeeding.
+    let mir = lower_source(
+        "struct Point {\n    x: int\n    y: int\n}\nf(): int {\n    p := Point{x: 1, y: 2}\n    return p.x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let (_, block) = mir.blocks.entries().next().expect("expected one block");
+    assert!(
+        matches!(
+            &block.statements[0],
+            mir_model::Statement::Assign(_, Rvalue::Aggregate(mir_model::AggregateKind::Struct, _))
+        ),
+        "{:#?}",
+        block.statements[0]
+    );
+}
+
+#[test]
 fn array_literal_lowers_to_an_aggregate_in_literal_order() {
     // `a` is only constructed here, not indexed — a fixed-size array can't
     // be indexed directly in this slice (see

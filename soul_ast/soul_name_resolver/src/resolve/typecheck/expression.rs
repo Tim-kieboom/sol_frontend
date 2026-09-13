@@ -1,6 +1,7 @@
 use ast_model::{
-    AnyArray, Binary, CustomType, ExpressionId, ExpressionKind, Field, Literal, ReferenceType,
-    SoulType, Struct, StructConstructor, Stub, VarPattern, operators::BinaryOperatorKind,
+    AnyArray, ArrayKind, ArrayType, Binary, CustomType, ExpressionId, ExpressionKind, Field,
+    Literal, ReferenceType, SoulType, Struct, StructConstructor, Stub, TypeofKind, VarPattern,
+    operators::{BinaryOperatorKind, UnaryOperatorKind},
 };
 use ast_parser::fault::{AstErrorKind, AstFault};
 use soul_utils::{
@@ -176,7 +177,107 @@ impl<'a> NameResolver<'a> {
                 let object_ty = self.expression_type(field_access.object)?;
                 self.struct_field_type(&object_ty, field_access.field.as_str())
             }
-            _ => None,
+            // The constructor's own target type is already fully spelled out
+            // in the syntax (`Struct{field: value, ..}`) — no inference
+            // needed, just read it straight off the AST node.
+            ExpressionKind::StructConstructor(ctor) => Some(ctor.struct_type.clone()),
+            ExpressionKind::Index(index) => match self.expression_type(index.collection)? {
+                SoulType::Array(array_ty) => Some(*array_ty.of_type),
+                _ => None,
+            },
+            // Only `!` is typed — `-` (`Neg`) isn't lowered by `mir_parser`
+            // yet, so a program using it never reaches a point where this
+            // type would be observed.
+            ExpressionKind::Unary(unary) if unary.operator.value == UnaryOperatorKind::Not => {
+                Some(SoulType::Primitive(PrimitiveTypes::Boolean))
+            }
+            // Mirrors `mir_parser::function::place::lower_ref`'s own
+            // bifurcation exactly: referencing a fixed-size array produces a
+            // slice (`[&]T`/`[&mut]T`), referencing anything else produces a
+            // bare `&T`/`&mut T`.
+            ExpressionKind::Ref(ref_) => {
+                let value_ty = self.expression_type(ref_.value)?;
+                let mutable = if ref_.is_mutable {
+                    Mutable::Mut
+                } else {
+                    Mutable::Immut
+                };
+                match value_ty {
+                    SoulType::Array(array) if matches!(array.kind, ArrayKind::StackArray(_)) => {
+                        let kind = if ref_.is_mutable {
+                            ArrayKind::MutSlice
+                        } else {
+                            ArrayKind::ConstSlice
+                        };
+                        Some(SoulType::Array(ArrayType {
+                            of_type: array.of_type,
+                            kind,
+                        }))
+                    }
+                    other => Some(SoulType::Reference(ReferenceType {
+                        inner: Box::new(other),
+                        lifetime: None,
+                        mutable,
+                    })),
+                }
+            }
+            // `NewArray`/`ArrayFiller` are heap arrays — not lowered by
+            // `mir_parser` yet, so left unhandled here too.
+            ExpressionKind::Array(any_array @ AnyArray::Array(array)) => {
+                match &array.collection_type {
+                    Some(ty) => Some(ty.clone()),
+                    None => {
+                        let of_type = self.array_literal_element_type(any_array)?;
+                        Some(SoulType::Array(ArrayType {
+                            of_type: Box::new(of_type),
+                            kind: ArrayKind::StackArray(array.values.len() as u64),
+                        }))
+                    }
+                }
+            }
+
+            ExpressionKind::Unary(unary) => self.expression_type(unary.value),
+
+            ExpressionKind::Sizeof(_) => Some(SoulType::Primitive(PrimitiveTypes::Uint)),
+
+            // Only `expr.typeof` (`TypeofKind::Value`) actually reflects a
+            // type — `Null`/`NotNull`/`Union{..}` (`expr typeof Type.Variant`
+            // /`expr typeof null`, the older syntax — see TODO.md for the
+            // planned `expr.typeof == Type`/`if type Variant(binding) = expr`
+            // migration) are all boolean checks.
+            ExpressionKind::TypeOf(type_of) => Some(match type_of.kind {
+                TypeofKind::Value => SoulType::Type,
+                TypeofKind::Null | TypeofKind::NotNull | TypeofKind::Union { .. } => {
+                    SoulType::Primitive(PrimitiveTypes::Boolean)
+                }
+            }),
+
+            // not yet impl
+            ExpressionKind::If(_)
+            | ExpressionKind::New(_)
+            | ExpressionKind::Null(_)
+            | ExpressionKind::Copy(_)
+            | ExpressionKind::Pass(_)
+            | ExpressionKind::Tuple(_)
+            | ExpressionKind::Match(_)
+            | ExpressionKind::Block(_)
+            | ExpressionKind::Binary(_)
+            | ExpressionKind::NewArray(_)
+            | ExpressionKind::NamedTuple(_)
+            | ExpressionKind::MatchMethod(_)
+            | ExpressionKind::Constructor(_)
+            | ExpressionKind::FunctionCall(_)
+            | ExpressionKind::Array(AnyArray::ArrayFiller(_)) => None,
+
+            // is always none
+            ExpressionKind::Break
+            | ExpressionKind::For(_)
+            | ExpressionKind::None(_)
+            | ExpressionKind::Deref(_)
+            | ExpressionKind::Continue
+            | ExpressionKind::Return(_)
+            | ExpressionKind::Undefined(_)
+            | ExpressionKind::StringFormat(_) => None,
         }
     }
 

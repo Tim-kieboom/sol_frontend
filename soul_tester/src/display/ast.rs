@@ -1360,6 +1360,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 push_fmt!(self, "fn({arity} args) -> ")?;
                 self.write_type(return_type)
             }
+            SoulType::Type => self.push_str("type"),
         }
     }
 

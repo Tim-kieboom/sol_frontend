@@ -354,7 +354,7 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       `clang.exe` (`C:\llvm-16\bin\clang.exe`) over the emitted `.ll`, then runs the resulting exe
       and checks both exit code (`// expect: N`) and stdout (`// expect_stdout: <substring>`); this
       is currently the real correctness oracle for the pipeline (`soul_tester/soul/src/codegen_tests/`,
-      27 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
+      28 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
 - [x] Audited `soul_name_resolver`'s test coverage of the resolver/typecheck-flavored
       `AstErrorKind` variants (the "Name resolution" section of `ast_model/src/fault.rs`, ~34
       variants — parser-only syntax-error variants were out of scope, and so was `mir_parser`,
@@ -378,6 +378,44 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       `check_variable_name`'s 3 now-pointless call sites in `collect_var_pattern`.
   - The remaining ~27 covered variants were spot-checked, not exhaustively re-verified line by
     line — the grep pass is what did the real work of finding the misses.
+- [x] Fixed a real crash: `x := Struct{field: value}` (an untyped `:=` declaration whose initializer
+      is a struct constructor) panicked mid-`mir_parser`-lowering ("variable has no resolved type")
+      instead of either working or erroring cleanly — `resolve/typecheck/expression.rs`'s
+      `expression_type` (the function `backfill_variable_type` calls to infer an untyped
+      declaration's type) had no `StructConstructor` arm at all, only `Literal`/`Variable`/
+      `Lambda`/`FieldAccess`; everything else silently fell through to `_ => None`.
+  - Root-caused, then generalized: audited every `ExpressionKind` variant `expression_type` was
+    missing, scoped to the subset `mir_parser` can actually lower today (the rest — `Match`,
+    `TypeOf`, `New`/`NewArray`, `Sizeof`, `Copy`, `Pass`, `Tuple`, `NamedTuple`, `Deref`,
+    `StringFormat`, `Constructor` — are M2/M3 surface `mir_parser` rejects outright, so an inferred
+    type for them could never reach a running program). Added `StructConstructor` (trivial — the
+    target type is already spelled out in the syntax, no real inference needed), `Index` (mirrors
+    `foreach_collection_element_type`'s own `SoulType::Array` unwrap), `Unary` (only `!`/`Not` — `-`
+    isn't lowered by `mir_parser` yet, so left unhandled same as the M2/M3 kinds), `Ref` (mirrors
+    `mir_parser::function::place::lower_ref`'s own array-to-slice-vs-bare-reference bifurcation,
+    which had never been ported to the resolver's own type system before), and `Array` literals
+    (reuses the existing private `array_literal_element_type` helper for the element type, adds
+    `ArrayKind::StackArray(len)`).
+  - Proven via `28_untyped_struct_constructor.soul` (the exact reported crash, now compiling and
+    running correctly) plus a `mir_parser` regression test and 6 new resolver-level
+    `variable_type_backfill_tests.rs` cases (struct field access, indexed array element, `!`,
+    referencing-then-indexing a slice — both the "infers fine" and "still catches a real type
+    mismatch" sides of each).
+  - Also added `expression_type` arms for `TypeOf` (split by `TypeofKind`: only `Value`
+    (`expr.typeof`) reflects an actual type, `Null`/`NotNull`/`Union{..}` are boolean checks — the
+    initial pass treated all four as `SoulType::Type`, which would have mistyped e.g. `expr typeof
+    Type.Variant` used as an `if`/`&&` condition), `Sizeof` (`Uint`), and a general `Unary` fallback
+    (any operator's result is its operand's own type, covering `-`/`Neg` alongside `!`/`Not`).
+    `Sizeof`/`Neg` aren't lowered by `mir_parser` either (same as the M2/M3 kinds already excluded
+    above) — inert today, not incorrect, just outside the "only what can reach a running program"
+    scope this pass otherwise held to.
+  - `expr typeof Type.Variant`/`expr typeof null` (`TypeofKind::Union`/`Null`/`NotNull`) is
+    considered outdated syntax going forward — the intended replacement is `expr.typeof == Type`
+    (already `TypeofKind::Value`, no parser change needed) plus a new `if type Variant(binding) =
+    expr` pattern-binding form, with `Null`/`NotNull`/`Union` retired from `TypeofKind` entirely.
+    Not done here (deliberately deferred) — `parse_typeof_operator`
+    (`ast_parser/src/parse/expression/mod.rs`) still parses the old syntax today, so the
+    `expression_type` fix above targets the AST as it currently stands, not the future one.
 - [ ] `PlatformInfo` (`soul_utils::compiler_options`) only has one constructor
       (`new_windows_x86_64`, 64-bit pointers / 32-bit C `int`) — no actual cross-platform selection
       logic exists yet, it's just a named default

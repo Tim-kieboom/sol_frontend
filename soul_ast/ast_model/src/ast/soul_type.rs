@@ -14,6 +14,7 @@ pub enum SoulType {
     FormatString,
     /// any type
     Any,
+    Type,
     /// tuple `(int, str)` and named_tuple `(number: int, text: str)`
     TupleKind(TupleKind),
     /// Primitive types like int, bool, float
@@ -109,6 +110,7 @@ impl fmt::Debug for SoulType {
             SoulType::Function { arity, return_type } => {
                 write!(f, "fn({arity} args) -> {return_type:?}")
             }
+            SoulType::Type => write!(f, "type"),
         }
     }
 }
