@@ -355,9 +355,30 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       and checks both exit code (`// expect: N`) and stdout (`// expect_stdout: <substring>`); this
       is currently the real correctness oracle for the pipeline (`soul_tester/soul/src/codegen_tests/`,
       27 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
-- [ ] Establish positive+negative test pairs as typecheck/MIR lowering lands (currently unclear
-      whether existing parser/resolver suites cover rejection cases — see "Testing strategy" in
-      compiler-pipeline-plan.md)
+- [x] Audited `soul_name_resolver`'s test coverage of the resolver/typecheck-flavored
+      `AstErrorKind` variants (the "Name resolution" section of `ast_model/src/fault.rs`, ~34
+      variants — parser-only syntax-error variants were out of scope, and so was `mir_parser`,
+      already the gold standard this was measured against: every fault path there already gets a
+      dedicated `assert_rejected_with(..., SpecificErrorKind)` test). "Covered" meant a test
+      asserting the *specific* variant, not just "some fault happened" — grepped each variant name
+      across `soul_name_resolver`'s test files, then manually cross-checked the misses.
+  - 7 of ~34 variants had zero test hits. Of those:
+    - `ParentChildFunctionSameName`, `FunctionNameTripleUnderscore`, `FunctionNotFoundIn` were
+      real, reachable gaps — fixed with new tests (`collect/function_and_variable_name_tests.rs`,
+      plus two cases added to `collect/import_tests.rs` for the module-qualified-call case).
+    - `FunctionNameEmpty`, `FunctionNameInvalidStart`, `VariableNameEmpty`,
+      `VariableNameInvalidStart` (in `collect/statement.rs`'s `check_function_name`/
+      `check_variable_name`) are **dead code**, not a test gap: `soul_tokenizer`'s `lex_ident`
+      (`soul_tokenizer/src/lexer.rs`) is only ever entered on a char already satisfying
+      `is_alphabetic() || '_'`, so no `TokenKind::Ident` this compiler produces can be empty or
+      start wrong — and every `Ident` reaching these two checks (including the two hardcoded
+      synthesized constructor names, `This__ctor`/`This__arrayCtor`) traces back to a real
+      tokenizer token or one of those two constants. Not removed here (out of scope for a test
+      audit) — worth a follow-up to delete the unreachable checks/variants, or add a debug-only
+      assertion documenting why they're unreachable instead of leaving them as live (but dead)
+      `AstErrorKind` variants.
+  - The remaining ~27 covered variants were spot-checked, not exhaustively re-verified line by
+    line — the grep pass is what did the real work of finding the misses.
 - [ ] `PlatformInfo` (`soul_utils::compiler_options`) only has one constructor
       (`new_windows_x86_64`, 64-bit pointers / 32-bit C `int`) — no actual cross-platform selection
       logic exists yet, it's just a named default

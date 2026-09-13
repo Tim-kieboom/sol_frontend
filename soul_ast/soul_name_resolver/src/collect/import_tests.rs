@@ -139,6 +139,41 @@ fn importing_the_same_item_twice_reports_exactly_one_fault() {
 }
 
 #[test]
+fn calling_a_function_a_module_does_not_have_reports_a_fault() {
+    let dir = make_temp_dir("module_missing_function");
+    write_module(&dir, "dep", "pub greet() {}\n");
+    let ast = resolve_in_dir(
+        &dir,
+        "import .dep\nmain() {\n    dep.thisFunctionDoesNotExist()\n}\n",
+    );
+    assert_eq!(
+        fault_count_matching(&ast, |kind| matches!(
+            kind,
+            AstErrorKind::FunctionNotFoundIn { .. }
+        )),
+        1,
+        "{:#?}",
+        ast.faults()
+    );
+}
+
+#[test]
+fn calling_a_function_a_module_does_have_reports_no_fault() {
+    let dir = make_temp_dir("module_has_function");
+    write_module(&dir, "dep", "pub greet() {}\n");
+    let ast = resolve_in_dir(&dir, "import .dep\nmain() {\n    dep.greet()\n}\n");
+    assert_eq!(
+        fault_count_matching(&ast, |kind| matches!(
+            kind,
+            AstErrorKind::FunctionNotFoundIn { .. }
+        )),
+        0,
+        "{:#?}",
+        ast.faults()
+    );
+}
+
+#[test]
 fn importing_from_an_unregistered_external_crate_reports_a_fault() {
     let dir = make_temp_dir("unregistered_crate");
     let ast = resolve_in_dir(&dir, "import missingcrate.thing\n");

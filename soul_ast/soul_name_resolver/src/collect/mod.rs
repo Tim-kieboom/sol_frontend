@@ -16,6 +16,8 @@ mod soul_type;
 mod statement;
 
 #[cfg(test)]
+mod function_and_variable_name_tests;
+#[cfg(test)]
 mod import_tests;
 #[cfg(test)]
 mod statement_tests;
