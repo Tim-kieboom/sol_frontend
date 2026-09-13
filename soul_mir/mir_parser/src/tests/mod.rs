@@ -420,6 +420,74 @@ fn array_reference_lowers_to_a_ref_plus_fat_pointer_aggregate() {
 }
 
 #[test]
+fn deref_read_lowers_to_a_place_with_a_deref_projection() {
+    let mir = lower_source(
+        "f(): int {\n    x: int = 5\n    p := &x\n    return *p\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let (_, block) = mir.blocks.entries().next().expect("expected one block");
+    let mir_model::Statement::Assign(return_place, Rvalue::Use(Operand::Copy(deref_place))) = block
+        .statements
+        .last()
+        .expect("expected at least one statement")
+    else {
+        panic!(
+            "expected the last statement to Copy through a Deref place, got {:#?}",
+            block.statements
+        );
+    };
+    assert_eq!(Some(return_place.local), mir.return_local);
+    assert!(
+        matches!(
+            deref_place.projection.as_slice(),
+            [mir_model::PlaceElem::Deref]
+        ),
+        "expected a single Deref projection, got {:#?}",
+        deref_place.projection
+    );
+}
+
+#[test]
+fn deref_write_lowers_to_an_assign_through_a_deref_projection() {
+    let mir = lower_source(
+        "f(): int {\n    mut x: int = 5\n    p := &mut x\n    *p = 9\n    return x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+    let deref_write = all_statements.iter().find_map(|statement| {
+        let mir_model::Statement::Assign(
+            place,
+            Rvalue::Use(Operand::Constant(ConstValue::Uint(9))),
+        ) = statement
+        else {
+            return None;
+        };
+        matches!(place.projection.as_slice(), [mir_model::PlaceElem::Deref]).then_some(place)
+    });
+    assert!(
+        deref_write.is_some(),
+        "expected a `*p = 9` write through a Deref place, got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
+fn dereferencing_a_non_reference_is_rejected() {
+    let result = lower_source("f(): int {\n    x: int = 5\n    return *x\n}\n", "f");
+    assert_rejected_matching(&result, |kind| {
+        matches!(kind, MirErrorKind::DerefTargetNotAReference { .. })
+    });
+}
+
+#[test]
 fn slice_index_read_lowers_to_a_place_with_an_index_projection() {
     let mir = lower_source(
         "f(s: [&]int): int {\n    i: uint = 0\n    return s[i]\n}\n",

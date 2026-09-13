@@ -8,11 +8,12 @@ use soul_utils::{fault::Fault, soul_names::PrimitiveTypes, span::Span};
 
 impl<'a> FunctionLowerer<'a> {
     /// The Soul type held at `place`, walking its projection the same way
-    /// `resolve_field_place`/`resolve_index_place` computed it in the first
-    /// place — a pure, side-effect-free re-derivation (no statements
-    /// emitted, unlike those two), used by `operand_type` to type an
-    /// already-lowered operand without re-lowering it. `None` for anything
-    /// this walk can't resolve (a `Deref`, an unresolvable struct/field).
+    /// `resolve_field_place`/`resolve_index_place`/`resolve_deref_place`
+    /// computed it in the first place — a pure, side-effect-free
+    /// re-derivation (no statements emitted, unlike those), used by
+    /// `operand_type` to type an already-lowered operand without re-lowering
+    /// it. `None` for anything this walk can't resolve (an unresolvable
+    /// struct/field, or a `Deref` of something that isn't a reference).
     pub(super) fn place_type(&self, place: &mir::Place) -> Option<SoulType> {
         let mut ty = self.locals.get(place.local)?.ty.clone();
         for elem in &place.projection {
@@ -31,7 +32,12 @@ impl<'a> FunctionLowerer<'a> {
                     };
                     (*array.of_type).clone()
                 }
-                mir::PlaceElem::Deref => return None,
+                mir::PlaceElem::Deref => match ty {
+                    SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+                        *reference.inner
+                    }
+                    _ => return None,
+                },
             };
         }
         Some(ty)

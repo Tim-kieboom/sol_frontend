@@ -276,11 +276,20 @@ impl<'a> NameResolver<'a> {
             | ExpressionKind::FunctionCall(_)
             | ExpressionKind::Array(AnyArray::ArrayFiller(_)) => None,
 
+            // `*ptr`'s type is whatever `ptr` (a `&T`/`&mut T`/`*T`) points
+            // at — mirrors `mir_parser::function::place::resolve_deref_place`
+            // one layer up.
+            ExpressionKind::Deref(deref) => match self.expression_type(deref.value)? {
+                SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+                    Some(*reference.inner)
+                }
+                _ => None,
+            },
+
             // is always none
             ExpressionKind::Break
             | ExpressionKind::For(_)
             | ExpressionKind::None(_)
-            | ExpressionKind::Deref(_)
             | ExpressionKind::Continue
             | ExpressionKind::Return(_)
             | ExpressionKind::Undefined(_)
@@ -320,6 +329,15 @@ impl<'a> NameResolver<'a> {
     }
 
     fn struct_field_type(&self, ty: &SoulType, field_name: &str) -> Option<SoulType> {
+        // Auto-deref: `object`'s type can be `&Struct`/`&mut Struct` (e.g. a
+        // `&this`/`&mut this` receiver) as readily as a bare `Struct` value —
+        // mirrors `mir_parser::function::place::auto_deref` one layer up.
+        let ty = match ty {
+            SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+                reference.inner.as_ref()
+            }
+            other => other,
+        };
         let SoulType::Stub(stub) = ty else {
             return None;
         };

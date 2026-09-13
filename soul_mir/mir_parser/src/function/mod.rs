@@ -184,12 +184,15 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     /// Accepts primitives, structs whose name resolves to a declaration in
-    /// this function's module, and fixed-size-array/slice-typed arrays
-    /// (`[N]T`, `[&]T`, `[&mut]T`) — the boundary this lowering slice
-    /// actually knows how to turn into MIR locals/places. Everything else
-    /// (wildcard/heap arrays, references, generics, an undeclared/
-    /// unresolvable name) still faults, same as before struct support
-    /// existed.
+    /// this function's module, fixed-size-array/slice-typed arrays
+    /// (`[N]T`, `[&]T`, `[&mut]T`), and bare `&T`/`&mut T`/`*T` references —
+    /// the boundary this lowering slice actually knows how to turn into MIR
+    /// locals/places. A reference is just an opaque pointer-sized value here
+    /// (no recursive check on `T`: a place built by dereferencing it is
+    /// re-validated on its own terms wherever it's actually used, the same
+    /// way a struct field's type already is). Everything else
+    /// (wildcard/heap arrays, generics, an undeclared/unresolvable name)
+    /// still faults, same as before struct support existed.
     fn require_lowerable(&self, ty: &SoulType, span: Span) -> MirResult<()> {
         let is_lowerable_array = matches!(
             ty,
@@ -198,8 +201,10 @@ impl<'a> FunctionLowerer<'a> {
                 ast::ArrayKind::StackArray(_) | ast::ArrayKind::MutSlice | ast::ArrayKind::ConstSlice
             )
         );
-        if matches!(ty, SoulType::Primitive(_))
-            || self.resolve_struct(ty).is_some()
+        if matches!(
+            ty,
+            SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_)
+        ) || self.resolve_struct(ty).is_some()
             || is_lowerable_array
         {
             return Ok(());

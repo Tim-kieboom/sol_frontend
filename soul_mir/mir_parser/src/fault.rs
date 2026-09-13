@@ -140,6 +140,9 @@ pub enum MirErrorKind {
         "only `&`/`@` on a fixed-size array (`[N]T`) is supported (to produce a slice) in this lowering slice, not `{ty}`"
     )]
     ArrayReferenceUnsupported { ty: Box<str> },
+
+    #[error("`*` can only dereference a reference/pointer type, not `{ty}`")]
+    DerefTargetNotAReference { ty: Box<str> },
 }
 
 impl From<UnclassifiedKind> for MirErrorKind {

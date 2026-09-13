@@ -201,7 +201,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 PlaceElem::Index(index_local) => {
                     self.step_into_index(&mut ptr, &soul_ty, *index_local)?
                 }
-                PlaceElem::Deref => return Err(err(CodegenErrorKind::PlaceProjectionUnsupported)),
+                PlaceElem::Deref => self.step_into_deref(&mut ptr, &soul_ty)?,
             };
         }
 
@@ -247,6 +247,32 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             .map_err(llvm_err)?;
 
         Ok(field_ty)
+    }
+
+    /// One `Deref` step: `soul_ty` must be a `&T`/`&mut T`/`*T`. `ptr`
+    /// currently holds the *address of the reference/pointer's own storage*
+    /// (same invariant every other step maintains) — load the pointer value
+    /// out of it to get the address it actually points at, which becomes the
+    /// new `ptr` for whatever projection comes next (or the place itself, if
+    /// this was the last step).
+    fn step_into_deref(
+        &self,
+        ptr: &mut PointerValue<'ctx>,
+        soul_ty: &SoulType,
+    ) -> CodegenResult<SoulType> {
+        let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = soul_ty else {
+            return Err(err(CodegenErrorKind::PlaceProjectionUnsupported));
+        };
+        let inner_ty = (*reference.inner).clone();
+
+        let opaque_ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
+        let pointee = self
+            .builder
+            .build_load(opaque_ptr_ty, *ptr, "deref")
+            .map_err(llvm_err)?;
+        *ptr = pointee.into_pointer_value();
+
+        Ok(inner_ty)
     }
 
     /// One `Index(index_local)` step: `soul_ty` must be a slice

@@ -109,15 +109,16 @@ impl<'a> FunctionLowerer<'a> {
     /// so `lower_rvalue` handles the right-hand side with no special-casing).
     /// `left` is a bare, already-declared variable, or any other place
     /// expression `resolve_place_expression` accepts (a struct field write, a
-    /// slice-index write) — `*p` as an assignment target still faults, since
-    /// nothing lowers pointer-dereference places yet.
+    /// slice-index write, a `*p` dereference write).
     fn lower_assignment(&mut self, assignment: &ast::Assignment) -> MirResult<()> {
         let left = &self.store.expressions[assignment.left];
         let place = match &left.node {
             ast::ExpressionKind::Variable(var) => {
                 mir::Place::local(self.resolve_local(var, left.span)?)
             }
-            ast::ExpressionKind::FieldAccess(_) | ast::ExpressionKind::Index(_) => {
+            ast::ExpressionKind::FieldAccess(_)
+            | ast::ExpressionKind::Index(_)
+            | ast::ExpressionKind::Deref(_) => {
                 self.resolve_place_expression(assignment.left, left.span)?.0
             }
             _ => {

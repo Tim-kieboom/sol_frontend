@@ -27,6 +27,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.lower_field_access(field_access, expr.span)
             }
             ast::ExpressionKind::Index(index) => self.lower_index_access(index, expr.span),
+            ast::ExpressionKind::Deref(deref) => self.lower_deref_access(deref, expr.span),
             ast::ExpressionKind::Binary(_) => {
                 let span = expr.span;
                 let ty = self

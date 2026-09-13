@@ -30,6 +30,15 @@ impl<'a> FunctionLowerer<'a> {
         Ok(mir::Operand::Copy(self.resolve_index_place(index, span)?.0))
     }
 
+    /// Lowers `*ptr` as a read — see `resolve_deref_place`.
+    pub(super) fn lower_deref_access(
+        &mut self,
+        deref: &ast::Deref,
+        span: Span,
+    ) -> MirResult<mir::Operand> {
+        Ok(mir::Operand::Copy(self.resolve_deref_place(deref, span)?.0))
+    }
+
     /// Resolves an arbitrary "place expression" — a variable, a field access
     /// (`object.field`), an index (`collection[i]`), or any nesting of those
     /// — into a `Place` plus its resolved type. The shared entry point
@@ -54,6 +63,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.resolve_field_place(field_access, expr.span)
             }
             ast::ExpressionKind::Index(index) => self.resolve_index_place(index, expr.span),
+            ast::ExpressionKind::Deref(deref) => self.resolve_deref_place(deref, expr.span),
             _ => Err(Fault::error_with_kind(
                 MirErrorKind::UnsupportedPlaceExpression,
                 Some(span),
@@ -112,6 +122,31 @@ impl<'a> FunctionLowerer<'a> {
         ))
     }
 
+    /// Lowers `*ptr` into a `Place` with a `Deref` projection appended onto
+    /// the pointer/reference's own place. `ptr` must itself resolve to a
+    /// `Reference`/`Pointer` type; the resulting place's own type is
+    /// whatever it points at.
+    fn resolve_deref_place(
+        &mut self,
+        deref: &ast::Deref,
+        span: Span,
+    ) -> MirResult<(mir::Place, SoulType)> {
+        let value_span = self.store.expressions[deref.value].span;
+        let (mut place, value_ty) = self.resolve_place_expression(deref.value, value_span)?;
+
+        let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = value_ty else {
+            return Err(Fault::error_with_kind(
+                MirErrorKind::DerefTargetNotAReference {
+                    ty: format!("{value_ty:?}").into(),
+                },
+                Some(span),
+            ));
+        };
+
+        place.projection.push(mir::PlaceElem::Deref);
+        Ok((place, *reference.inner))
+    }
+
     /// Lowers `object.field` into a `Place` with a `Field` projection
     /// appended onto the object's own place — read or write, straight off
     /// whatever storage the struct value already lives in (no temp/copy).
@@ -126,6 +161,7 @@ impl<'a> FunctionLowerer<'a> {
         let object_span = self.store.expressions[field_access.object].span;
         let (mut place, object_ty) =
             self.resolve_place_expression(field_access.object, object_span)?;
+        let object_ty = auto_deref(&mut place, object_ty);
 
         let struct_ = self.resolve_struct(&object_ty).ok_or_else(|| {
             Fault::error_with_kind(
@@ -176,6 +212,7 @@ impl<'a> FunctionLowerer<'a> {
         let collection_span = self.store.expressions[index.collection].span;
         let (mut place, collection_ty) =
             self.resolve_place_expression(index.collection, collection_span)?;
+        let collection_ty = auto_deref(&mut place, collection_ty);
 
         let SoulType::Array(array) = &collection_ty else {
             return Err(Fault::error_with_kind(
@@ -305,5 +342,22 @@ impl<'a> FunctionLowerer<'a> {
         self.statements
             .push(mir::Statement::Assign(mir::Place::local(temp), rvalue));
         Ok(temp)
+    }
+}
+
+/// If `ty` is a `&T`/`&mut T`/`*T`, appends a `Deref` step onto `place` and
+/// returns `T`; otherwise `place`/`ty` pass through unchanged. Called before
+/// resolving a field/index access's object/collection, so `object.field`/
+/// `collection[i]` work the same whether `object`/`collection` is a value or
+/// a reference to one — this is what keeps `this.field` working once a
+/// `&this`/`&mut this` receiver becomes a real reference-typed place instead
+/// of today's by-value copy.
+fn auto_deref(place: &mut mir::Place, ty: SoulType) -> SoulType {
+    match ty {
+        SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+            place.projection.push(mir::PlaceElem::Deref);
+            *reference.inner
+        }
+        other => other,
     }
 }

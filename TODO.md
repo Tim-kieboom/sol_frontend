@@ -462,9 +462,66 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
 
 ### M2 — borrow/move checking (not started)
 
+Scoped via `/grill-me`: "M2" is really a chain of prerequisite pieces, not one task —
+`mir_parser` doesn't lower dereference places, doesn't fix `&this`/`&mut this` receivers to
+actually borrow (they're still always a full by-value copy — a known M1 shortcut), doesn't emit
+`Move`/`MarkMoved`/`SetDropFlag`/`Drop` anywhere, and `FunctionLowerer` has no lexical-scope
+tracking at all (one flat locals map) — so "implement the borrow checker" is blocked on all of
+that landing first, in order.
+
+- [x] Deref places: `mir_parser` can now lower `*ptr` (explicit) and auto-derefs through a
+      `&T`/`&mut T`/`*T` when resolving a field/index access's object/collection (so
+      `this.field`/`ref.field` keeps working once a receiver becomes a real reference-typed place
+      instead of a value copy — the very next item below). `PlaceElem::Deref` existed in
+      `mir_model` already but nothing constructed or consumed it; `mir_codegen`'s `resolve_place`
+      previously hard-errored on it (`PlaceProjectionUnsupported`).
+  - `mir_parser::function::place`: new `resolve_deref_place` (explicit `*ptr`, mirrors
+    `resolve_field_place`/`resolve_index_place`'s shape) and `auto_deref` (a free fn — deref
+    once if the type is a reference, pass through otherwise — called before resolving a field's
+    object or an index's collection).
+  - `require_lowerable` (`function/mod.rs`) gained `SoulType::Reference`/`Pointer` — a bare
+    reference-typed *local* (e.g. `p := &x`) was never accepted before this, a separate, more
+    basic gap this surfaced: you couldn't even declare a pointer-typed variable to dereference in
+    the first place.
+  - `mir_codegen::function::resolve_place` gained a `step_into_deref` step: `ptr` holds the
+    *address of* the reference's own storage at that point (same invariant every other step
+    maintains), so dereferencing means loading the pointer value out of it to get the address it
+    actually points at.
+  - Also fixed two related bugs in `soul_name_resolver::resolve::typecheck::expression`'s
+    `expression_type` found while wiring this up: `Deref` was listed under "always types as
+    `none`" (wrong — `*ptr`'s type is whatever `ptr` points at; the same "untyped declaration
+    silently crashes" class of bug fixed twice earlier for `StructConstructor` and array
+    literals), and `struct_field_type` didn't auto-deref through a reference either (so
+    `object.field`'s resolver-level type-checking would have broken the moment `object` became
+    reference-typed, even though `mir_parser`'s own lowering now handles it).
+  - Proven via `29_deref_places.soul` (explicit deref read+write, plus field access through a
+    reference) and 3 new `mir_parser` unit tests (`deref_read_...`, `deref_write_...`,
+    `dereferencing_a_non_reference_is_rejected`).
+- [ ] Fix `&this`/`&mut this` receiver lowering to actually pass a reference instead of a
+      by-value copy — depends on the deref-places work above (the callee's `this` local becomes
+      reference-typed, so every `this.field` access inside the method body needs the auto-deref
+      this just added). Currently every receiver, regardless of `&this`/`&mut this`/`this`, is
+      passed the same way (`lower_call` unconditionally does `lower_operand(receiver_expr)`) —
+      logged as a known M1 shortcut when receiver method calls first landed.
+- [ ] Straight-line-only `Drop`/`SetDropFlag` lowering: every local gets an unconditional `Drop`
+      at function-end, `SetDropFlag(true)` after every `Assign` — no `if`/`for`/early-exit
+      handling yet (needs a real scope stack in `FunctionLowerer` first, tracked as its own
+      follow-up below), no `Move`/`MarkMoved` yet either (a second straight-line-only slice after
+      this one proves the drop-flag/scope-exit mechanics work). Verify via `mir_parser` unit tests
+      asserting the exact MIR shape (mirrors mir-design.md's own worked example) — codegen still
+      no-ops these statements and there's no checker yet, so nothing else would catch a wrong
+      emission.
+- [ ] `Move`/`MarkMoved` lowering for straight-line code (function-call arguments,
+      struct-constructor fields, array-literal elements, plain reassignment) — needs an
+      `is_auto_copy(SoulType)` classification that doesn't exist anywhere yet: primitives are
+      `AutoCopy`, structs and arrays are move-only, no opt-in mechanism for a struct yet (a
+      non-generic trait can't express a marker bound).
+- [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
+      "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
+      (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested
+      scopes each one jumps out of — needed before `if`/`for` bodies can be in scope for the
+      `Drop`/move lowering above.
 - [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset
-- [ ] Verify `Drop`/`MarkMoved`/`SetDropFlag` semantics from mir-design.md are fully emitted by
-      lowering before the checker can consume them
 
 ### M3 — unions, generics, full traits (not started)
 
