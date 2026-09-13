@@ -292,6 +292,36 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
   - `Trait<T>` / generic trait bounds are explicitly out of scope for M1 entirely — this pass is
     static dispatch only, no generics; see M3's "Full trait resolution" and "Extend borrow checker
     to generic MIR with `AutoCopy` bounds" entries below for where that lands.
+- [x] Implicit ("trailing") return of a function body's tail expression — both an `=>`
+      single-expression body and a `{ }` block whose last statement is a bare expression with no
+      `return` and no trailing `;` — proven via `27_trailing_return.soul` (an `=>` body, a
+      block-tail, and an exhaustive `if`-tail all feeding into one result).
+  - Entirely a `mir_parser` gap: `soul_name_resolver` already type-checked this (`check_tail_
+    return_type`, shared with lambda return-type inference) with the convention "a block's last
+    statement, if it's an `Expression` with `ends_semicolon == false`, is the tail" — but it's a
+    pure diagnostic pass with no marker left behind for MIR to consult, so `mir_parser` has to
+    re-derive the same convention independently.
+  - New `in_tail_position: bool` parameter on `lower_body`, computed per-statement into an `is_tail`
+    flag passed to `lower_statement`/`lower_expression_statement` (`is_last_statement &&
+    !ends_semicolon`). Only two places ever pass `true`: `FunctionLowerer::lower` for the whole
+    function body (the root of the recursion — this is also what makes an `=>` body work for free,
+    since the parser already desugars it into a one-statement block), and `lower_if`'s `then`/`else`
+    branches — and only when the `if` is *exhaustive* (has an `else`); a bodyless-else `if` gets
+    `false` on both branches, falling through to the pre-existing `MissingReturnStatement` error
+    exactly as before (mirrors the resolver's own `non_exhaustive_if_tail_is_skipped`). `lower_for`
+    always passes `false` for its loop body, regardless of the `for`'s own position — a loop has no
+    well-defined trailing value (mirrors the resolver's tail-walk, which recurses through
+    `If`/`Match`/nested `Block` but never `For`).
+  - Explicitly out of scope, matching the resolver's own recursion: a nested bare `{ }` block used
+    as an expression, and `match` (already unimplemented in `mir_parser` until M3).
+  - Found and deliberately **not** fixed while proving this (out of scope, pre-existing, unrelated to
+    tail-return): a `BinaryOp` whose *both* operands are bare literal constants (e.g. a standalone
+    `0 - 4`, no variable/place operand on either side) mistypes as unsigned 64-bit regardless of
+    context — even `y: i32 = 0 - 4` triggers it, silently trapping via the overflow-check machinery
+    instead of computing `-4`. `27_trailing_return.soul`'s `neg`/`abs` helpers route every literal
+    subtraction through a real parameter (`0 - n`) to sidestep it. Needs its own fix: `mir_parser`'s
+    `lower_checked_binary_op`/`lower_checked_div`'s "both operands are bare constants, fall back to
+    the resolver's whole-expression type" path resolves to the wrong type.
 - [x] `soul_mir/mir_codegen` — LLVM IR emission via `inkwell` (`features = ["llvm16-0"]`, Windows
       only) implemented for scalar/pointer/struct locals, arithmetic/comparison/logical ops, if/while,
       function calls, `extern "C"` functions (incl. `cstr`/pointer params and correct C-vs-Soul
@@ -324,7 +354,7 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       `clang.exe` (`C:\llvm-16\bin\clang.exe`) over the emitted `.ll`, then runs the resulting exe
       and checks both exit code (`// expect: N`) and stdout (`// expect_stdout: <substring>`); this
       is currently the real correctness oracle for the pipeline (`soul_tester/soul/src/codegen_tests/`,
-      26 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
+      27 passing exe tests). Still manual/script-driven, not integrated into `cargo test`.
 - [ ] Establish positive+negative test pairs as typecheck/MIR lowering lands (currently unclear
       whether existing parser/resolver suites cover rejection cases — see "Testing strategy" in
       compiler-pipeline-plan.md)

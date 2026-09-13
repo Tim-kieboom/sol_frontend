@@ -7,17 +7,30 @@ use mir_model as mir;
 use soul_utils::{TypeModifier, fault::Fault, intrinsics::IntrinsicFunction, span::Span};
 
 impl<'a> FunctionLowerer<'a> {
+    /// `is_tail`: whether `statement` is the last entry of a block currently
+    /// in tail position (see `lower_body`) — only meaningful for
+    /// `StatementKind::Expression`, where it's further narrowed by
+    /// `!ends_semicolon` before being handed to `lower_expression_statement`
+    /// (a trailing `;` always suppresses the implicit-return treatment,
+    /// same as the resolver's own tail-position convention).
     pub(super) fn lower_statement(
         &mut self,
         return_local: Option<mir::LocalId>,
         statement: &ast::Statement,
+        is_tail: bool,
     ) -> MirResult<()> {
         match &statement.node {
             ast::StatementKind::Variable(variable) => self.lower_variable(statement, variable),
             ast::StatementKind::Assignment(assignment) => self.lower_assignment(assignment),
-            ast::StatementKind::Expression { expression, .. } => {
-                self.lower_expression_statement(return_local, statement, *expression)
-            }
+            ast::StatementKind::Expression {
+                expression,
+                ends_semicolon,
+            } => self.lower_expression_statement(
+                return_local,
+                statement,
+                *expression,
+                is_tail && !ends_semicolon,
+            ),
             _ => Err(Fault::error_with_kind(
                 MirErrorKind::UnsupportedStatementKind,
                 Some(statement.span),

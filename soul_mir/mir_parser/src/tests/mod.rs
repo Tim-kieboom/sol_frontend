@@ -1345,3 +1345,109 @@ fn extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction() 
         "a `none`-returning extern function should have no return type, same as `Function::return_local`"
     );
 }
+
+#[test]
+fn lambda_arrow_body_implicitly_returns_its_tail_expression() {
+    let mir = lower_source("id(x: int): int => x\n", "id").expect("expected successful lowering");
+
+    assert_eq!(mir.blocks.entries().count(), 1);
+    let (_, block) = mir.blocks.entries().next().unwrap();
+    let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_))) = &block.statements[0]
+    else {
+        panic!(
+            "expected the `=>` body's bare `x` to be assigned into the return local, got {:#?}",
+            block.statements
+        );
+    };
+    assert_eq!(Some(place.local), mir.return_local);
+    assert!(matches!(block.terminator, mir_model::Terminator::Return));
+}
+
+#[test]
+fn block_tail_expression_with_no_return_or_semicolon_is_an_implicit_return() {
+    let mir = lower_source("f(): int {\n    x := 42\n    x\n}\n", "f")
+        .expect("expected successful lowering");
+
+    assert_eq!(mir.blocks.entries().count(), 1);
+    let (_, block) = mir.blocks.entries().next().unwrap();
+    // statements[0] is `x := 42`'s own assignment; the tail `x` becomes the
+    // second statement, assigning into the return local.
+    assert_eq!(block.statements.len(), 2, "{:#?}", block.statements);
+    let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_))) = &block.statements[1]
+    else {
+        panic!(
+            "expected the tail `x` to be assigned into the return local, got {:#?}",
+            block.statements[1]
+        );
+    };
+    assert_eq!(Some(place.local), mir.return_local);
+    assert!(matches!(block.terminator, mir_model::Terminator::Return));
+}
+
+#[test]
+fn exhaustive_if_tail_branches_are_each_an_implicit_return() {
+    let mir = lower_source(
+        "pick(cond: bool, a: int, b: int): int {\n    if cond {\n        a\n    } else {\n        b\n    }\n}\n",
+        "pick",
+    )
+    .expect("expected successful lowering");
+
+    // No join block: both branches return directly, so the join block
+    // `lower_if` allocates is never actually reached/sealed.
+    assert_eq!(mir.blocks.entries().count(), 3, "{:#?}", mir.blocks);
+    for (_, block) in mir.blocks.entries().skip(1) {
+        assert!(
+            matches!(block.terminator, mir_model::Terminator::Return),
+            "expected every non-entry block (both if-branches) to end in Return, got {:#?}",
+            block.terminator
+        );
+        let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_))) =
+            &block.statements[0]
+        else {
+            panic!(
+                "expected each branch's bare tail to be assigned into the return local, got {:#?}",
+                block.statements
+            );
+        };
+        assert_eq!(Some(place.local), mir.return_local);
+    }
+}
+
+#[test]
+fn non_exhaustive_if_tail_is_not_an_implicit_return() {
+    // No `else`, so `branch_is_tail` is `false` for the `then` branch (see
+    // `lower_if`) — its bare `1` is never treated as this function's return
+    // value, so it hits the same `NonReturnTerminalStatementUnsupported` a
+    // bare non-`return` expression always has, exactly as before this
+    // feature existed (mirrors the resolver's own `non_exhaustive_if_tail_
+    // is_skipped`: a non-exhaustive `if`'s branch is never tail-checked
+    // either).
+    let result = lower_source(
+        "f(cond: bool): int {\n    if cond {\n        1\n    }\n}\n",
+        "f",
+    );
+    assert_rejected_with(&result, MirErrorKind::NonReturnTerminalStatementUnsupported);
+}
+
+#[test]
+fn tail_position_branch_ending_in_a_variable_declaration_still_requires_a_return() {
+    // Exhaustive `if`, so `branch_is_tail` is `true` for the `then` branch —
+    // but its last statement is a `Variable` declaration, not an
+    // `Expression`, so `lower_statement`'s `is_tail` flag has nothing to
+    // apply to. Falling off the end of that branch still needs an explicit
+    // `return`, same as before this feature existed.
+    let result = lower_source(
+        "f(cond: bool): int {\n    if cond {\n        x := 1\n    } else {\n        return 2\n    }\n}\n",
+        "f",
+    );
+    assert_rejected_with(&result, MirErrorKind::MissingReturnStatement);
+}
+
+#[test]
+fn for_loop_tail_is_not_an_implicit_return() {
+    // A loop body is never in tail position (see `lower_for`), regardless of
+    // being the function's own last statement — a bare trailing expression
+    // there is rejected exactly as it was before this feature existed.
+    let result = lower_source("f(): int {\n    for true {\n        1\n    }\n}\n", "f");
+    assert_rejected_with(&result, MirErrorKind::NonReturnTerminalStatementUnsupported);
+}

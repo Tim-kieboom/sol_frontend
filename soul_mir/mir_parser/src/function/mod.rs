@@ -128,7 +128,12 @@ impl<'a> FunctionLowerer<'a> {
         self.current = Some(entry);
 
         let statement_ids = self.store.blocks[function.block].statements.clone();
-        self.lower_body(return_local, &statement_ids)?;
+        // The function body itself is the root of tail-position recursion —
+        // its own last (non-`;`-terminated) statement is an implicit
+        // `return`, same as an `=>` single-expression body (which the parser
+        // desugars into a one-statement block with no trailing `;`).
+        const IN_TAIL_POSITION: bool = true;
+        self.lower_body(return_local, &statement_ids, IN_TAIL_POSITION)?;
 
         if self.current.is_some() {
             if is_none_return {
