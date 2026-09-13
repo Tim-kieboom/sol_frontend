@@ -1,6 +1,6 @@
 use crate::{
     fault::{MirErrorKind, MirResult},
-    function::{FunctionLowerer, is_float_primitive},
+    function::FunctionLowerer,
 };
 use ast_model::{self as ast, SoulType, operators::UnaryOperatorKind};
 use mir_model as mir;
@@ -121,4 +121,17 @@ pub(super) fn require_primitive(ty: &SoulType, span: Span) -> MirResult<()> {
             Some(span),
         ))
     }
+}
+
+/// Mirrors `mir_codegen::types::is_float` one layer up (`SoulType` here,
+/// `PrimitiveTypes` there) — used by `is_float_operand` to keep floats out
+/// of the checked-arithmetic/checked-div lowering paths.
+fn is_float_primitive(prim: PrimitiveTypes) -> bool {
+    matches!(
+        prim,
+        PrimitiveTypes::Float16
+            | PrimitiveTypes::Float32
+            | PrimitiveTypes::Float64
+            | PrimitiveTypes::UntypedFloat
+    )
 }

@@ -9,17 +9,13 @@ use soul_utils::{
     span::{ModuleId, Span},
 };
 
-use crate::{
-    fault::{MirErrorKind, MirResult},
-    function::utils::is_float_primitive,
-};
-mod expression;
+use crate::fault::{MirErrorKind, MirResult};
+mod control_flow;
 mod operators;
 mod place;
 mod rvalue;
 mod statement;
 mod r#type;
-mod utils;
 
 /// The `(header, exit)` block pair of an enclosing loop, so a nested `break`/
 /// `continue` can find its target regardless of how deep inside `if`s it is.

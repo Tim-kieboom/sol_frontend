@@ -1,12 +1,11 @@
 use crate::{
     fault::{MirErrorKind, MirResult},
-    function::{
-        FunctionLowerer,
-        r#type::require_primitive,
-        utils::{is_checked_arith_op, is_checked_div_op, is_supported_binary_op},
-    },
+    function::{FunctionLowerer, r#type::require_primitive},
 };
-use ast_model::{self as ast, SoulType, operators::UnaryOperatorKind};
+use ast_model::{
+    self as ast, SoulType,
+    operators::{BinaryOperatorKind, UnaryOperatorKind},
+};
 use mir_model as mir;
 use soul_utils::{
     TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction,
@@ -245,4 +244,42 @@ impl<'a> FunctionLowerer<'a> {
         }
         Ok(mir::Rvalue::Aggregate(mir::AggregateKind::Array, operands))
     }
+}
+
+fn is_supported_binary_op(op: BinaryOperatorKind) -> bool {
+    matches!(
+        op,
+        BinaryOperatorKind::Add
+            | BinaryOperatorKind::Sub
+            | BinaryOperatorKind::Mul
+            | BinaryOperatorKind::Div
+            | BinaryOperatorKind::Mod
+            | BinaryOperatorKind::Eq
+            | BinaryOperatorKind::NotEq
+            | BinaryOperatorKind::Lt
+            | BinaryOperatorKind::Gt
+            | BinaryOperatorKind::Le
+            | BinaryOperatorKind::Ge
+            | BinaryOperatorKind::LogAnd
+            | BinaryOperatorKind::LogOr
+    )
+}
+
+/// `Add`/`Sub`/`Mul` — the ops `lower_checked_binary_op` traps on overflow
+/// for. Div/Mod go through the separate `lower_checked_div` instead (see
+/// `is_checked_div_op`): division has no `{s,u}*.with.overflow`-style
+/// intrinsic to call, so it can't reuse the tuple-producing shape.
+fn is_checked_arith_op(op: BinaryOperatorKind) -> bool {
+    matches!(
+        op,
+        BinaryOperatorKind::Add | BinaryOperatorKind::Sub | BinaryOperatorKind::Mul
+    )
+}
+
+/// `Div`/`Mod` — the ops `lower_checked_div` guards with explicit `Assert`s
+/// ahead of an ordinary `BinaryOp` (division by zero for both; `MIN / -1`/
+/// `MIN % -1` for a signed operand only — the one case a signed division
+/// can't represent, since the mathematical result overflows the type).
+fn is_checked_div_op(op: BinaryOperatorKind) -> bool {
+    matches!(op, BinaryOperatorKind::Div | BinaryOperatorKind::Mod)
 }
