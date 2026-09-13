@@ -2,6 +2,7 @@ use std::fmt::Display;
 
 use crate::span::Span;
 
+#[repr(u8)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]

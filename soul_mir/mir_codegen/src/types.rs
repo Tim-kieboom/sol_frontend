@@ -135,10 +135,10 @@ pub(crate) fn llvm_type<'ctx>(
             Int128 | Uint128 => context.i128_type().into(),
             // Platform-sized (pointer-width).
             Int | Uint | UntypedInt | UntypedUint => {
-                context.custom_width_int_type(platform.pointer_bits).into()
+                platform_int_type(context, platform.pointer_bits).into()
             }
             // C's `int`/`unsigned int` — always 32 bits here, regardless of pointer width.
-            CInt | CUint => context.custom_width_int_type(platform.c_int_bits).into(),
+            CInt | CUint => platform_int_type(context, platform.c_int_bits).into(),
             Char8 => context.i8_type().into(),
             CStr => context.ptr_type(AddressSpace::default()).into(),
             Float32 => context.f32_type().into(),
@@ -176,6 +176,14 @@ pub(crate) fn llvm_type<'ctx>(
     }
 }
 
+/// Builds an LLVM integer type of an arbitrary bit width read off
+/// `PlatformInfo` — shared by both `int`/`uint` (pointer-width) and
+/// `cint`/`cuint` (C `int`-width) callers, and by `terminator.rs`'s `exit()`
+/// declaration, which needs the same C-`int`-width type for its parameter.
+pub(super) fn platform_int_type<'ctx>(context: &'ctx Context, bits: u32) -> IntType<'ctx> {
+    context.custom_width_int_type(bits)
+}
+
 /// `[N]T` maps to a real fixed-size LLVM array (a value type, `N` elements
 /// inline) — the only array kind that can be *constructed* as a value in
 /// this slice (array literals). `[&]T`/`[&mut]T` map to a fat pointer: a
@@ -198,7 +206,7 @@ fn array_type<'ctx>(
         }
         ArrayKind::MutSlice | ArrayKind::ConstSlice => {
             let ptr_ty = context.ptr_type(AddressSpace::default());
-            let len_ty = context.custom_width_int_type(platform.pointer_bits);
+            let len_ty = platform_int_type(context, platform.pointer_bits);
             Ok(context
                 .struct_type(&[ptr_ty.into(), len_ty.into()], false)
                 .into())

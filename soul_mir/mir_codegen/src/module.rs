@@ -41,10 +41,10 @@ pub(crate) fn codegen_module<'ctx>(
         ast,
         ctx: CodegenCtx {
             context,
-            module: &module,
             declares,
             modules,
-            platform: options.platform,
+            options,
+            module: &module,
         },
         string_counter: Cell::new(0),
         function_values: VecMap::new(),

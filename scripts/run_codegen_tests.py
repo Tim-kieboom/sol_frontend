@@ -22,8 +22,14 @@ source change) because rewriting config.json used to force a recompile —
 `config.json` is now read at runtime (see `soul_tester::config::config_path`)
 specifically so this script can build once and invoke the exe 20+ times
 without paying that cost each time.
+
+Pass `--panic-mode abort|exit` to forward that flag to every `soul_tester.exe`
+invocation (see `soul_utils::compiler_options::PanicMode`) — e.g. to confirm
+the exit-code assertions (`// expect: N`) hold under both panic modes, not
+just soul_tester's own default.
 """
 
+import argparse
 import json
 import re
 import subprocess
@@ -91,9 +97,12 @@ def build_soul_tester() -> None:
         raise SystemExit(1)
 
 
-def run_soul_tester() -> None:
+def run_soul_tester(panic_mode: str | None) -> None:
+    args = [str(SOUL_TESTER_EXE)]
+    if panic_mode is not None:
+        args.append(f"--panic-mode={panic_mode}")
     result = subprocess.run(
-        [str(SOUL_TESTER_EXE)],
+        args,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -121,7 +130,21 @@ def build_and_run_exe(exe_path: Path) -> tuple[int, str]:
     return run_result.returncode, run_result.stdout
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--panic-mode",
+        choices=["abort", "exit"],
+        default=None,
+        help="forwarded to soul_tester.exe's own --panic-mode flag for every "
+        "test run; omit to use soul_tester's own default (exit)",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
+
     test_files = sorted(TESTS_DIR.glob("*.soul"))
     if not test_files:
         print(f"no test files found under {TESTS_DIR}", file=sys.stderr)
@@ -141,7 +164,7 @@ def main() -> int:
 
             try:
                 set_main_path(relative_path)
-                run_soul_tester()
+                run_soul_tester(args.panic_mode)
                 exe_path = soul_file.with_suffix(".exe")
                 actual, stdout = build_and_run_exe(exe_path)
                 exe_path.unlink(missing_ok=True)

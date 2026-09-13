@@ -7,7 +7,7 @@ use soul_tokenizer::to_token_stream;
 use soul_utils::{
     CrateContext,
     collections::{benchmark::Benchmark, crate_store::CrateStore, module_store::ModuleStore},
-    compiler_options::{CompilerOptions, MirOptions, PlatformInfo},
+    compiler_options::{CompilerOptions, MirOptions},
     fault::Severity,
 };
 
@@ -47,8 +47,7 @@ fn build_ast(source: &str) -> AstTree {
 
     let options = CompilerOptions {
         mir,
-        fail_level: Severity::Error,
-        platform: PlatformInfo::default(),
+        ..CompilerOptions::const_default()
     };
 
     let ast = to_ast(

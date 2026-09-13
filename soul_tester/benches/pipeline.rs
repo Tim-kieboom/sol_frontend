@@ -20,7 +20,7 @@ use soul_utils::{
         crate_store::{CrateEntry, CrateStore, Manifest},
         module_store::ModuleStore,
     },
-    compiler_options::{CompilerOptions, MirOptions, PlatformInfo},
+    compiler_options::{CompilerOptions, MirOptions, PanicMode, PlatformInfo},
     fault::Severity,
 };
 
@@ -28,13 +28,15 @@ const MIR_OPTIONS: MirOptions = MirOptions::empty()
     .add(MirOptions::CHECK_ALGORITHMIC_OVERFLOW)
     .add(MirOptions::CHECK_INDEX_OUT_OF_BOUNDS);
 
+// `panic_mode` is inert here — this benchmark only exercises tokenize ->
+// parse -> name_resolve (see the module doc comment), never mir_codegen — but
+// it's set to match `soul_tester::config::COMPILER_OPTIONS` anyway so this
+// doesn't read as a real (if currently harmless) divergence from production.
 const COMPILER_OPTIONS: CompilerOptions = CompilerOptions {
     mir: MIR_OPTIONS,
+    panic_mode: PanicMode::Exit,
     fail_level: Severity::Error,
-    platform: PlatformInfo {
-        pointer_bits: 64,
-        c_int_bits: 32,
-    },
+    platform: PlatformInfo::new_windows_x86_64(),
 };
 
 struct Input {

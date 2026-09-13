@@ -11,7 +11,7 @@ use ast_model::{SoulType, declare_store::DeclareStore};
 use inkwell::{context::Context, module::Module, types::BasicTypeEnum};
 use soul_utils::{
     collections::module_store::ModuleStore,
-    compiler_options::PlatformInfo,
+    compiler_options::CompilerOptions,
     span::{ModuleId, Span},
 };
 
@@ -26,7 +26,7 @@ pub(crate) struct CodegenCtx<'ctx, 'a> {
     /// needed only to format a panic's `"file:line:col"` location
     /// (`terminator::codegen_assert`), nothing else in codegen touches it.
     pub(crate) modules: &'a ModuleStore,
-    pub(crate) platform: PlatformInfo,
+    pub(crate) options: &'a CompilerOptions,
 }
 
 impl<'ctx, 'a> CodegenCtx<'ctx, 'a> {
@@ -38,7 +38,7 @@ impl<'ctx, 'a> CodegenCtx<'ctx, 'a> {
     ) -> CodegenResult<BasicTypeEnum<'ctx>> {
         llvm_type(
             self.context,
-            &self.platform,
+            &self.options.platform,
             self.declares,
             module,
             ty,

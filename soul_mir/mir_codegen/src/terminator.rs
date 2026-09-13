@@ -5,17 +5,18 @@
 use inkwell::{
     AddressSpace, IntPredicate,
     module::Linkage,
+    types::{BasicMetadataTypeEnum, IntType},
     values::{BasicValueEnum, FunctionValue, PointerValue},
 };
 use mir_model::{BlockId, ConstValue, LocalId, Operand, Place, Terminator};
-use soul_utils::{FunctionId, span::Span};
+use soul_utils::{FunctionId, compiler_options::PanicMode, span::Span};
 
 use crate::{
     err,
     fault::{CodegenErrorKind, CodegenResult},
     function::FunctionCodegen,
     llvm_err,
-    types::expect_int,
+    types::{expect_int, platform_int_type},
 };
 
 impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
@@ -315,15 +316,35 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         Ok(())
     }
 
-    /// The C runtime's `abort()`, declared lazily (once per module) — used
-    /// only by `panic_function` now (every panicking construct funnels
-    /// through that instead of calling `abort()` directly).
-    pub(crate) fn abort_function(&self) -> FunctionValue<'ctx> {
-        if let Some(existing) = self.ctx.module.get_function("abort") {
+    /// Declares a `void`-returning libc function lazily (once per module) —
+    /// shared by `abort_function`/`exit_function`, which differ only in name
+    /// and parameter list. Neither `abort()` nor `exit()` actually returns,
+    /// but declaring them `void` (rather than `noreturn`) is enough: every
+    /// call site follows up with its own `build_unreachable`.
+    fn declare_void_libc_fn(
+        &self,
+        name: &str,
+        param_types: &[BasicMetadataTypeEnum<'ctx>],
+    ) -> FunctionValue<'ctx> {
+        if let Some(existing) = self.ctx.module.get_function(name) {
             return existing;
         }
-        let fn_type = self.ctx.context.void_type().fn_type(&[], false);
-        self.ctx.module.add_function("abort", fn_type, None)
+        let fn_type = self.ctx.context.void_type().fn_type(param_types, false);
+        self.ctx.module.add_function(name, fn_type, None)
+    }
+
+    /// The C runtime's `abort()` — used only by `panic_function` now (every
+    /// panicking construct funnels through that instead of calling `abort()`
+    /// directly).
+    pub(crate) fn abort_function(&self) -> FunctionValue<'ctx> {
+        self.declare_void_libc_fn("abort", &[])
+    }
+
+    /// The C runtime's `exit(status)` — `cint_type` is passed in rather than
+    /// recomputed here, since the caller (`panic_function`) already needs
+    /// the same `IntType` to build the exit-code constant.
+    pub(crate) fn exit_function(&self, cint_type: IntType<'ctx>) -> FunctionValue<'ctx> {
+        self.declare_void_libc_fn("exit", &[cint_type.into()])
     }
 
     /// libc's variadic `printf`, declared lazily (once per module) — used
@@ -339,9 +360,11 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
 
     /// libc's `fflush`, declared lazily (once per module) — `panic_function`
     /// calls this with a null `FILE*` (meaning "every open stream") right
-    /// before `abort()`. Without it, `printf`'s message sits in a
-    /// fully-buffered `stdout` and is silently lost: `abort()` terminates the
-    /// process immediately, it doesn't run libc's normal at-exit flush.
+    /// before `abort()`, and *only* before `abort()`: without it, `printf`'s
+    /// message sits in a fully-buffered `stdout` and is silently lost, since
+    /// `abort()` terminates the process immediately without running libc's
+    /// normal at-exit flush. `exit()` needs no such help — flushing/closing
+    /// every open stream is already part of its own standard behavior.
     fn fflush_function(&self) -> FunctionValue<'ctx> {
         if let Some(existing) = self.ctx.module.get_function("fflush") {
             return existing;
@@ -369,7 +392,8 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
     }
 
     /// The panic runtime: prints `msg` and `location` (both `cstr`-typed
-    /// pointers) via `printf` then calls `abort()` — a Rust-`panic!`-style
+    /// pointers) via `printf`, then terminates the process via `abort()` or
+    /// `exit()` (see `CompilerOptions::panic_mode`) — a Rust-`panic!`-style
     /// trap (no unwinding, no backtrace: this compiler has no unwinding
     /// model) instead of a bare, silent `abort()`. Declared *and defined*
     /// lazily (once per module, cached the same way as `abort_function`) the
@@ -401,6 +425,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             .get_nth_param(0)
             .ok_or_else(|| err(CodegenErrorKind::MissingParameterValue { index: 0 }))?
             .into_pointer_value();
+
         let location = function
             .get_nth_param(1)
             .ok_or_else(|| err(CodegenErrorKind::MissingParameterValue { index: 1 }))?
@@ -415,16 +440,50 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             )
             .map_err(llvm_err)?;
 
-        let fflush_fn = self.fflush_function();
-        let null_stream = ptr_ty.const_null();
-        self.builder
-            .build_call(fflush_fn, &[null_stream.into()], "fflush_call")
-            .map_err(llvm_err)?;
+        match self.ctx.options.panic_mode {
+            PanicMode::Abort => {
+                // abort() skips libc's normal at-exit cleanup entirely, so
+                // the message printf just wrote would otherwise be lost in
+                // stdout's buffer — flush it explicitly first.
+                let fflush_fn = self.fflush_function();
+                let null_stream = ptr_ty.const_null();
+                self.builder
+                    .build_call(fflush_fn, &[null_stream.into()], "fflush_call")
+                    .map_err(llvm_err)?;
 
-        let abort_fn = self.abort_function();
-        self.builder
-            .build_call(abort_fn, &[], "abort_call")
-            .map_err(llvm_err)?;
+                let abort_fn = self.abort_function();
+                self.builder
+                    .build_call(abort_fn, &[], "abort_call")
+                    .map_err(llvm_err)?;
+            }
+            PanicMode::Exit => {
+                // A Windows fastfail-style NTSTATUS code (0xC0000409,
+                // STATUS_STACK_BUFFER_OVERRUN) — chosen to match what
+                // `abort()` itself already reports as this compiler's exit
+                // code on its only current target, so switching PanicMode
+                // doesn't change what `// expect: N` assertions observe.
+                // Assumes a 32-bit C `int` (true for every target this
+                // compiler builds today) — the debug_assert below catches a
+                // narrower `c_int_bits` instead of silently truncating.
+                const PANIC_CODE: u64 = 3221226505;
+                debug_assert_eq!(
+                    self.ctx.options.platform.c_int_bits, 32,
+                    "PANIC_CODE assumes a 32-bit C `int`"
+                );
+
+                // exit() already flushes and closes every open stream as
+                // part of its own standard behavior — no separate fflush
+                // needed here (unlike the Abort arm above).
+                let cint_type =
+                    platform_int_type(self.ctx.context, self.ctx.options.platform.c_int_bits);
+                let failure_value = cint_type.const_int(PANIC_CODE, false);
+                let exit_fn = self.exit_function(cint_type);
+                self.builder
+                    .build_call(exit_fn, &[failure_value.into()], "exit_call")
+                    .map_err(llvm_err)?;
+            }
+        }
+
         self.builder.build_unreachable().map_err(llvm_err)?;
 
         if let Some(block) = resume_block {

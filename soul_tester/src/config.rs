@@ -4,7 +4,7 @@ use std::{
 };
 
 use soul_utils::{
-    compiler_options::{CompilerOptions, MirOptions, PlatformInfo},
+    compiler_options::{CompilerOptions, MirOptions, PanicMode, PlatformInfo},
     fault::Severity,
 };
 
@@ -14,11 +14,31 @@ const MIR_OPTIONS: MirOptions = MirOptions::empty()
     .add(MirOptions::CHECK_ALGORITHMIC_OVERFLOW)
     .add(MirOptions::CHECK_INDEX_OUT_OF_BOUNDS);
 
-pub const COMPILER_OPTIONS: CompilerOptions = CompilerOptions {
+/// A `LazyLock` rather than a plain `const` — `panic_mode` can be overridden
+/// by a `--panic-mode=<abort|exit>` CLI flag (see `parse_panic_mode_arg`),
+/// which needs `std::env::args()` at runtime.
+pub static COMPILER_OPTIONS: LazyLock<CompilerOptions> = LazyLock::new(|| CompilerOptions {
     mir: MIR_OPTIONS,
     fail_level: Severity::Error,
+    panic_mode: parse_panic_mode_arg().unwrap_or(PanicMode::Exit),
     platform: PlatformInfo::new_windows_x86_64(),
-};
+});
+
+/// Looks for a `--panic-mode=<abort|exit>` flag among the process's own CLI
+/// arguments. `None` if the flag wasn't passed at all (the caller then falls
+/// back to the default); a present-but-unparseable value is a hard error
+/// with a clear message rather than a silently-ignored typo. A hand-rolled
+/// parse rather than a CLI-args crate, since this is the one optional flag
+/// this binary has.
+fn parse_panic_mode_arg() -> Option<PanicMode> {
+    let arg = std::env::args().find(|arg| arg.starts_with("--panic-mode="))?;
+    let value = arg
+        .strip_prefix("--panic-mode=")
+        .expect("checked by starts_with above");
+    Some(PanicMode::parse(value).unwrap_or_else(|| {
+        panic!("invalid --panic-mode value {value:?} (expected \"abort\" or \"exit\")")
+    }))
+}
 
 pub const PRINT_CONFIGS: PrintConfigs = PrintConfigs {
     #[cfg(feature = "error_backtrace")]
