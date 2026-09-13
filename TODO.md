@@ -367,16 +367,15 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
       real, reachable gaps — fixed with new tests (`collect/function_and_variable_name_tests.rs`,
       plus two cases added to `collect/import_tests.rs` for the module-qualified-call case).
     - `FunctionNameEmpty`, `FunctionNameInvalidStart`, `VariableNameEmpty`,
-      `VariableNameInvalidStart` (in `collect/statement.rs`'s `check_function_name`/
-      `check_variable_name`) are **dead code**, not a test gap: `soul_tokenizer`'s `lex_ident`
-      (`soul_tokenizer/src/lexer.rs`) is only ever entered on a char already satisfying
-      `is_alphabetic() || '_'`, so no `TokenKind::Ident` this compiler produces can be empty or
-      start wrong — and every `Ident` reaching these two checks (including the two hardcoded
+      `VariableNameInvalidStart` were **dead code**, not a test gap: `soul_tokenizer`'s
+      `lex_ident` (`soul_tokenizer/src/lexer.rs`) is only ever entered on a char already
+      satisfying `is_alphabetic() || '_'`, so no `TokenKind::Ident` this compiler produces can be
+      empty or start wrong — and every `Ident` reaching these checks (including the two hardcoded
       synthesized constructor names, `This__ctor`/`This__arrayCtor`) traces back to a real
-      tokenizer token or one of those two constants. Not removed here (out of scope for a test
-      audit) — worth a follow-up to delete the unreachable checks/variants, or add a debug-only
-      assertion documenting why they're unreachable instead of leaving them as live (but dead)
-      `AstErrorKind` variants.
+      tokenizer token or one of those two constants. Removed: the 4 `AstErrorKind` variants, the
+      checks that constructed them (`check_variable_name` deleted entirely — it had no other
+      purpose left; `check_function_name` now only checks `FunctionNameTripleUnderscore`), and
+      `check_variable_name`'s 3 now-pointless call sites in `collect_var_pattern`.
   - The remaining ~27 covered variants were spot-checked, not exhaustively re-verified line by
     line — the grep pass is what did the real work of finding the misses.
 - [ ] `PlatformInfo` (`soul_utils::compiler_options`) only has one constructor

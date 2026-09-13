@@ -231,20 +231,8 @@ pub enum AstErrorKind {
     #[error("parent and child function can not have the same name")]
     ParentChildFunctionSameName,
 
-    #[error("function name can not be empty")]
-    FunctionNameEmpty,
-
-    #[error("function name should not start with '{found}' (start with letter or '_')")]
-    FunctionNameInvalidStart { found: char },
-
     #[error("function name should not have '___' in the name")]
     FunctionNameTripleUnderscore,
-
-    #[error("variable name can not be empty")]
-    VariableNameEmpty,
-
-    #[error("variable name should not start with '{found}' (start with letter or '_')")]
-    VariableNameInvalidStart { found: char },
 
     #[error("variable '{name}' is used before its declaration")]
     VariableUsedBeforeDeclaration { name: SharedStr },

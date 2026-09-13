@@ -282,9 +282,6 @@ impl<'a> NameResolver<'a> {
         match pattern {
             VarPattern::Discard => {}
             VarPattern::Simple { binding, .. } => {
-                if let Err(err) = check_variable_name(&binding.ident) {
-                    self.context.faults.push(err);
-                }
                 self.insert_value(
                     binding.ident.as_shared_str(),
                     binding.id,
@@ -300,9 +297,6 @@ impl<'a> NameResolver<'a> {
             VarPattern::NamedTuple(named) => {
                 for field in &named.fields {
                     if let Some(binding) = &field.binding {
-                        if let Err(err) = check_variable_name(&binding.ident) {
-                            self.context.faults.push(err);
-                        }
                         self.insert_value(
                             binding.ident.as_shared_str(),
                             binding.id,
@@ -315,9 +309,6 @@ impl<'a> NameResolver<'a> {
             VarPattern::Constructor(ctor) => {
                 for field in &ctor.fields {
                     if let Some(binding) = &field.binding {
-                        if let Err(err) = check_variable_name(&binding.ident) {
-                            self.context.faults.push(err);
-                        }
                         self.insert_value(
                             binding.ident.as_shared_str(),
                             binding.id,
@@ -359,39 +350,9 @@ fn is_main(signature: &FunctionSignature) -> bool {
 }
 
 fn check_function_name(name: &Ident) -> Result<(), AstFault> {
-    let mut chars = name.as_str().chars();
-    let first = chars.next().ok_or(Fault::error_with_kind(
-        AstErrorKind::FunctionNameEmpty,
-        Some(name.span()),
-    ))?;
-
-    if !first.is_alphabetic() && first != '_' {
-        return Err(Fault::error_with_kind(
-            AstErrorKind::FunctionNameInvalidStart { found: first },
-            Some(name.span()),
-        ));
-    }
-
     if name.as_str().contains("___") {
         return Err(Fault::error_with_kind(
             AstErrorKind::FunctionNameTripleUnderscore,
-            Some(name.span()),
-        ));
-    }
-
-    Ok(())
-}
-
-fn check_variable_name(name: &Ident) -> Result<(), AstFault> {
-    let mut chars = name.as_str().chars();
-    let first = chars.next().ok_or(Fault::error_with_kind(
-        AstErrorKind::VariableNameEmpty,
-        Some(name.span()),
-    ))?;
-
-    if !first.is_alphabetic() && first != '_' {
-        return Err(Fault::error_with_kind(
-            AstErrorKind::VariableNameInvalidStart { found: first },
             Some(name.span()),
         ));
     }
