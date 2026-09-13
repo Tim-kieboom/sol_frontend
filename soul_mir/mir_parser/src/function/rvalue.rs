@@ -45,8 +45,7 @@ impl<'a> FunctionLowerer<'a> {
 
                 let rvalue = self.lower_rvalue(expr_id)?;
                 let temp = self.alloc_local(ty, TypeModifier::Immut, span);
-                self.statements
-                    .push(mir::Statement::Assign(mir::Place::local(temp), rvalue));
+                self.push_assign(mir::Place::local(temp), rvalue);
                 Ok(mir::Operand::Copy(mir::Place::local(temp)))
             }
             // Only `!` is supported (checked inside `lower_rvalue`, which this
@@ -60,8 +59,7 @@ impl<'a> FunctionLowerer<'a> {
                     TypeModifier::Immut,
                     span,
                 );
-                self.statements
-                    .push(mir::Statement::Assign(mir::Place::local(temp), rvalue));
+                self.push_assign(mir::Place::local(temp), rvalue);
                 Ok(mir::Operand::Copy(mir::Place::local(temp)))
             }
             ast::ExpressionKind::FunctionCall(call) => {

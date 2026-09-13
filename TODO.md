@@ -516,14 +516,51 @@ that landing first, in order.
     `const_this_receiver_is_passed_as_an_immutable_reference`,
     `mut_this_body_accesses_fields_through_a_deref_projection`,
     `consuming_this_receiver_is_still_passed_by_value`).
-- [ ] Straight-line-only `Drop`/`SetDropFlag` lowering: every local gets an unconditional `Drop`
-      at function-end, `SetDropFlag(true)` after every `Assign` — no `if`/`for`/early-exit
-      handling yet (needs a real scope stack in `FunctionLowerer` first, tracked as its own
-      follow-up below), no `Move`/`MarkMoved` yet either (a second straight-line-only slice after
-      this one proves the drop-flag/scope-exit mechanics work). Verify via `mir_parser` unit tests
-      asserting the exact MIR shape (mirrors mir-design.md's own worked example) — codegen still
-      no-ops these statements and there's no checker yet, so nothing else would catch a wrong
-      emission.
+- [x] Straight-line-only `Drop`/`SetDropFlag` lowering. Scope narrowed from the original bullet
+      once the doc's own `add(a, b)` worked example was checked against literally: it drops only
+      the body-declared `c`, never the parameters `a`/`b` — so "every local" turned out to mean
+      "every `body_locals` entry" (locals bound to an explicit `x := ..`/`x: T = ..` declaration
+      inside the function via `lower_variable`), not literally every entry in the flat `locals`
+      map. Parameters, `this`, the return local, and every compiler-internal temp (checked-overflow
+      tuples, bounds-check bookkeeping, ref/deref temps, ...) are deliberately never tracked —
+      unconditional across those would have meant no shape at all (unlike the doc's own
+      pre-overflow-check-era sketch, this lowerer already builds several internal temps per
+      expression) instead of the intended minimal, provable slice.
+  - `FunctionLowerer` gained `body_locals: Vec<LocalId>` (declaration order) and `nesting_depth:
+    usize`. New `push_assign(place, rvalue)` replaces every raw `self.statements.push(Assign(..))`
+    call site and appends `SetDropFlag(place.local, true)` right after, but only when
+    `place.local` is a tracked `body_locals` entry (mirrors the doc's own rule, "every place
+    written via Assign", narrowed the same way as the Drop scope above — the doc's own example
+    shows no `SetDropFlag` for `c` either, since it's a plain primitive and no
+    `AutoCopy`/move-only classification exists yet; that's still the next TODO item below, and
+    this pass's own `SetDropFlag` emission stays unconditional per tracked local, not gated by
+    type, until that classification lands).
+  - New `seal_return()` replaces every `self.seal(Terminator::Return, None)` call site
+    (`function/mod.rs`'s implicit-fallthrough, and all four explicit-`return`/tail-return sites in
+    `control_flow.rs`). At `nesting_depth == 0` (the function's own top level — not nested inside
+    an `if`/`for`) it emits one `Drop` terminator per `body_locals` entry, in reverse declaration
+    order, chained through fresh blocks ahead of the final `Return`; at depth > 0 it's unchanged
+    from before this feature existed (a plain `Return`, no drops) — there's no scope stack yet to
+    know which locals actually belong to the branch being exited, so a `return` nested inside an
+    `if`/`for` is exactly the deferred "no if/for/early-exit handling yet" case. `nesting_depth` is
+    incremented/decremented around `lower_if`'s both branches and `lower_for`'s body.
+  - `mir_codegen`'s `Terminator::Drop` (previously `DropUnsupported` — an error, since nothing
+    constructed one before this) now just branches to its `target`, same as `Goto`: no destructor
+    exists anywhere in this compiler yet, so every `Drop` is a pure scope-exit marker with no
+    runtime effect until M2's checker (and, eventually, real struct/array drop glue) exist.
+  - This did ripple through several existing `mir_parser` unit tests that asserted exact
+    statement/block counts for a body-declared local's own function (`lowers_arithmetic_with_a_
+    variable_and_a_return`, `block_tail_expression_with_no_return_or_semicolon_is_an_implicit_
+    return`, `array_reference_lowers_to_a_ref_plus_fat_pointer_aggregate`, `none_returning_
+    function_can_fall_off_the_end`) — updated to assert the new, larger shape explicitly rather
+    than just bumping magic numbers.
+  - Proven via 7 new `mir_parser` unit tests: `multiple_body_locals_are_dropped_in_reverse_
+    declaration_order`, `reassigning_a_body_local_sets_its_drop_flag_again`, `reassigning_a_
+    parameter_gets_no_drop_flag_and_is_never_dropped`, `a_return_nested_inside_an_if_gets_no_drop_
+    chain_yet`, `a_struct_typed_body_local_is_dropped_the_same_as_a_primitive_one` (plus the 4
+    rewritten pre-existing tests above) — no new exe test needed since `Drop`/`SetDropFlag` have no
+    runtime effect yet; the full 30-test exe suite re-passing unchanged is what proves this feature
+    didn't silently break anything it now runs through on every single function.
 - [ ] `Move`/`MarkMoved` lowering for straight-line code (function-call arguments,
       struct-constructor fields, array-literal elements, plain reassignment) — needs an
       `is_auto_copy(SoulType)` classification that doesn't exist anywhere yet: primitives are

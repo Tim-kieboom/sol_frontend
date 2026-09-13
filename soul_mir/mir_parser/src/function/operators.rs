@@ -51,10 +51,10 @@ impl<'a> FunctionLowerer<'a> {
         ]));
         let tuple_local = self.alloc_local(tuple_ty, TypeModifier::Immut, span);
         let tuple_place = mir::Place::local(tuple_local);
-        self.statements.push(mir::Statement::Assign(
+        self.push_assign(
             tuple_place.clone(),
             mir::Rvalue::CheckedBinaryOp(op, left, right),
-        ));
+        );
 
         let mut overflowed_place = tuple_place.clone();
         overflowed_place.projection.push(mir::PlaceElem::Field(1));
@@ -173,8 +173,7 @@ impl<'a> FunctionLowerer<'a> {
             TypeModifier::Immut,
             span,
         );
-        self.statements
-            .push(mir::Statement::Assign(mir::Place::local(temp), rvalue));
+        self.push_assign(mir::Place::local(temp), rvalue);
         mir::Place::local(temp)
     }
 

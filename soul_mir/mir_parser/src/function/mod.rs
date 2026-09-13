@@ -40,6 +40,23 @@ pub struct FunctionLowerer<'a> {
     current: Option<mir::BlockId>,
     statements: Vec<mir::Statement>,
     loops: Vec<LoopTargets>,
+    /// Locals bound to an explicit, user-written `x := ..`/`x: T = ..`
+    /// declaration inside the function body (via `lower_variable`), in
+    /// declaration order. This — not the full flat `locals` map — is the
+    /// scope `seal_return`'s `Drop` chain walks: parameters, the receiver,
+    /// the return local, and every compiler-internal temp (checked-overflow
+    /// tuples, bounds-check bookkeeping, ref/deref temps, ...) are
+    /// deliberately excluded, mirroring `docs/mir-design.md`'s own worked
+    /// example (`add(a, b)`'s `Drop(_3)` covers only `c`, never `_0`/`_1`).
+    body_locals: Vec<mir::LocalId>,
+    /// How many `if`/`for` bodies deep the lowerer currently is. Straight-line
+    /// `Drop`/`SetDropFlag` scope-exit lowering (see `seal_return`) only ever
+    /// fires at depth 0 — inside a nested `if`/`for` there's no scope stack
+    /// yet to know which locals actually belong to which branch, so those
+    /// early-exit paths keep behaving exactly as before this feature existed
+    /// (see M2's TODO.md entry). Incremented/decremented around
+    /// `lower_if`/`lower_for`'s own body lowering.
+    nesting_depth: usize,
 
     options: &'a CompilerOptions,
 }
@@ -57,6 +74,8 @@ impl<'a> FunctionLowerer<'a> {
             current: None,
             loops: vec![],
             statements: vec![],
+            body_locals: vec![],
+            nesting_depth: 0,
             locals: VecMap::new(),
             blocks: VecMap::new(),
             node_to_local: VecMap::new(),
@@ -157,7 +176,7 @@ impl<'a> FunctionLowerer<'a> {
                 // Falling off the end of a `none`-returning function is valid
                 // (an implicit `return`) — unlike every other return type,
                 // where it's `MissingReturnStatement`.
-                self.seal(mir::Terminator::Return, None);
+                self.seal_return();
             } else {
                 return Err(Fault::error_with_kind(
                     MirErrorKind::MissingReturnStatement,
@@ -185,6 +204,59 @@ impl<'a> FunctionLowerer<'a> {
         self.node_to_local.clear();
         self.local_alloc = IdGenerator::new();
         self.block_alloc = IdGenerator::new();
+        self.body_locals.clear();
+        self.nesting_depth = 0;
+    }
+
+    /// Pushes an `Assign`, followed by `SetDropFlag(place.local, true)` when
+    /// `place.local` is a tracked `body_locals` entry — i.e. this write
+    /// (re)initializes a user-declared variable, per `docs/mir-design.md`'s
+    /// move/drop rules ("every place written via Assign emits
+    /// `SetDropFlag(place.local, true)`"). A write into anything else
+    /// (a parameter, `this`, the return local, or a compiler-internal temp —
+    /// none of which are ever added to `body_locals`) gets no drop-flag
+    /// bookkeeping, mirroring `docs/mir-design.md`'s own worked example
+    /// (`_2 = Use(Copy(_3))`'s write into the *return* local gets no
+    /// `SetDropFlag` either).
+    pub(super) fn push_assign(&mut self, place: mir::Place, rvalue: mir::Rvalue) {
+        let local = place.local;
+        self.statements.push(mir::Statement::Assign(place, rvalue));
+        if self.body_locals.contains(&local) {
+            self.statements
+                .push(mir::Statement::SetDropFlag(local, true));
+        }
+    }
+
+    /// Seals the current block on a `return` — either the true end of a
+    /// straight-line function, or an explicit `return` at the function's own
+    /// top level (not nested inside an `if`/`for`, tracked via
+    /// `nesting_depth`). At depth 0, this is a real scope exit: every
+    /// tracked `body_locals` entry gets a `Drop` terminator, in reverse
+    /// declaration order, chained through fresh blocks ahead of the final
+    /// `Return` — parameters/`this`/the return local/internal temps are
+    /// never in `body_locals`, so none of those get dropped (see
+    /// `body_locals`'s own docs). Inside a nested `if`/`for` (depth > 0)
+    /// this is unchanged from before this feature existed: a plain `Return`
+    /// with no drops — there's no scope stack yet to know which locals
+    /// actually belong to the branch being exited (see M2's TODO.md entry).
+    pub(super) fn seal_return(&mut self) {
+        if self.nesting_depth > 0 {
+            self.seal(mir::Terminator::Return, None);
+            return;
+        }
+
+        let locals_to_drop = self.body_locals.clone();
+        for local in locals_to_drop.into_iter().rev() {
+            let next = self.new_block();
+            self.seal(
+                mir::Terminator::Drop {
+                    place: mir::Place::local(local),
+                    target: next,
+                },
+                Some(next),
+            );
+        }
+        self.seal(mir::Terminator::Return, None);
     }
 
     fn alloc_local(&mut self, ty: mir::Type, mutability: TypeModifier, span: Span) -> mir::LocalId {

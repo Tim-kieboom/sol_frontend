@@ -108,10 +108,10 @@ impl<'a> FunctionLowerer<'a> {
             },
         });
         let ptr_temp = self.alloc_local(ptr_ty, TypeModifier::Immut, span);
-        self.statements.push(mir::Statement::Assign(
+        self.push_assign(
             mir::Place::local(ptr_temp),
             mir::Rvalue::Ref { mutable, place },
-        ));
+        );
 
         Ok(mir::Rvalue::Aggregate(
             mir::AggregateKind::Array,
@@ -143,10 +143,10 @@ impl<'a> FunctionLowerer<'a> {
             },
         });
         let ref_temp = self.alloc_local(ref_ty, TypeModifier::Immut, span);
-        self.statements.push(mir::Statement::Assign(
+        self.push_assign(
             mir::Place::local(ref_temp),
             mir::Rvalue::Ref { mutable, place },
-        ));
+        );
         Ok(mir::Operand::Copy(mir::Place::local(ref_temp)))
     }
 
@@ -301,10 +301,10 @@ impl<'a> FunctionLowerer<'a> {
         const UINT: SoulType = SoulType::Primitive(PrimitiveTypes::Uint);
 
         let len_local = self.alloc_local(UINT, TypeModifier::Immut, span);
-        self.statements.push(mir::Statement::Assign(
+        self.push_assign(
             mir::Place::local(len_local),
             mir::Rvalue::Len(collection.clone()),
-        ));
+        );
 
         let index_local = if self.locals[index_local]
             .ty
@@ -313,10 +313,10 @@ impl<'a> FunctionLowerer<'a> {
             index_local
         } else {
             let cast = self.alloc_local(UINT, TypeModifier::Immut, span);
-            self.statements.push(mir::Statement::Assign(
+            self.push_assign(
                 mir::Place::local(cast),
                 mir::Rvalue::Cast(mir::Operand::Copy(mir::Place::local(index_local)), UINT),
-            ));
+            );
             cast
         };
 
@@ -325,14 +325,14 @@ impl<'a> FunctionLowerer<'a> {
             TypeModifier::Immut,
             span,
         );
-        self.statements.push(mir::Statement::Assign(
+        self.push_assign(
             mir::Place::local(cond_local),
             mir::Rvalue::BinaryOp(
                 BinaryOperatorKind::Lt,
                 mir::Operand::Copy(mir::Place::local(index_local)),
                 mir::Operand::Copy(mir::Place::local(len_local)),
             ),
-        ));
+        );
 
         let msg = mir::Operand::Constant(mir::ConstValue::Str("index out of bounds".to_string()));
         let next = self.new_block();
@@ -367,8 +367,7 @@ impl<'a> FunctionLowerer<'a> {
 
         let rvalue = self.lower_rvalue(expr_id)?;
         let temp = self.alloc_local(ty, TypeModifier::Immut, span);
-        self.statements
-            .push(mir::Statement::Assign(mir::Place::local(temp), rvalue));
+        self.push_assign(mir::Place::local(temp), rvalue);
         Ok(temp)
     }
 }

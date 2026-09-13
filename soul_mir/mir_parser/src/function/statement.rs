@@ -72,8 +72,16 @@ impl<'a> FunctionLowerer<'a> {
         let rvalue = self.lower_rvalue(init)?;
         let local = self.alloc_local(ty, *modifier, binding.ident.span());
         self.node_to_local.insert(binding.id, local);
-        self.statements
-            .push(mir::Statement::Assign(mir::Place::local(local), rvalue));
+        // Tracked as a `body_locals` entry *before* `push_assign` so this
+        // very declaration's own initializing write already gets its
+        // `SetDropFlag(local, true)` — matching `docs/mir-design.md`'s "every
+        // place written via Assign" rule, and making the local eligible for
+        // `seal_return`'s scope-exit `Drop` chain (parameters/`this`/the
+        // return local, and every compiler-internal temp elsewhere in this
+        // lowerer, are deliberately never added here — see `body_locals`'s
+        // own docs).
+        self.body_locals.push(local);
+        self.push_assign(mir::Place::local(local), rvalue);
         Ok(())
     }
 
@@ -130,7 +138,7 @@ impl<'a> FunctionLowerer<'a> {
         };
 
         let rvalue = self.lower_rvalue(assignment.right)?;
-        self.statements.push(mir::Statement::Assign(place, rvalue));
+        self.push_assign(place, rvalue);
         Ok(())
     }
 

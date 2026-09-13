@@ -120,8 +120,12 @@ fn lowers_arithmetic_with_a_variable_and_a_return() {
 
     assert_eq!(mir.arg_count, 2);
     // `a + b` now traps on overflow (see `lower_checked_binary_op`), which
-    // splits the function into an arithmetic block and a continuation.
-    assert_eq!(mir.blocks.entries().count(), 2, "{:#?}", mir.blocks);
+    // splits the function into an arithmetic block and a continuation; `c`
+    // is a body-declared local, so falling off the end of the continuation
+    // now also goes through `seal_return`'s scope-exit `Drop(c)` chain
+    // (mirrors `docs/mir-design.md`'s own `add(a, b)` worked example) —
+    // three blocks total, not two.
+    assert_eq!(mir.blocks.entries().count(), 3, "{:#?}", mir.blocks);
 
     let mut blocks = mir.blocks.entries();
     let (_, entry) = blocks.next().expect("expected an entry block");
@@ -153,7 +157,47 @@ fn lowers_arithmetic_with_a_variable_and_a_return() {
 
     let (ok_id, ok_block) = blocks.next().expect("expected a continuation block");
     assert_eq!(*target, ok_id);
-    assert!(matches!(ok_block.terminator, mir_model::Terminator::Return));
+    // `c`'s own declaration (`Assign` + `SetDropFlag`, since `c` is tracked),
+    // then `return c`'s copy into the return local (no `SetDropFlag`: the
+    // return local is never tracked — see `push_assign`'s docs).
+    assert_eq!(ok_block.statements.len(), 3, "{:#?}", ok_block.statements);
+    let mir_model::Statement::Assign(c_place, Rvalue::Use(Operand::Copy(_))) =
+        &ok_block.statements[0]
+    else {
+        panic!(
+            "expected c's own declaration assign, got {:#?}",
+            ok_block.statements[0]
+        );
+    };
+    assert!(matches!(
+        &ok_block.statements[1],
+        mir_model::Statement::SetDropFlag(local, true) if *local == c_place.local
+    ));
+    assert!(matches!(
+        &ok_block.statements[2],
+        mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_)))
+        if Some(place.local) == mir.return_local
+    ));
+
+    let mir_model::Terminator::Drop {
+        place: dropped,
+        target: drop_target,
+    } = &ok_block.terminator
+    else {
+        panic!(
+            "expected the continuation to end in Drop(c), got {:#?}",
+            ok_block.terminator
+        );
+    };
+    assert_eq!(dropped.local, c_place.local);
+
+    let (final_id, final_block) = blocks.next().expect("expected a final block");
+    assert_eq!(*drop_target, final_id);
+    assert!(final_block.statements.is_empty());
+    assert!(matches!(
+        final_block.terminator,
+        mir_model::Terminator::Return
+    ));
 }
 
 #[test]
@@ -389,12 +433,14 @@ fn array_reference_lowers_to_a_ref_plus_fat_pointer_aggregate() {
     .expect("expected successful lowering");
 
     let (_, block) = mir.blocks.entries().next().expect("expected one block");
-    // statements[0]: `a`'s Aggregate construction (checked above); [1]: the
-    // Ref-producing temp `&a` builds; [2]: the `{ptr, len}` Aggregate for `s`.
-    let mir_model::Statement::Assign(_, Rvalue::Ref { place, .. }) = &block.statements[1] else {
+    // statements[0]: `a`'s Aggregate construction (checked above); [1]: its
+    // `SetDropFlag` (`a` is a body-declared local); [2]: the Ref-producing
+    // temp `&a` builds (a compiler-internal temp, never tracked, so no
+    // `SetDropFlag` of its own); [3]: the `{ptr, len}` Aggregate for `s`.
+    let mir_model::Statement::Assign(_, Rvalue::Ref { place, .. }) = &block.statements[2] else {
         panic!(
-            "expected the second statement to build a bare Ref, got {:#?}",
-            block.statements[1]
+            "expected the third statement to build a bare Ref, got {:#?}",
+            block.statements[2]
         );
     };
     assert!(
@@ -403,11 +449,11 @@ fn array_reference_lowers_to_a_ref_plus_fat_pointer_aggregate() {
         place.projection
     );
 
-    let mir_model::Statement::Assign(_, Rvalue::Aggregate(kind, operands)) = &block.statements[2]
+    let mir_model::Statement::Assign(_, Rvalue::Aggregate(kind, operands)) = &block.statements[3]
     else {
         panic!(
-            "expected the third statement to construct the slice Aggregate, got {:#?}",
-            block.statements[2]
+            "expected the fourth statement to construct the slice Aggregate, got {:#?}",
+            block.statements[3]
         );
     };
     assert!(matches!(kind, mir_model::AggregateKind::Array));
@@ -949,8 +995,19 @@ fn none_returning_function_can_fall_off_the_end() {
         lower_source("f(): none {\n    x := 1\n}\n", "f").expect("expected successful lowering");
 
     assert_eq!(mir.return_local, None);
-    let (_, block) = mir.blocks.entries().next().unwrap();
-    assert!(matches!(block.terminator, mir_model::Terminator::Return));
+    // `x` is a body-declared local, so falling off the end now goes through
+    // `seal_return`'s scope-exit `Drop(x)` chain before the final `Return`
+    // (see `lowers_arithmetic_with_a_variable_and_a_return` for the fully
+    // worked-out shape) — the entry block ends in that `Drop`, not `Return`
+    // directly anymore.
+    let (_, entry) = mir.blocks.entries().next().unwrap();
+    assert!(
+        matches!(entry.terminator, mir_model::Terminator::Drop { .. }),
+        "expected the entry block to end in a Drop(x) scope-exit, got {:#?}",
+        entry.terminator
+    );
+    let (_, last) = mir.blocks.entries().last().unwrap();
+    assert!(matches!(last.terminator, mir_model::Terminator::Return));
 }
 
 #[test]
@@ -1594,20 +1651,53 @@ fn block_tail_expression_with_no_return_or_semicolon_is_an_implicit_return() {
     let mir = lower_source("f(): int {\n    x := 42\n    x\n}\n", "f")
         .expect("expected successful lowering");
 
-    assert_eq!(mir.blocks.entries().count(), 1);
+    // `x` is a body-declared local, so falling off the end now goes through
+    // `seal_return`'s scope-exit `Drop(x)` chain before the final `Return` —
+    // two blocks, not one (see `lowers_arithmetic_with_a_variable_and_a_return`
+    // for the fully worked-out shape).
+    assert_eq!(mir.blocks.entries().count(), 2, "{:#?}", mir.blocks);
     let (_, block) = mir.blocks.entries().next().unwrap();
-    // statements[0] is `x := 42`'s own assignment; the tail `x` becomes the
-    // second statement, assigning into the return local.
-    assert_eq!(block.statements.len(), 2, "{:#?}", block.statements);
-    let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_))) = &block.statements[1]
+    // statements[0] is `x := 42`'s own assignment; [1] its `SetDropFlag`
+    // (`x` is tracked); the tail `x` becomes the third statement, assigning
+    // into the return local (no `SetDropFlag` — the return local is never
+    // tracked).
+    assert_eq!(block.statements.len(), 3, "{:#?}", block.statements);
+    let mir_model::Statement::Assign(x_place, Rvalue::Use(Operand::Constant(_))) =
+        &block.statements[0]
+    else {
+        panic!(
+            "expected x's own declaration assign, got {:#?}",
+            block.statements[0]
+        );
+    };
+    assert!(matches!(
+        &block.statements[1],
+        mir_model::Statement::SetDropFlag(local, true) if *local == x_place.local
+    ));
+    let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(_))) = &block.statements[2]
     else {
         panic!(
             "expected the tail `x` to be assigned into the return local, got {:#?}",
-            block.statements[1]
+            block.statements[2]
         );
     };
     assert_eq!(Some(place.local), mir.return_local);
-    assert!(matches!(block.terminator, mir_model::Terminator::Return));
+
+    let mir_model::Terminator::Drop {
+        place: dropped,
+        target,
+    } = &block.terminator
+    else {
+        panic!("expected Drop(x), got {:#?}", block.terminator);
+    };
+    assert_eq!(dropped.local, x_place.local);
+
+    let (final_id, final_block) = mir.blocks.entries().nth(1).unwrap();
+    assert_eq!(*target, final_id);
+    assert!(matches!(
+        final_block.terminator,
+        mir_model::Terminator::Return
+    ));
 }
 
 #[test]
@@ -1676,4 +1766,158 @@ fn for_loop_tail_is_not_an_implicit_return() {
     // there is rejected exactly as it was before this feature existed.
     let result = lower_source("f(): int {\n    for true {\n        1\n    }\n}\n", "f");
     assert_rejected_with(&result, MirErrorKind::NonReturnTerminalStatementUnsupported);
+}
+
+#[test]
+fn multiple_body_locals_are_dropped_in_reverse_declaration_order() {
+    let mir = lower_source(
+        "f(): int {\n    x := 1\n    y := 2\n    return x + y\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    // Walk the Drop chain in execution order (each Drop's target is the next
+    // block) rather than trusting `VecMap`'s own (allocation-order) entries
+    // iteration, which isn't necessarily chain order.
+    let mut drops = Vec::new();
+    let mut current = mir.blocks.entries().find_map(|(id, block)| {
+        matches!(block.terminator, mir_model::Terminator::Drop { .. }).then_some(id)
+    });
+    while let Some(id) = current {
+        let block = &mir.blocks[id];
+        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+            break;
+        };
+        drops.push(place.local);
+        current = mir
+            .blocks
+            .get(*target)
+            .is_some_and(|b| matches!(b.terminator, mir_model::Terminator::Drop { .. }))
+            .then_some(*target);
+    }
+
+    assert_eq!(
+        drops.len(),
+        2,
+        "expected exactly 2 Drops (x and y), got {:#?}",
+        mir.blocks
+    );
+    assert_ne!(
+        drops[0], drops[1],
+        "expected two distinct locals to be dropped"
+    );
+    // `y` was declared after `x` (higher LocalId, since allocation is
+    // strictly increasing) and must be dropped first.
+    assert!(
+        drops[0] > drops[1],
+        "expected the later-declared local (y) to be dropped first, got order {:#?}",
+        drops
+    );
+}
+
+#[test]
+fn reassigning_a_body_local_sets_its_drop_flag_again() {
+    let mir = lower_source(
+        "f(): int {\n    mut x := 1\n    x = 2\n    return x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let set_true_count = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .filter(|statement| matches!(statement, mir_model::Statement::SetDropFlag(_, true)))
+        .count();
+    // Once for `x`'s own declaration, once more for `x = 2`'s reassignment.
+    assert_eq!(
+        set_true_count, 2,
+        "expected a SetDropFlag(true) after both x's declaration and its reassignment, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn reassigning_a_parameter_gets_no_drop_flag_and_is_never_dropped() {
+    // Parameters are never tracked in `body_locals` (mirrors
+    // `docs/mir-design.md`'s own `add(a, b)` example, which drops only its
+    // body-declared `c`, never `a`/`b`) — a parameter reassignment gets no
+    // `SetDropFlag`, and no `Drop` terminator is emitted for it at all.
+    let mir = lower_source("f(mut a: int): int {\n    a = 2\n    return a\n}\n", "f")
+        .expect("expected successful lowering");
+
+    let has_set_drop_flag = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|statement| matches!(statement, mir_model::Statement::SetDropFlag(..)));
+    assert!(
+        !has_set_drop_flag,
+        "expected no SetDropFlag at all, got {:#?}",
+        mir.blocks
+    );
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(
+        !has_drop,
+        "expected no Drop terminator, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn a_return_nested_inside_an_if_gets_no_drop_chain_yet() {
+    // `nesting_depth > 0` inside an `if`/`for` branch: `seal_return` still
+    // behaves exactly as before this feature existed (a plain `Return`, no
+    // `Drop`s) — there's no scope stack yet to know which locals actually
+    // belong to the branch being exited (see M2's TODO.md entry: this is
+    // explicitly deferred, not a bug).
+    let mir = lower_source(
+        "f(cond: bool): int {\n    x := 1\n    if cond {\n        return x\n    }\n    return x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let drop_count = mir
+        .blocks
+        .entries()
+        .filter(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }))
+        .count();
+    // Only the function's own top-level (depth-0) final `return x` gets a
+    // Drop(x) chain; the one nested inside the `if` does not.
+    assert_eq!(
+        drop_count, 1,
+        "expected exactly one Drop chain (the top-level return), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn a_struct_typed_body_local_is_dropped_the_same_as_a_primitive_one() {
+    // No `AutoCopy`/move-only classification exists yet (that's the next M2
+    // slice) — `Drop`/`SetDropFlag` emission for a body local doesn't
+    // distinguish struct types from primitives at all right now.
+    let mir = lower_source(
+        "struct Point { x: int }\nf(): int {\n    p := Point{x: 5}\n    return p.x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(has_drop, "expected p to be dropped, got {:#?}", mir.blocks);
+    let has_set_drop_flag = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|statement| matches!(statement, mir_model::Statement::SetDropFlag(_, true)));
+    assert!(
+        has_set_drop_flag,
+        "expected p's declaration to set its drop flag, got {:#?}",
+        mir.blocks
+    );
 }

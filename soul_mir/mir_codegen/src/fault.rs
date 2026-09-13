@@ -75,9 +75,6 @@ pub enum CodegenErrorKind {
     #[error("constant `{value}` isn't supported in this codegen slice")]
     UnsupportedConstant { value: Box<str> },
 
-    #[error("`Drop` isn't constructed by lowering yet and isn't supported in codegen either")]
-    DropUnsupported,
-
     #[error("LLVM intrinsic `{name}` isn't available in this build of LLVM")]
     OverflowIntrinsicUnavailable { name: Box<str> },
 

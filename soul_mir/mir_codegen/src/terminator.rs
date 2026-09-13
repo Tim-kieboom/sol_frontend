@@ -55,8 +55,15 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             Terminator::Unreachable => {
                 self.builder.build_unreachable().map_err(llvm_err)?;
             }
-            Terminator::Drop { .. } => {
-                return Err(err(CodegenErrorKind::DropUnsupported));
+            // No destructor exists anywhere in this compiler yet (M2's
+            // borrow checker is what will eventually give a struct/array
+            // type real drop glue) — until then every `Drop` is a pure
+            // scope-exit marker with no runtime effect, so codegen just
+            // falls through to its target like a `Goto`.
+            Terminator::Drop { target, .. } => {
+                self.builder
+                    .build_unconditional_branch(self.blocks[*target])
+                    .map_err(llvm_err)?;
             }
         }
         Ok(())

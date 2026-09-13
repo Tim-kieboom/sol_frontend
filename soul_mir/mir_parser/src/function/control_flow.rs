@@ -39,15 +39,12 @@ impl<'a> FunctionLowerer<'a> {
                     ));
                 };
                 let rvalue = self.lower_rvalue(*value_id)?;
-                self.statements.push(mir::Statement::Assign(
-                    mir::Place::local(return_local),
-                    rvalue,
-                ));
-                self.seal(mir::Terminator::Return, None);
+                self.push_assign(mir::Place::local(return_local), rvalue);
+                self.seal_return();
                 Ok(())
             }
             ast::ExpressionKind::Return(None) => {
-                self.seal(mir::Terminator::Return, None);
+                self.seal_return();
                 Ok(())
             }
             ast::ExpressionKind::If(if_expr) => {
@@ -75,11 +72,8 @@ impl<'a> FunctionLowerer<'a> {
                         let message = "should be unreachable resolver-verified tail call against a non-none return type always produces a result";
                         return Err(soul_error_internal!(message, Some(stmt.span)).into_kind());
                     };
-                    self.statements.push(mir::Statement::Assign(
-                        mir::Place::local(return_local),
-                        mir::Rvalue::Use(operand),
-                    ));
-                    self.seal(mir::Terminator::Return, None);
+                    self.push_assign(mir::Place::local(return_local), mir::Rvalue::Use(operand));
+                    self.seal_return();
                     return Ok(());
                 }
                 const WANTS_NO_RESULT: bool = false;
@@ -89,11 +83,8 @@ impl<'a> FunctionLowerer<'a> {
             _ if is_tail && return_local.is_some() => {
                 let return_local = return_local.expect("checked by this arm's own guard");
                 let rvalue = self.lower_rvalue(expression)?;
-                self.statements.push(mir::Statement::Assign(
-                    mir::Place::local(return_local),
-                    rvalue,
-                ));
-                self.seal(mir::Terminator::Return, None);
+                self.push_assign(mir::Place::local(return_local), rvalue);
+                self.seal_return();
                 Ok(())
             }
             _ => Err(Fault::error_with_kind(
@@ -168,8 +159,17 @@ impl<'a> FunctionLowerer<'a> {
         // `FunctionLowerer::lower` exactly as before this feature existed.
         let branch_is_tail = is_tail && if_expr.branch.is_some();
 
+        // `nesting_depth` brackets both branches: `seal_return` (hit by any
+        // `return` inside either one) only emits a `Drop` scope-exit chain
+        // at depth 0 — there's no scope stack yet to know which locals
+        // actually belong to an `if`/`for` branch (see `seal_return`'s docs
+        // and M2's TODO.md entry), so a `return` inside either branch below
+        // keeps behaving exactly as before this feature existed.
         let then_statements = self.store.blocks[if_expr.block].statements.clone();
-        self.lower_body(return_local, &then_statements, branch_is_tail)?;
+        self.nesting_depth += 1;
+        let then_result = self.lower_body(return_local, &then_statements, branch_is_tail);
+        self.nesting_depth -= 1;
+        then_result?;
         let then_reaches_join = !self.is_terminated();
         if then_reaches_join {
             self.seal(mir::Terminator::Goto(join_id), None);
@@ -179,15 +179,18 @@ impl<'a> FunctionLowerer<'a> {
             None => true,
             Some(branch) => {
                 self.current = else_id;
-                match branch {
+                self.nesting_depth += 1;
+                let branch_result = match branch {
                     ast::IfBranch::Else(block_id) => {
                         let else_statements = self.store.blocks[*block_id].statements.clone();
-                        self.lower_body(return_local, &else_statements, branch_is_tail)?;
+                        self.lower_body(return_local, &else_statements, branch_is_tail)
                     }
                     ast::IfBranch::If(nested_if) => {
-                        self.lower_if(return_local, nested_if, span, branch_is_tail)?;
+                        self.lower_if(return_local, nested_if, span, branch_is_tail)
                     }
-                }
+                };
+                self.nesting_depth -= 1;
+                branch_result?;
 
                 let reaches = !self.is_terminated();
                 if reaches {
@@ -240,7 +243,9 @@ impl<'a> FunctionLowerer<'a> {
         // (`check_tail_if`) never recurses into `For` either, since a loop
         // has no well-defined "trailing value" (it may run zero times).
         const IN_TAIL_POSITION: bool = false;
+        self.nesting_depth += 1;
         let body_result = self.lower_body(return_local, &body_statements, IN_TAIL_POSITION);
+        self.nesting_depth -= 1;
         self.loops.pop();
         body_result?;
 
