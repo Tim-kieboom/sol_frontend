@@ -416,6 +416,34 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
     Not done here (deliberately deferred) — `parse_typeof_operator`
     (`ast_parser/src/parse/expression/mod.rs`) still parses the old syntax today, so the
     `expression_type` fix above targets the AST as it currently stands, not the future one.
+- [x] Fixed a real gap: `value: bool = 1` (an explicit `x: T = value` annotation) silently
+      compiled with no type-mismatch check at all — unlike the no-annotation case (`x := value`,
+      see the entry above), which infers via `expression_type`, an explicit annotation is never
+      inferred, so nothing ever compared it against the initializer. New
+      `check_variable_declaration` (`resolve/typecheck/statement.rs`, mirrors `check_assignment`'s
+      own lvalue-vs-rvalue check almost exactly) runs whenever `resolve_variable` sees an explicit
+      `variable.ty`, instead of falling through to `backfill_variable_type`.
+  - Surfaced two latent bugs in `combine_resolved_operand_types` once real programs started
+    exercising it here (both previously unreachable, since no declaration check ever ran):
+    1. Two `SoulType::Array`s only combined via strict structural equality, so `[&mut]T`/`[&]T`
+       (which differ only in `ArrayKind::MutSlice` vs `ConstSlice`) never matched each other — but
+       slice mutability isn't checked anywhere else in this compiler yet either (M2 borrow
+       checker's job), so `s: [&mut]i32 = &a` (a plain, non-`mut` `&`, which already codegens
+       fine) was wrongly rejected. Fixed: `combine_array_types` treats any `MutSlice`/`ConstSlice`
+       pairing as compatible.
+    2. An array literal's inferred element type (`expression_type`'s `Array` arm) went through
+       `array_literal_element_type`, which *defaults* an untyped element (`[1, 2]`'s `UntypedInt`)
+       to a concrete type (`Int`) before the declaration check ever saw it — so `a: [2]i32 = [1,
+       2]` failed as `[2]i32` vs `[2]int`, the same class of bug `x: i32 = 1` already coerces
+       around for a bare scalar. Fixed: the `Array` arm now reads the raw (still-untyped) element
+       type directly instead of the defaulting helper, and `combine_array_types` recurses through
+       `combine_resolved_operand_types` for the element type too, so the existing
+       untyped-literal-coercion rule now also applies one level down, inside an array.
+  - Proven via 4 new `assignment_tests.rs` cases (matching/mismatched explicit declarations, a
+    generic-parameter skip, the untyped-array-literal coercion, and the slice-mutability case) —
+    the latter two were only caught by re-running the full exe suite (`12_slice_index.soul`/
+    `13_slice_bounds_check.soul` briefly regressed before the `combine_resolved_operand_types` fix
+    above), underscoring why that suite — not just resolver unit tests — is the real oracle here.
 - [ ] `PlatformInfo` (`soul_utils::compiler_options`) only has one constructor
       (`new_windows_x86_64`, 64-bit pointers / 32-bit C `int`) — no actual cross-platform selection
       logic exists yet, it's just a named default

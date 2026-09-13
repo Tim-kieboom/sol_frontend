@@ -1,4 +1,4 @@
-use ast_model::Assignment;
+use ast_model::{Assignment, ExpressionId, SoulType};
 use ast_parser::fault::AstErrorKind;
 use soul_utils::TypeModifier;
 
@@ -6,6 +6,46 @@ use super::function_call::is_generic_parameter;
 use crate::NameResolver;
 
 impl<'a> NameResolver<'a> {
+    /// Checks `x: T = value`'s explicit annotation `declared_ty` against
+    /// `value`'s own type — an explicit annotation is never inferred (see
+    /// `resolve_variable`), so unlike the no-annotation case, nothing else
+    /// ever validates it against the initializer.
+    pub(crate) fn check_variable_declaration(
+        &mut self,
+        declared_ty: &SoulType,
+        value: ExpressionId,
+    ) {
+        let empty = vec![];
+        let generics = match self.current.function {
+            Some(id) => self
+                .declares
+                .get_function(id)
+                .map(|(signature, _)| &signature.generics)
+                .unwrap_or(&empty),
+            None => &empty,
+        };
+
+        if is_generic_parameter(declared_ty, generics) {
+            return;
+        }
+
+        let Some(value_ty) = self.expression_type(value) else {
+            return;
+        };
+        if self.combine_operand_types(&value_ty, declared_ty).is_some() {
+            return;
+        }
+
+        let span = self.get_expression(value).map(|expr| expr.span);
+        self.log_error(
+            AstErrorKind::AssignmentTypeMismatch {
+                expected: format!("{declared_ty:?}").into(),
+                got: format!("{value_ty:?}").into(),
+            },
+            span,
+        );
+    }
+
     pub(crate) fn check_assignment(&mut self, assignment: &Assignment) {
         let Some((modifier, left_ty)) = self.variable_lvalue(assignment.left) else {
             return;

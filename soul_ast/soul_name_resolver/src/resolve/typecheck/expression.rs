@@ -223,18 +223,25 @@ impl<'a> NameResolver<'a> {
             }
             // `NewArray`/`ArrayFiller` are heap arrays — not lowered by
             // `mir_parser` yet, so left unhandled here too.
-            ExpressionKind::Array(any_array @ AnyArray::Array(array)) => {
-                match &array.collection_type {
-                    Some(ty) => Some(ty.clone()),
-                    None => {
-                        let of_type = self.array_literal_element_type(any_array)?;
-                        Some(SoulType::Array(ArrayType {
-                            of_type: Box::new(of_type),
-                            kind: ArrayKind::StackArray(array.values.len() as u64),
-                        }))
-                    }
+            ExpressionKind::Array(AnyArray::Array(array)) => match &array.collection_type {
+                Some(ty) => Some(ty.clone()),
+                None => {
+                    // Deliberately *not* `array_literal_element_type` (which
+                    // defaults an inferred element type, e.g. `UntypedInt` ->
+                    // `Int`, losing its untyped-ness) — `combine_array_types`
+                    // needs the raw, still-untyped element type to coerce
+                    // `[1, 2]` against a declared `[2]i32` the same way a bare
+                    // untyped literal already coerces against `i32`.
+                    let of_type = match &array.element_type {
+                        Some(ty) => ty.clone(),
+                        None => self.expression_type(*array.values.first()?)?,
+                    };
+                    Some(SoulType::Array(ArrayType {
+                        of_type: Box::new(of_type),
+                        kind: ArrayKind::StackArray(array.values.len() as u64),
+                    }))
                 }
-            }
+            },
 
             ExpressionKind::Unary(unary) => self.expression_type(unary.value),
 
@@ -471,6 +478,10 @@ pub(crate) fn default_concrete_type(ty: SoulType) -> SoulType {
 }
 
 fn combine_resolved_operand_types(left: &SoulType, right: &SoulType) -> Option<SoulType> {
+    if let (SoulType::Array(left_array), SoulType::Array(right_array)) = (left, right) {
+        return combine_array_types(left_array, right_array);
+    }
+
     match (untyped_kind_of(left), untyped_kind_of(right)) {
         (None, None) if left == right => Some(left.clone()),
         (None, None) => None,
@@ -478,6 +489,37 @@ fn combine_resolved_operand_types(left: &SoulType, right: &SoulType) -> Option<S
         (None, Some(kind)) => coerce_untyped_to_concrete(kind, left),
         (Some(a), Some(b)) => Some(SoulType::Primitive(combine_untyped_kinds(a, b))),
     }
+}
+
+/// Element types combine the same way any other operand pair does — so an
+/// untyped array literal's element type (`[1, 2]`'s `UntypedInt`, see the
+/// `Array` arm of `expression_type`, which deliberately doesn't default it
+/// the way `array_literal_element_type` does) still coerces against a
+/// declared `[2]i32`, the same way a bare `1: i32` already does.
+///
+/// `[&]T`/`[&mut]T` combine freely with each other regardless of kind —
+/// slice mutability isn't checked anywhere else in this compiler yet either
+/// (M2 borrow checker's job, same as struct field/method-receiver
+/// mutability), so `s: [&mut]T = &value` (a plain, non-`mut` `&`) has to
+/// type-check the same way it already codegens. Any other `ArrayKind`
+/// pairing (`[N]T` vs `[&]T`, mismatched fixed sizes, ...) still needs exact
+/// equality.
+fn combine_array_types(left: &ArrayType, right: &ArrayType) -> Option<SoulType> {
+    let of_type = combine_resolved_operand_types(&left.of_type, &right.of_type)?;
+
+    let is_slice = |kind: &ArrayKind| matches!(kind, ArrayKind::MutSlice | ArrayKind::ConstSlice);
+    let kind = if is_slice(&left.kind) && is_slice(&right.kind) {
+        left.kind
+    } else if left.kind == right.kind {
+        left.kind
+    } else {
+        return None;
+    };
+
+    Some(SoulType::Array(ArrayType {
+        of_type: Box::new(of_type),
+        kind,
+    }))
 }
 
 fn coerce_untyped_to_concrete(kind: PrimitiveTypes, concrete: &SoulType) -> Option<SoulType> {
