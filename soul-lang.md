@@ -636,6 +636,31 @@ task {
   by reference across multiple `spawn`s needs `Sync`. Both auto-derived-when-possible, following
   the same `#[!Trait]`/`use ... impl Trait {}` pattern as `Copy`/`AutoCopy`.
 
+**`task.block { }` is the sync-side counterpart of `task { }`** — the one sanctioned way to cross
+from sync into async code (besides `async main()` itself, which the runtime drives for you). It
+opens the same kind of structured scope and drives any `spawn`s inside to completion, but unlike
+`task { }` it's callable from ordinary sync functions, blocking the calling thread until
+everything inside resolves and yielding the block's final expression:
+
+```soul
+main() {
+    greeting := task.block { fetchGreeting().await }
+    println(greeting)
+}
+
+async fetchGreeting(): str { ... }
+```
+
+Curly braces can be dropped when the block is a single statement:
+```soul
+task.block serve().await
+task fn().await
+```
+
+- **`task.block` inside an already-async context is a compile error** — nesting a blocking wait
+  inside code the async runtime is already driving is the classic deadlock footgun (Tokio panics
+  on the equivalent). `task.block` is only valid at genuinely sync call sites.
+
 **Open:** detached/fire-and-forget tasks (spawn that outlives its scope), cancellation, channels
 and a `select`-equivalent, and whether an `actor`-style construct exists (it would collide with
 the coloring decision — would calling an actor method need `.await`?).

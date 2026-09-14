@@ -587,7 +587,9 @@ that landing first, in order.
 
 ### M4 — everything else (not sequenced)
 
-- [ ] `async`/`await` + structured concurrency runtime
+- [ ] `async`/`await` + structured concurrency runtime — spec (§15) now also covers `task.block { }`,
+      the sync-side blocking counterpart to `task { }` (plus brace-optional single-statement form
+      for both), and disallows it from nested-async call sites; not implemented yet
 - [ ] Const generics (`Limit<T, RANGE>`)
 - [ ] Full reflection (`intrinsic.typeinfo`) — AST/compile-time design exists in
       [reflection-system.md](docs/reflection-system.md), backend (HIR/MIR/LLVM) not started
