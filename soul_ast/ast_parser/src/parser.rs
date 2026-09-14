@@ -70,7 +70,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             this.debug.current_index = this.tokens.index();
         }
 
-        let statements = this.parse_global_statements();
+        let statements = this.parse_global_statements().into();
         let global = this.forest.store.insert_block(Block {
             statements,
             is_const: false,

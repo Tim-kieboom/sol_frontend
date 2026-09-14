@@ -98,7 +98,7 @@ fn lower_extern_signature(
     let is_none_return = matches!(return_type, ast::SoulType::None);
     mir::ExternFunction {
         id: signature.id,
-        params: signature
+        parameters: signature
             .parameters
             .iter()
             .map(|p| {

@@ -233,8 +233,7 @@ fn enum_named_union_variant_single_field() {
 
 #[test]
 fn enum_with_underlying_type() {
-    let (module, store, context, declares) =
-        parse_with_declares("enum Foo: int { A = 1, B = 2 }");
+    let (module, store, context, declares) = parse_with_declares("enum Foo: int { A = 1, B = 2 }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,

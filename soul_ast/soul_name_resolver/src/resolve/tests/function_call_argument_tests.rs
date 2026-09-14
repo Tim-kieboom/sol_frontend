@@ -2,8 +2,6 @@ use ast_model::fault::AstErrorKind;
 
 use crate::resolve::tests::{fault_count_matching, resolve_source};
 
-
-
 fn is_undefined_variable(kind: &AstErrorKind) -> bool {
     matches!(kind, AstErrorKind::UndefinedVariable { .. })
 }

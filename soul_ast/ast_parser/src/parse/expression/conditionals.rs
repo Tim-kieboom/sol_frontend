@@ -100,7 +100,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let scrutinee = self.parse_expression_id(&[CURLY_OPEN])?;
 
-        let arms = self.parse_match_arms()?;
+        let arms = self.parse_match_arms()?.into();
 
         Ok(Expression::new(
             ExpressionKind::Match(Match { arms, scrutinee }),
@@ -139,7 +139,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ));
             let block = self.forest.store.insert_block(Block {
                 is_const: false,
-                statements: vec![statement],
+                statements: vec![statement].into(),
                 span: self.span_combine(start_span),
             });
             return Ok((Some(Binding::new(self.alloc_node(), ident)), block));
@@ -202,7 +202,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 self.forest.store.insert_block(Block {
                     span,
                     is_const: false,
-                    statements: vec![statement],
+                    statements: vec![statement].into(),
                 })
             };
             arms.push(MatchArm { pattern, body });
@@ -290,7 +290,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
                     self.bump();
                 }
-                MatchPattern::Fallthrough(chain)
+                MatchPattern::Fallthrough(chain.into())
             }
             IF => {
                 self.bump();
@@ -333,7 +333,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
                 elements.push(self.parse_match_pattern()?);
             }
-            return Ok(MatchPattern::Array(elements));
+            return Ok(MatchPattern::Array(elements.into()));
         }
 
         if self.current_is(&ROUND_OPEN) {
@@ -519,7 +519,10 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&ROUND_CLOSE)?;
-        Ok(MatchPattern::Tuple(TupleMatchPattern { elements, rest }))
+        Ok(MatchPattern::Tuple(TupleMatchPattern {
+            elements: elements.into(),
+            rest,
+        }))
     }
 
     fn parse_match_named_tuple_pattern(&mut self) -> Result<MatchPattern, crate::fault::AstFault> {
@@ -569,7 +572,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         self.expect(&CURLY_CLOSE)?;
         Ok(MatchPattern::NamedTuple(NamedTupleMatchPattern {
-            fields,
+            fields: fields.into(),
             rest,
         }))
     }
@@ -625,7 +628,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&CURLY_CLOSE)?;
         Ok(MatchPattern::ConstructorStruct(ConstructorStructPattern {
             type_name,
-            fields,
+            fields: fields.into(),
             rest,
         }))
     }

@@ -6,8 +6,11 @@ use ast_model::{
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord, types::Types};
 use soul_utils::{
     Ident, Mutable,
-    collections::try_result::{
-        ResultTryErr, ResultTryNotValue, ToResult, TryErr, TryError, TryNotValue, TryOk,
+    collections::{
+        array::Arr,
+        try_result::{
+            ResultTryErr, ResultTryNotValue, ToResult, TryErr, TryError, TryNotValue, TryOk,
+        },
     },
     fault::Fault,
     literal::{Number, TokenLiteral},
@@ -34,7 +37,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         result
     }
 
-    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: Vec<SoulType>) -> SoulType {
+    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: Arr<SoulType>) -> SoulType {
         if ident.as_str() == PrimitiveTypes::None.as_str() {
             self.bump();
             return SoulType::None;
@@ -247,7 +250,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         TryOk(SoulType::Stub(Stub {
             name: ident.into_shared_str(),
-            generics,
+            generics: generics.into(),
         }))
     }
 
@@ -338,7 +341,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     }
 
     fn parse_named_tuple(&mut self) -> AstResult<NamedTuple> {
-        let mut values = NamedTuple::new();
+        let mut values = vec![];
         loop {
             let ident = self.try_bump_consume_ident()?;
             self.expect(&COLON)?;
@@ -353,11 +356,11 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&ROUND_CLOSE)?;
-        Ok(values)
+        Ok(values.into())
     }
 
     fn parse_tuple(&mut self) -> AstResult<Tuple> {
-        let mut values = Tuple::new();
+        let mut values = vec![];
         loop {
             let ty = self.try_parse_type().merge_to_result()?;
             values.push(ty);
@@ -370,7 +373,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&ROUND_CLOSE)?;
-        Ok(values)
+        Ok(values.into())
     }
 }
 

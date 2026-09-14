@@ -8,7 +8,10 @@ use ast_model::{
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
-    collections::try_result::{ToResult, TryError},
+    collections::{
+        array::Arr,
+        try_result::{ToResult, TryError},
+    },
     fault::Fault,
     soul_names::Symbol,
     span::Span,
@@ -143,7 +146,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 };
 
                 let arguments = self.parse_arguments()?;
-                let ty = self.type_from_ident(name, generics);
+                let ty = self.type_from_ident(name, generics.into());
                 let ctor = Constructor {
                     id: self.alloc_node(),
                     ty,
@@ -175,7 +178,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ExpressionKind::Variable(variable) => variable.name,
                 _ => unreachable!(),
             };
-            let collection_type = self.type_from_ident(name, generics);
+            let collection_type = self.type_from_ident(name, generics.into());
             *left = Expression::from_any_array(self.parse_array(Some(collection_type))?);
             return Ok(());
         }
@@ -214,11 +217,11 @@ impl<'a, 'f> Parser<'a, 'f> {
                 }
             };
 
-            let ty = self.type_from_ident(name, generics);
+            let ty = self.type_from_ident(name, generics.into());
             let ctor = Constructor {
                 id: self.alloc_node(),
                 ty,
-                arguments: vec![],
+                arguments: Arr::new(),
             };
             *left = Expression::new(
                 ExpressionKind::Constructor(ctor),
@@ -240,9 +243,11 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let value = self.forest.store.insert_expression(value);
         if self.current_is(&CURLY_OPEN) {
-            *left = Expression::from_struct_contructor(
-                self.parse_struct_contructor(ident, generics, start_span)?,
-            );
+            *left = Expression::from_struct_contructor(self.parse_struct_contructor(
+                ident,
+                generics.into(),
+                start_span,
+            )?);
             return Ok(());
         }
 
@@ -254,7 +259,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         *left = match self.try_parse_function_call_generic(
             start_span,
             Some(callee),
-            generics,
+            generics.into(),
             &ident,
         ) {
             Ok(call) => Expression::from_function_call(call),

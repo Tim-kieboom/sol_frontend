@@ -120,7 +120,7 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
             let module = self.module_of(id);
 
             let param_types = extern_fn
-                .params
+                .parameters
                 .iter()
                 .map(|ty| self.ctx.llvm_type(module, ty, None))
                 .collect::<CodegenResult<Vec<_>>>()?;

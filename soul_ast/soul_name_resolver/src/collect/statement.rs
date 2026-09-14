@@ -260,7 +260,9 @@ impl<'a> NameResolver<'a> {
     fn collect_variable(&mut self, variable: &Variable) {
         self.collect_var_pattern(&variable.pattern);
 
-        let declared_ty = variable.ty.and_then(|id| self.declares.get_type(id).cloned());
+        let declared_ty = variable
+            .ty
+            .and_then(|id| self.declares.get_type(id).cloned());
         let ty = match declared_ty.clone() {
             Some(ty) => Some(ty),
             None => self.infer_literal_type(variable.initialize_value),

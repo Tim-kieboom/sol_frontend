@@ -10,6 +10,7 @@ use soul_tokenizer::to_token_stream;
 use soul_utils::{
     CrateContext, Mutable, SharedStr,
     collections::{
+        array::Arr,
         crate_store::{CrateEntry, CrateStore},
         module_store::ModuleStore,
     },
@@ -382,7 +383,7 @@ fn struct_constructor() {
                         *struct_type,
                         SoulType::Stub(Stub {
                             name: "Point".into(),
-                            generics: vec![]
+                            generics: Arr::new()
                         })
                     );
                     assert_eq!(values.len(), 2);
@@ -545,7 +546,7 @@ fn type_alias() {
                 declares.get_type(def.new_type),
                 Some(&SoulType::Stub(Stub {
                     name: "MyInt".into(),
-                    generics: vec![]
+                    generics: Arr::new()
                 }))
             );
             assert_eq!(
@@ -1091,7 +1092,7 @@ fn array_contructor_generic_literal() {
                     let int = SoulType::Primitive(PrimitiveTypes::Int);
                     let collection = SoulType::Stub(Stub {
                         name: SharedStr::new("List"),
-                        generics: vec![int],
+                        generics: Arr::from_array([int]),
                     });
                     assert_eq!(arr.collection_type, Some(collection));
                     assert_eq!(arr.element_type, None);
@@ -1259,7 +1260,7 @@ fn constructor_expression() {
                         *ty,
                         SoulType::Stub(Stub {
                             name: "Foo".into(),
-                            generics: vec![]
+                            generics: Arr::new()
                         })
                     );
                     assert_eq!(arguments.len(), 2);
@@ -1535,7 +1536,10 @@ fn raw_ptr_type_void() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::RawPtr(None)));
+    assert_eq!(
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
+        Some(SoulType::RawPtr(None))
+    );
 }
 
 #[test]
@@ -1576,7 +1580,10 @@ fn raw_ptr_type_explicit_none() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::RawPtr(Some(Box::new(SoulType::None)))));
+    assert_eq!(
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
+        Some(SoulType::RawPtr(Some(Box::new(SoulType::None))))
+    );
 }
 
 // ----------------------------------------------------------------
@@ -1669,7 +1676,10 @@ fn error_type() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::Error));
+    assert_eq!(
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
+        Some(SoulType::Error)
+    );
 }
 
 #[test]
@@ -1695,7 +1705,7 @@ fn named_variant_type_variable() {
                 **base,
                 SoulType::Stub(Stub {
                     name: "Foo".into(),
-                    generics: vec![]
+                    generics: Arr::new()
                 })
             );
         }

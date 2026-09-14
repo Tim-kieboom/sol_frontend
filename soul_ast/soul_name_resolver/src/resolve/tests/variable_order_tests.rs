@@ -2,8 +2,6 @@ use ast_model::fault::AstErrorKind;
 
 use crate::resolve::tests::{fault_count_matching, resolve_source};
 
-
-
 fn is_variable_used_before_declaration(kind: &AstErrorKind) -> bool {
     matches!(kind, AstErrorKind::VariableUsedBeforeDeclaration { .. })
 }

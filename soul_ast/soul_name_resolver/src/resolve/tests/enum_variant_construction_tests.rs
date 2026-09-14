@@ -1,7 +1,6 @@
-use ast_parser::{fault::AstErrorKind};
+use ast_parser::fault::AstErrorKind;
 
 use crate::resolve::tests::{fault_count_matching, resolve_source};
-
 
 fn is_enum_variant_fault(kind: &AstErrorKind) -> bool {
     matches!(

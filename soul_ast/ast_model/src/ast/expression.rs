@@ -1,7 +1,9 @@
 use std::{fmt::Display, rc::Rc};
 
 use soul_utils::{
-    Ident, impl_soul_ids,
+    Ident,
+    collections::array::Arr,
+    impl_soul_ids,
     span::{Span, Spanned},
 };
 
@@ -46,9 +48,9 @@ pub enum ExpressionKind {
     /// An array, e.g., `[1, 2, 3]`, `[for 2 => 1]`.
     Array(AnyArray),
     /// An tuple, e.g., `.(1, "text")`
-    Tuple(Vec<ExpressionId>),
+    Tuple(Arr<ExpressionId>),
     /// An namedTuple, e.g., `.{number: 1, text: "text"}`.
-    NamedTuple(Vec<(Ident, ExpressionId)>),
+    NamedTuple(Arr<(Ident, ExpressionId)>),
 
     /// `i32.sizeof // returns 4`
     Sizeof(ExpressionId),
@@ -103,14 +105,14 @@ pub struct Lambda {
     pub id: NodeId,
     pub body: BlockId,
     /// The parameter patterns (one or more, from a tuple-like param list).
-    pub parameters: Vec<VarPattern>,
+    pub parameters: Arr<VarPattern>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StringFormat {
     pub to_string: bool,
     pub trailing: String,
-    pub parts: Vec<(String, ExpressionId)>,
+    pub parts: Arr<(String, ExpressionId)>,
 }
 
 /// `expr typeof Type.Variant` — type check a union value
@@ -177,7 +179,7 @@ impl MatchMethodVariant {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StructConstructor {
     pub struct_type: SoulType,
-    pub values: Vec<(Ident, ExpressionId)>,
+    pub values: Arr<(Ident, ExpressionId)>,
     pub defaults: bool,
 }
 
@@ -187,7 +189,7 @@ pub struct Match {
     /// The expression to match on.
     pub scrutinee: ExpressionId,
     /// The match arms.
-    pub arms: Vec<MatchArm>,
+    pub arms: Arr<MatchArm>,
 }
 
 /// A single arm in a match expression.
@@ -203,7 +205,7 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MatchPattern {
     /// `1 | 2 | 3 => ()`
-    Fallthrough(Vec<MatchPattern>),
+    Fallthrough(Arr<MatchPattern>),
     /// A literal value pattern.
     Literal(Literal),
     /// A wildcard (default) pattern.
@@ -220,7 +222,7 @@ pub enum MatchPattern {
         if_condition: ExpressionId,
     },
     /// An array pattern: [elem1, elem2, ...]
-    Array(Vec<MatchPattern>),
+    Array(Arr<MatchPattern>),
     /// A union constructor pattern: `Type.Variant(binding)`.
     Constructor(MatchContructor),
     /// A tuple pattern: `(a, b, ..)`.
@@ -236,14 +238,14 @@ pub enum MatchPattern {
 /// A tuple pattern: `(a, b, ..)`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TupleMatchPattern {
-    pub elements: Vec<MatchPattern>,
+    pub elements: Arr<MatchPattern>,
     pub rest: bool,
 }
 
 /// A named tuple / record pattern: `{field1, field2: alias, ..}`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NamedTupleMatchPattern {
-    pub fields: Vec<NamedMatchPattern>,
+    pub fields: Arr<NamedMatchPattern>,
     pub rest: bool,
 }
 
@@ -260,7 +262,7 @@ pub struct NamedMatchPattern {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ConstructorStructPattern {
     pub type_name: Ident,
-    pub fields: Vec<NamedMatchPattern>,
+    pub fields: Arr<NamedMatchPattern>,
     pub rest: bool,
 }
 
@@ -388,7 +390,7 @@ pub enum AnyArray {
 pub struct Array {
     pub id: NodeId,
 
-    pub values: Vec<ExpressionId>,
+    pub values: Arr<ExpressionId>,
     pub element_type: Option<SoulType>,
     pub collection_type: Option<SoulType>,
 }
@@ -411,7 +413,7 @@ pub struct Constructor {
     pub id: NodeId,
 
     pub ty: SoulType,
-    pub arguments: Vec<Argument>,
+    pub arguments: Arr<Argument>,
 }
 
 /// Referring to a variable `var`.
@@ -446,11 +448,11 @@ pub struct FunctionCall {
 
     /// The name of the function being called.
     pub name: Ident,
-    pub generics: Vec<SoulType>,
+    pub generics: Arr<SoulType>,
     /// Optional callee expression (for method calls).
     pub callee: Option<FunctionCallee>,
     /// Function arguments.
-    pub arguments: Vec<Argument>,
+    pub arguments: Arr<Argument>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -651,7 +653,7 @@ impl Array {
     pub fn new(id: NodeId, collection_type: Option<SoulType>) -> Self {
         Self {
             id,
-            values: vec![],
+            values: Arr::new(),
             element_type: None,
             collection_type,
         }

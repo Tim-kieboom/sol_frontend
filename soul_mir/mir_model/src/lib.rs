@@ -9,7 +9,10 @@
 
 use ast_model::{Literal, SoulType, operators::BinaryOperatorKind};
 use soul_utils::{
-    FunctionId, TypeModifier, collections::vec_map::VecMap, impl_soul_ids, span::Span,
+    FunctionId, TypeModifier,
+    collections::{array::Arr, vec_map::VecMap},
+    impl_soul_ids,
+    span::Span,
 };
 
 impl_soul_ids!(LocalId, BlockId);
@@ -53,7 +56,7 @@ impl MirProgram {
 #[derive(Debug, serde::Serialize)]
 pub struct ExternFunction {
     pub id: FunctionId,
-    pub params: Vec<Type>,
+    pub parameters: Arr<Type>,
     /// `None` for a `none`(void)-returning extern function — same convention
     /// as `Function::return_local`.
     pub return_type: Option<Type>,
@@ -82,7 +85,7 @@ pub struct LocalDecl {
 
 #[derive(Debug, serde::Serialize)]
 pub struct BasicBlock {
-    pub statements: Vec<Statement>,
+    pub statements: Arr<Statement>,
     pub terminator: Terminator,
 }
 
@@ -175,12 +178,12 @@ pub enum Terminator {
     /// Covers `if`/match-chain/traditional `match` uniformly.
     SwitchInt {
         discriminant: Operand,
-        targets: Vec<(ConstValue, BlockId)>,
+        targets: Arr<(ConstValue, BlockId)>,
         otherwise: BlockId,
     },
     Call {
         id: FunctionId,
-        arguments: Vec<Operand>,
+        arguments: Arr<Operand>,
         /// `None` when the callee returns `none`, or when the caller discards
         /// a non-`none` result (a bare `f(x);` statement) — either way there's
         /// nothing to write the result into.

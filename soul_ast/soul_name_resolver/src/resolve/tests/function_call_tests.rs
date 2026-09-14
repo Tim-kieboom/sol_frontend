@@ -2,8 +2,6 @@ use ast_model::{AstTree, fault::AstErrorKind};
 
 use crate::resolve::tests::resolve_source;
 
-
-
 fn intrinsic_fault_count(ast: &AstTree) -> usize {
     ast.faults()
         .iter()

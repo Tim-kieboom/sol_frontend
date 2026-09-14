@@ -1,11 +1,8 @@
-
 use ast_model::{AstTree, SoulType, StatementKind, VarPattern};
-use ast_parser::{fault::AstErrorKind};
-use soul_utils::{
-    soul_names::PrimitiveTypes,
-};
+use ast_parser::fault::AstErrorKind;
+use soul_utils::soul_names::PrimitiveTypes;
 
-use crate::{resolve::tests::resolve_source};
+use crate::resolve::tests::resolve_source;
 
 fn expression_type_of_binding(ast: &AstTree, name: &str) -> Option<SoulType> {
     ast.crates.store.statements.values().find_map(|statement| {

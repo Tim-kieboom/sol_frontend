@@ -60,7 +60,10 @@ impl<'a> NameResolver<'a> {
                 continue;
             };
 
-            let Some(field_ty) = field.value.ty.and_then(|id| self.declares.get_type(id).cloned())
+            let Some(field_ty) = field
+                .value
+                .ty
+                .and_then(|id| self.declares.get_type(id).cloned())
             else {
                 continue;
             };
@@ -355,7 +358,10 @@ impl<'a> NameResolver<'a> {
             if binding.ident.as_str() != field_name {
                 return None;
             }
-            field.value.ty.and_then(|id| self.declares.get_type(id).cloned())
+            field
+                .value
+                .ty
+                .and_then(|id| self.declares.get_type(id).cloned())
         })
     }
 
@@ -528,9 +534,9 @@ fn combine_array_types(left: &ArrayType, right: &ArrayType) -> Option<SoulType> 
     let of_type = combine_resolved_operand_types(&left.of_type, &right.of_type)?;
 
     let is_slice = |kind: &ArrayKind| matches!(kind, ArrayKind::MutSlice | ArrayKind::ConstSlice);
-    let kind = if is_slice(&left.kind) && is_slice(&right.kind) {
-        left.kind
-    } else if left.kind == right.kind {
+    let both_slice = is_slice(&left.kind) && is_slice(&right.kind);
+    let is_same = left.kind == right.kind;
+    let kind = if both_slice || is_same {
         left.kind
     } else {
         return None;

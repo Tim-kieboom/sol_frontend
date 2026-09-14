@@ -105,8 +105,7 @@ fn function_with_params() {
 
 #[test]
 fn function_with_return_type() {
-    let (module, store, context, declares) =
-        parse_with_declares("add(a: int, b: int): int {}");
+    let (module, store, context, declares) = parse_with_declares("add(a: int, b: int): int {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -664,8 +663,7 @@ fn extern_function_missing_language_string_is_rejected() {
 
 #[test]
 fn return_impl_trait() {
-    let (module, store, context, declares) =
-        parse_with_declares("makeDefault(): impl Display {}");
+    let (module, store, context, declares) = parse_with_declares("makeDefault(): impl Display {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,

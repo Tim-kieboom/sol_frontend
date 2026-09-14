@@ -207,7 +207,7 @@ impl<'a> FunctionLowerer<'a> {
             .enumerate()
             .find_map(|(index, field)| {
                 let is_match = matches!(&field.value.pattern, ast::VarPattern::Simple { binding, .. } if binding.ident.as_str() == field_name);
-                is_match.then(|| (index, field.value.ty.clone()))
+                is_match.then_some((index, field.value.ty))
             })
             .ok_or_else(|| {
                 Fault::error_with_kind(

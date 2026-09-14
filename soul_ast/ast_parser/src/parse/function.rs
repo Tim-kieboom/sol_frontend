@@ -7,8 +7,12 @@ use ast_model::{
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     FunctionId, Ident, LoopState, Mutable, TypeModifier,
-    collections::try_result::{
-        ResultTryErr, ResultTryNotValue, ToResult, TryErr, TryError, TryNotValue, TryOk, TryResult,
+    collections::{
+        array::Arr,
+        try_result::{
+            ResultTryErr, ResultTryNotValue, ToResult, TryErr, TryError, TryNotValue, TryOk,
+            TryResult,
+        },
     },
     fault::Fault,
     literal::{StringLiteral, TokenLiteral},
@@ -101,14 +105,14 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             self.bump();
             if self.current_is_any(&[SQUARE_OPEN, ARRAY]) {
-                let collection_type = self.type_from_ident(name.clone(), generics);
+                let collection_type = self.type_from_ident(name.clone(), generics.into());
                 let array = self.parse_array(Some(collection_type)).try_err()?;
                 return TryOk(Expression::from_any_array(array));
             }
 
             if self.current_is(&ROUND_OPEN) {
                 let arguments = self.parse_arguments().try_err()?;
-                let ty = self.type_from_ident(name.clone(), generics);
+                let ty = self.type_from_ident(name.clone(), generics.into());
                 let ctor = Constructor {
                     id: self.alloc_node(),
                     ty,
@@ -126,7 +130,8 @@ impl<'a, 'f> Parser<'a, 'f> {
             ));
         }
 
-        let call = self.try_parse_function_call_generic(start_span, callee, generics, name)?;
+        let call =
+            self.try_parse_function_call_generic(start_span, callee, generics.into(), name)?;
         match &self.token().kind {
             &DOT | &DOUBLE_QUESTION | &SQUARE_OPEN => {
                 let primary = Expression::from_function_call(call);
@@ -141,7 +146,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         &mut self,
         start_span: Span,
         callee: Option<FunctionCallee>,
-        generics: Vec<SoulType>,
+        generics: Arr<SoulType>,
         ident: &Ident,
     ) -> AstTryResult<Spanned<FunctionCall>, AstFault> {
         let start_position = self.tokens.current_position();
@@ -319,11 +324,11 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
     }
 
-    pub(crate) fn parse_arguments(&mut self) -> AstResult<Vec<Argument>> {
+    pub(crate) fn parse_arguments(&mut self) -> AstResult<Arr<Argument>> {
         self.expect(&ROUND_OPEN)?;
         if self.current_is(&ROUND_CLOSE) {
             self.bump();
-            return Ok(vec![]);
+            return Ok(Arr::new());
         }
 
         let mut values = vec![];
@@ -346,7 +351,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&ROUND_CLOSE)?;
-        Ok(values)
+        Ok(Arr::from_vec(values))
     }
 
     pub(crate) fn parse_function_contructor(
@@ -424,7 +429,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             let statement = self.forest.store.insert_statement(statement);
             self.forest.store.insert_block(Block {
-                statements: vec![statement],
+                statements: vec![statement].into(),
                 span: self.span_combine(start_span),
                 is_const: false,
             })
@@ -596,7 +601,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 Statement::from_expression(&self.forest.store, expr, self.current_is(&SEMI_COLON));
             let statement = self.forest.store.insert_statement(statement);
             self.forest.store.insert_block(Block {
-                statements: vec![statement],
+                statements: vec![statement].into(),
                 span: signature.span,
                 is_const: false,
             })

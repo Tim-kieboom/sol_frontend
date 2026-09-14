@@ -1,5 +1,5 @@
-use ast_parser::fault::AstErrorKind;
 use crate::collect::tests::{fault_count_matching, resolve_source};
+use ast_parser::fault::AstErrorKind;
 
 #[test]
 fn a_nested_function_sharing_its_enclosing_functions_name_reports_exactly_one_fault() {

@@ -31,14 +31,14 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             let body = self.forest.store.insert_block(Block {
                 is_const: false,
-                statements: vec![statement],
+                statements: vec![statement].into(),
                 span: self.span_combine(start_span),
             });
 
             Some(Expression::from_lambda(
                 Lambda {
                     id: self.alloc_node(),
-                    parameters: params,
+                    parameters: params.into(),
                     body,
                 },
                 self.span_combine(start_span),

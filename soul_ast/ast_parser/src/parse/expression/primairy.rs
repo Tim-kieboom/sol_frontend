@@ -4,7 +4,7 @@ use ast_model::{Array, Expression, ExpressionId, ExpressionKind, Literal, String
 use soul_tokenizer::model::{StringFormatTag, TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident, TypeModifier,
-    collections::try_result::TryError,
+    collections::{array::Arr, try_result::TryError},
     fault::Fault,
     literal::{Number, StringLiteral, TokenLiteral},
     soul_error_internal,
@@ -66,7 +66,10 @@ impl<'a, 'f> Parser<'a, 'f> {
                         values.push(self.forest.store.insert_expression(expr));
                     }
                     self.expect(&ROUND_CLOSE)?;
-                    Expression::new(ExpressionKind::Tuple(values), self.span_combine(start_span))
+                    Expression::new(
+                        ExpressionKind::Tuple(values.into()),
+                        self.span_combine(start_span),
+                    )
                 } else {
                     self.expect(&ROUND_CLOSE)?;
                     expr
@@ -78,7 +81,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                     id: self.alloc_node(),
                     collection_type: None,
                     element_type: None,
-                    values: vec![],
+                    values: vec![].into(),
                 };
                 Expression::from_array(Spanned::new(arr, start_span))
             }
@@ -146,12 +149,12 @@ impl<'a, 'f> Parser<'a, 'f> {
                     StringFormatTag::Fstr => false,
                 };
 
-                let string_format = self.parse_fstring_body()?;
+                let (parts, trailing) = self.parse_fstring_body()?;
                 Expression::new(
                     ExpressionKind::StringFormat(StringFormat {
                         to_string,
-                        parts: string_format.0,
-                        trailing: string_format.1,
+                        trailing,
+                        parts: parts.into(),
                     }),
                     self.span_combine(start_span),
                 )
@@ -199,7 +202,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
         self.expect(&ROUND_CLOSE)?;
         Ok(Expression::new(
-            ExpressionKind::Tuple(values),
+            ExpressionKind::Tuple(values.into()),
             self.span_combine(start_span),
         ))
     }
@@ -221,7 +224,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
         self.expect(&CURLY_CLOSE)?;
         Ok(Expression::new(
-            ExpressionKind::NamedTuple(values),
+            ExpressionKind::NamedTuple(values.into()),
             self.span_combine(start_span),
         ))
     }
@@ -313,7 +316,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                     Ok(generics) => {
                         if self.current_is(&CURLY_OPEN) {
                             return self
-                                .parse_struct_contructor(ident, generics, start_span)
+                                .parse_struct_contructor(ident, generics.into(), start_span)
                                 .map(Expression::from_struct_contructor);
                         }
                         return Ok(Expression::new_variable(self.alloc_node(), ident));
@@ -324,7 +327,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             }
             &CURLY_OPEN if !end_tokens.contains(&CURLY_OPEN) => {
                 return self
-                    .parse_struct_contructor(ident, vec![], start_span)
+                    .parse_struct_contructor(ident, Arr::new(), start_span)
                     .map(Expression::from_struct_contructor);
             }
             _ => (),

@@ -2,7 +2,7 @@ use ast_model::{AnyArray, Array, ArrayFiller, Binding, Expression, SoulType, Str
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
-    collections::try_result::TryError,
+    collections::{array::Arr, try_result::TryError},
     fault::Fault,
     span::{Span, Spanned},
 };
@@ -58,7 +58,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     pub(super) fn parse_struct_contructor(
         &mut self,
         ident: Ident,
-        generics: Vec<SoulType>,
+        generics: Arr<SoulType>,
         start_span: Span,
     ) -> Result<Spanned<StructConstructor>, crate::fault::AstFault> {
         self.expect(&CURLY_OPEN)?;
@@ -69,7 +69,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             self.bump();
 
             let ctor = StructConstructor {
-                values: vec![],
+                values: vec![].into(),
                 defaults: false,
                 struct_type,
             };
@@ -130,7 +130,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&CURLY_CLOSE)?;
 
         let ctor = StructConstructor {
-            values,
+            values: values.into(),
             defaults,
             struct_type,
         };
@@ -202,7 +202,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 id: self.alloc_node(),
                 collection_type,
                 element_type,
-                values,
+                values: values.into(),
             },
             self.span_combine(start_span),
         ))

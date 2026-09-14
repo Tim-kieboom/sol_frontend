@@ -695,7 +695,10 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
     fn write_enum(&mut self, enum_: &Enum) -> Result<()> {
         push_fmt!(self, "{ENUM_STR} {}", enum_.name)?;
-        if let Some(ty) = enum_.impl_type.and_then(|id| self.ast.declares.get_type(id)) {
+        if let Some(ty) = enum_
+            .impl_type
+            .and_then(|id| self.ast.declares.get_type(id))
+        {
             self.push_str(": ")?;
             self.write_type(ty)?;
         }
@@ -897,7 +900,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 }
 
                 self.push_str(function_call.name.as_str())?;
-                self.write_generic_types(&function_call.generics)?;
+                self.write_generic_types(function_call.generics.as_slice())?;
                 self.push_char('(')?;
                 let last_index = function_call.arguments.len().saturating_sub(1);
                 for (i, arg) in function_call.arguments.iter().enumerate() {
@@ -1375,7 +1378,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
             }
             SoulType::Stub(stub) => {
                 self.push_str(&stub.name)?;
-                self.write_generic_types(&stub.generics)?;
+                self.write_generic_types(stub.generics.as_slice())?;
                 Ok(())
             }
             SoulType::NamedVariant { base, variant } => {

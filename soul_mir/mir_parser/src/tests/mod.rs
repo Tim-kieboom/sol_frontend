@@ -1615,14 +1615,14 @@ fn extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction() 
         .entries()
         .next()
         .expect("expected the extern declaration in `externs`");
-    assert_eq!(extern_fn.params.len(), 1);
+    assert_eq!(extern_fn.parameters.len(), 1);
     assert!(
         matches!(
-            &extern_fn.params[0],
+            &extern_fn.parameters[0],
             ast_model::SoulType::Primitive(soul_utils::soul_names::PrimitiveTypes::CStr)
         ),
         "{:?}",
-        extern_fn.params[0]
+        extern_fn.parameters[0]
     );
     assert_eq!(
         extern_fn.return_type, None,

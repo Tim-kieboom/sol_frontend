@@ -55,4 +55,3 @@ fn fault_count_matching(ast: &AstTree, predicate: impl Fn(&AstErrorKind) -> bool
         .filter(|fault| predicate(fault.kind()))
         .count()
 }
-

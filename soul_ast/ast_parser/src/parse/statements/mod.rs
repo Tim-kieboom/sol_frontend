@@ -4,7 +4,10 @@ use ast_model::{
 use soul_tokenizer::model::TokenKind;
 use soul_utils::{
     Ident, TypeModifier,
-    collections::try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
+    collections::{
+        array::Arr,
+        try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
+    },
     fault::Fault,
     soul_names::Symbol,
     span::{Attribute, Span},
@@ -120,7 +123,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         self.expect(&CURLY_CLOSE)?;
         Ok(self.forest.store.insert_block(Block {
-            statements,
+            statements: statements.into(),
             span: self.span_combine(start_span),
             is_const: modifier == TypeModifier::Comptime,
         }))
@@ -440,7 +443,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&DOT)?;
         let method_ident = self.try_bump_consume_ident()?;
 
-        let recv_type = self.type_from_ident(receiver_ident, vec![]);
+        let recv_type = self.type_from_ident(receiver_ident, Arr::new());
         let saved = self.current.this_type.take();
         self.current.this_type = Some(recv_type.clone());
         let result =

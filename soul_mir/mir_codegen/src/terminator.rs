@@ -32,7 +32,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 targets,
                 otherwise,
             } => {
-                self.codegen_switchint(discriminant, targets, otherwise)?;
+                self.codegen_switchint(discriminant, targets.as_slice(), otherwise)?;
             }
             Terminator::Call {
                 id,
@@ -40,7 +40,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 destination,
                 target,
             } => {
-                self.codegen_call(*id, arguments, destination, target)?;
+                self.codegen_call(*id, arguments.as_slice(), destination, target)?;
             }
             Terminator::Assert {
                 cond,
@@ -214,7 +214,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 .collect::<CodegenResult<Vec<_>>>()?
         } else if let Some(extern_fn) = self.externs.get(id) {
             extern_fn
-                .params
+                .parameters
                 .iter()
                 .map(|ty| self.ctx.llvm_type(callee_module, ty, None))
                 .collect::<CodegenResult<Vec<_>>>()?

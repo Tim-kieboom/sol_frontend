@@ -1,5 +1,5 @@
 use ast_model::{FunctionKind, Import, ImportKind, SoulType, StatementKind, Struct, Stub};
-use soul_utils::{SharedStr, fault::Severity, soul_names::PrimitiveTypes};
+use soul_utils::{SharedStr, collections::array::Arr, fault::Severity, soul_names::PrimitiveTypes};
 
 use crate::tests::{get_statement, parse, parse_with_declares};
 
@@ -143,8 +143,7 @@ fn use_block_impl_block() {
 
 #[test]
 fn use_block_with_generic_type() {
-    let (module, store, context, declares) =
-        parse_with_declares("use Foo<int> { bar() {} }");
+    let (module, store, context, declares) = parse_with_declares("use Foo<int> { bar() {} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -161,7 +160,7 @@ fn use_block_with_generic_type() {
         declares.get_type(use_block.ty),
         Some(&SoulType::Stub(Stub {
             name: SharedStr::new("Foo"),
-            generics: vec![SoulType::Primitive(PrimitiveTypes::Int)]
+            generics: Arr::from_array([SoulType::Primitive(PrimitiveTypes::Int)])
         }))
     );
     assert!(use_block.use_generics.is_empty());
@@ -310,8 +309,7 @@ fn use_block_mixed_methods_and_impl() {
 
 #[test]
 fn use_block_method_with_return_type() {
-    let (module, store, context, declares) =
-        parse_with_declares("use Foo { bar(): int { 42 } }");
+    let (module, store, context, declares) = parse_with_declares("use Foo { bar(): int { 42 } }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,

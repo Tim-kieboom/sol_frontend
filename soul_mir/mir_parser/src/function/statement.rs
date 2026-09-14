@@ -269,7 +269,7 @@ impl<'a> FunctionLowerer<'a> {
         self.seal(
             mir::Terminator::Call {
                 id: resolve.id,
-                arguments: args,
+                arguments: args.into(),
                 destination,
                 target: Some(next),
             },

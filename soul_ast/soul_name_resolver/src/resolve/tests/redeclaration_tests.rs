@@ -2,8 +2,6 @@ use ast_model::fault::AstErrorKind;
 
 use crate::resolve::tests::{fault_count_matching, resolve_source};
 
-
-
 fn is_already_exists_in_scope(kind: &AstErrorKind) -> bool {
     matches!(
         kind,

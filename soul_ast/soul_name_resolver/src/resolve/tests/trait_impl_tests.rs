@@ -2,8 +2,6 @@ use ast_model::fault::AstErrorKind;
 
 use crate::resolve::tests::{fault_count_matching, resolve_source};
 
-
-
 #[test]
 fn conforming_impl_resolves_without_faults() {
     let ast = resolve_source(

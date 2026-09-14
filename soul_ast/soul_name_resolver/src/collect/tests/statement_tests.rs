@@ -1,10 +1,7 @@
-
 use ast_model::{AstTree, SoulType, StatementKind, VarPattern};
-use soul_utils::{
-    soul_names::PrimitiveTypes,
-};
+use soul_utils::soul_names::PrimitiveTypes;
 
-use crate::{collect::tests::resolve_source};
+use crate::collect::tests::resolve_source;
 
 /// Finds the inferred/declared type of the first `let`/`mut` binding named `name`.
 fn variable_type(ast: &AstTree, name: &str) -> Option<SoulType> {

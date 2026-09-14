@@ -1,6 +1,8 @@
 use std::{fmt, rc::Rc};
 
-use soul_utils::{Ident, Mutable, SharedStr, impl_soul_ids, soul_names::PrimitiveTypes};
+use soul_utils::{
+    Ident, Mutable, SharedStr, collections::array::Arr, impl_soul_ids, soul_names::PrimitiveTypes,
+};
 
 // TypeId: uniquely identifies a canonical, interned SoulType — see
 // DeclareStore::intern_type.
@@ -172,9 +174,9 @@ impl TupleKind {
 }
 
 /// The element types of a positional tuple.
-pub type Tuple = Vec<SoulType>;
+pub type Tuple = Arr<SoulType>;
 /// The name/type pairs of a named tuple.
-pub type NamedTuple = Vec<(Ident, SoulType)>;
+pub type NamedTuple = Arr<(Ident, SoulType)>;
 
 /// Array type
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -228,7 +230,7 @@ pub struct Stub {
     /// The referenced type's name.
     pub name: SharedStr,
     /// The generic type arguments applied to the reference, if any.
-    pub generics: Vec<SoulType>,
+    pub generics: Arr<SoulType>,
 }
 
 impl fmt::Debug for Stub {
@@ -260,7 +262,7 @@ impl Stub {
     /// Creates a stub reference to a named type with no generic arguments.
     pub fn new(name: impl Into<Rc<str>>) -> Self {
         Self {
-            generics: vec![],
+            generics: Arr::new(),
             name: SharedStr::new(name),
         }
     }

@@ -26,8 +26,7 @@ fn empty_struct() {
 
 #[test]
 fn struct_with_fields() {
-    let (module, store, context, declares) =
-        parse_with_declares("struct Foo { pub x: int = 5 }");
+    let (module, store, context, declares) = parse_with_declares("struct Foo { pub x: int = 5 }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
