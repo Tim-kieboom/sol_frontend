@@ -91,7 +91,11 @@ fn lower_extern_signature(
     signature: &ast::InnerFunctionSignature,
     declares: &DeclareStore,
 ) -> mir::ExternFunction {
-    let is_none_return = matches!(signature.return_type, ast::SoulType::None);
+    let return_type = declares
+        .get_type(signature.return_type)
+        .cloned()
+        .expect("InnerFunctionSignature.return_type is always an interned TypeId");
+    let is_none_return = matches!(return_type, ast::SoulType::None);
     mir::ExternFunction {
         id: signature.id,
         params: signature
@@ -104,6 +108,6 @@ fn lower_extern_signature(
                     .expect("Parameter.ty is always an interned TypeId, set at parse time")
             })
             .collect(),
-        return_type: (!is_none_return).then(|| signature.return_type.clone()),
+        return_type: (!is_none_return).then_some(return_type),
     }
 }

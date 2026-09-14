@@ -646,9 +646,25 @@ that landing first, in order.
         annotation and a struct field's. Proven by the same full `cargo test --workspace` +
         30-exe-test bar as `Parameter.ty` — struct field types are exercised by `09_struct_field_
         read.soul`/`10_struct_field_write.soul`/`11_nested_struct_field.soul` and others.
+  - [x] `InnerFunctionSignature.{method_type, return_type}` (`SoulType` -> `TypeId`, both always
+        present — no `Option`, `SoulType::None` is its own canonical interned entry for "no method
+        type"/"no return type"). Widest consumer set yet, since a function signature is read from
+        every layer of the pipeline: `ast_parser`'s 2 signature-construction sites
+        (`inner_parse_function_signature`, the array-constructor synthesis in
+        `parse_array_contructor`) plus the `This.()` ctor's `return_type` backpatch all now intern;
+        `DeclareStore::find_function`'s owner-type matching now resolves through `get_type` instead
+        of comparing `SoulType` directly; `soul_name_resolver`'s `collect_extern_signature`/
+        `collect_function` (plus `is_main`, which needed a `&DeclareStore` parameter added since it's
+        a free function, not a resolver method), `check_tail_return_type`/`check_return_statement`'s
+        return-type checking, and `finish_call_resolution`'s call-return-type/argument-checking all
+        resolve once per use; `mir_parser`'s `FunctionLowerer::lower` (receiver-type + return-type
+        local allocation), `lower_extern_signature`, and the call-lowering in `function/statement.rs`
+        all resolve via `self.declares`/an explicit `declares` parameter; `soul_tester`'s AST display.
+        Proven by the same full `cargo test --workspace` + 30-exe-test bar as the two fields above —
+        every single one of the 30 exe tests calls at least one function, so this field is exercised
+        end-to-end by all of them, not just a subset.
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
-        consumer audit, same as `Parameter.ty`/`Variable.ty` above): `InnerFunctionSignature.
-        {method_type, return_type}`, `TypeDef.{new_type, old_type}`, `UseBlock.ty`,
+        consumer audit, same as the fields above): `TypeDef.{new_type, old_type}`, `UseBlock.ty`,
         `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see

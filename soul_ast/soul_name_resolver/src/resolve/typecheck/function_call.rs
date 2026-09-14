@@ -19,7 +19,9 @@ impl<'a> NameResolver<'a> {
         let Some((signature, _)) = self.declares.get_function(function_id) else {
             return;
         };
-        let return_type = signature.return_type.clone();
+        let Some(return_type) = self.declares.get_type(signature.return_type).cloned() else {
+            return;
+        };
         let parameters = signature.parameters.clone();
         let generics = signature.generics.clone();
 

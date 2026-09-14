@@ -235,11 +235,9 @@ impl<'a> NameResolver<'a> {
             FunctionKind::Signature(_) => (),
             FunctionKind::Normal(function) => {
                 self.resolve_block(function.block);
-                self.check_tail_return_type(
-                    function.block,
-                    &signature.return_type,
-                    &signature.generics,
-                );
+                if let Some(return_type) = self.declares.get_type(signature.return_type).cloned() {
+                    self.check_tail_return_type(function.block, &return_type, &signature.generics);
+                }
             }
         };
 

@@ -138,8 +138,8 @@ impl DeclareStore {
         for id in functions {
             let (signature, _) = &self.functions[*id];
             let is_match = match owner_type {
-                Some(owner) => &signature.method_type == owner,
-                None => matches!(signature.method_type, SoulType::None),
+                Some(owner) => self.get_type(signature.method_type) == Some(owner),
+                None => matches!(self.get_type(signature.method_type), Some(SoulType::None)),
             };
             if !is_match {
                 continue;

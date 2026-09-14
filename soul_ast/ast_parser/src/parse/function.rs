@@ -379,7 +379,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                     ));
                 }
                 signature.function_kind = FunctionThisKind::Ctor;
-                signature.return_type = method_type.clone();
+                signature.return_type = self.intern_type(method_type.clone());
 
                 Ok(Spanned::new(methode, self.span_combine(start_span)))
             }
@@ -433,12 +433,13 @@ impl<'a, 'f> Parser<'a, 'f> {
         };
 
         let id = self.forest.store.alloc_function();
+        let method_type_id = self.intern_type(method_type.clone());
         let signature = InnerFunctionSignature {
             id,
             name,
             modifier: FunctionModifier::empty(),
-            method_type: method_type.clone(),
-            return_type: method_type.clone(),
+            method_type: method_type_id,
+            return_type: method_type_id,
             parameters: vec![Parameter {
                 name: arg,
                 default: None,
@@ -524,10 +525,10 @@ impl<'a, 'f> Parser<'a, 'f> {
             modifier,
             generics,
             parameters,
-            return_type,
+            return_type: self.intern_type(return_type),
             function_kind,
             id: self.forest.store.alloc_function(),
-            method_type: method_type.clone(),
+            method_type: self.intern_type(method_type.clone()),
         };
 
         let signature = Spanned::new(signature, self.span_combine(start_span));

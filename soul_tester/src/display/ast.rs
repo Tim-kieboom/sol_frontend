@@ -784,7 +784,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
         self.write_parameters(&signature.parameters)?;
         self.push_str("): ")?;
-        self.write_type(&signature.return_type)?;
+        let return_type = self
+            .ast
+            .declares
+            .get_type(signature.return_type)
+            .expect("InnerFunctionSignature.return_type is always an interned TypeId");
+        self.write_type(return_type)?;
         let block = match function {
             FunctionKind::Normal(function) => function.block,
             FunctionKind::Signature(_) => return Ok(()),

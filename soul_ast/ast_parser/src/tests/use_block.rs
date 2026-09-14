@@ -298,7 +298,8 @@ fn use_block_mixed_methods_and_impl() {
 
 #[test]
 fn use_block_method_with_return_type() {
-    let (module, store, context) = parse("use Foo { bar(): int { 42 } }");
+    let (module, store, context, declares) =
+        parse_with_declares("use Foo { bar(): int { 42 } }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -317,8 +318,8 @@ fn use_block_method_with_return_type() {
         panic!("expected Normal function");
     };
     assert_eq!(
-        f.signature.value.return_type,
-        SoulType::Primitive(PrimitiveTypes::Int)
+        declares.get_type(f.signature.value.return_type),
+        Some(&SoulType::Primitive(PrimitiveTypes::Int))
     );
 }
 

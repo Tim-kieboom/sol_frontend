@@ -338,9 +338,9 @@ pub struct InnerFunctionSignature {
     /// The name of the function.
     pub name: Ident,
     /// Method type, if specified.
-    pub method_type: SoulType,
+    pub method_type: TypeId,
     /// Return type, if specified.
-    pub return_type: SoulType,
+    pub return_type: TypeId,
     /// Function parameters.
     pub parameters: Vec<Parameter>,
     pub generics: Vec<Generic>,

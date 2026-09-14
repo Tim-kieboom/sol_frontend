@@ -118,19 +118,24 @@ impl<'a> FunctionLowerer<'a> {
             && let Some(this_node) = self.declares.get_receiver_binding(signature.id)
         {
             let span = signature.name.span();
-            self.require_lowerable(&signature.method_type, span)?;
+            let method_type = self
+                .declares
+                .get_type(signature.method_type)
+                .cloned()
+                .expect("InnerFunctionSignature.method_type is always an interned TypeId");
+            self.require_lowerable(&method_type, span)?;
             let receiver_ty = match signature.function_kind {
                 ast::FunctionThisKind::MutRef => SoulType::Reference(ast::ReferenceType {
-                    inner: Box::new(signature.method_type.clone()),
+                    inner: Box::new(method_type),
                     lifetime: None,
                     mutable: soul_utils::Mutable::Mut,
                 }),
                 ast::FunctionThisKind::ConstRef => SoulType::Reference(ast::ReferenceType {
-                    inner: Box::new(signature.method_type.clone()),
+                    inner: Box::new(method_type),
                     lifetime: None,
                     mutable: soul_utils::Mutable::Immut,
                 }),
-                _ => signature.method_type.clone(),
+                _ => method_type,
             };
             let local = self.alloc_local(receiver_ty, TypeModifier::Mut, span);
             self.node_to_local.insert(this_node, local);
@@ -151,18 +156,19 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let arg_count = signature.parameters.len() + has_receiver_local as usize;
+        let return_type = self
+            .declares
+            .get_type(signature.return_type)
+            .cloned()
+            .expect("InnerFunctionSignature.return_type is always an interned TypeId");
         // A `none`(void)-returning function has nothing to hold a return value
         // in, so it gets no `return_local` at all — see `Function::return_local`.
-        let is_none_return = matches!(signature.return_type, SoulType::None);
+        let is_none_return = matches!(return_type, SoulType::None);
         let return_local = if is_none_return {
             None
         } else {
-            self.require_lowerable(&signature.return_type, signature.name.span())?;
-            Some(self.alloc_local(
-                signature.return_type.clone(),
-                TypeModifier::Mut,
-                signature.name.span(),
-            ))
+            self.require_lowerable(&return_type, signature.name.span())?;
+            Some(self.alloc_local(return_type, TypeModifier::Mut, signature.name.span()))
         };
 
         let entry = self.new_block();

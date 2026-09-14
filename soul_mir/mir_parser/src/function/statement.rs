@@ -204,7 +204,11 @@ impl<'a> FunctionLowerer<'a> {
                 Some(span),
             ));
         };
-        let return_type = signature.return_type.clone();
+        let return_type = self
+            .declares
+            .get_type(signature.return_type)
+            .cloned()
+            .expect("InnerFunctionSignature.return_type is always an interned TypeId");
         // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
         // declares its receiver as: `&this`/`&mut this` borrow the receiver
         // (matching the callee's own `Reference`-typed local set up in

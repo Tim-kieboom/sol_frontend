@@ -1,7 +1,7 @@
 use ast_model::{
     CustomType, EnumVariant, ExpressionId, ExpressionKind, Function, FunctionKind,
     FunctionSignature, FunctionThisKind, Literal, SoulType, StatementId, StatementKind, UseBlock,
-    VarPattern, Variable, scope::ScopeValue,
+    VarPattern, Variable, declare_store::DeclareStore, scope::ScopeValue,
 };
 use ast_parser::fault::{AstErrorKind, AstFault};
 use soul_utils::{
@@ -173,8 +173,12 @@ impl<'a> NameResolver<'a> {
         let id = self.declare_function(signature);
         let inner = &signature.value;
 
-        self.collect_type(&inner.method_type);
-        self.collect_type(&inner.return_type);
+        if let Some(ty) = self.declares.get_type(inner.method_type).cloned() {
+            self.collect_type(&ty);
+        }
+        if let Some(ty) = self.declares.get_type(inner.return_type).cloned() {
+            self.collect_type(&ty);
+        }
         for parameter in &inner.parameters {
             if let Some(ty) = self.declares.get_type(parameter.ty).cloned() {
                 self.collect_type(&ty);
@@ -192,13 +196,17 @@ impl<'a> NameResolver<'a> {
         let id = self.declare_function(&function.signature);
         self.current.function = Some(id);
 
-        if is_main(&function.signature) {
+        if is_main(&function.signature, self.declares) {
             self.declares.main_function = Some(id);
         }
 
         let signature = &function.signature.value;
-        self.collect_type(&signature.method_type);
-        self.collect_type(&signature.return_type);
+        if let Some(ty) = self.declares.get_type(signature.method_type).cloned() {
+            self.collect_type(&ty);
+        }
+        if let Some(ty) = self.declares.get_type(signature.return_type).cloned() {
+            self.collect_type(&ty);
+        }
 
         self.declares
             .insert_functions(id, signature.clone(), self.current.module);
@@ -351,8 +359,12 @@ impl<'a> NameResolver<'a> {
     }
 }
 
-fn is_main(signature: &FunctionSignature) -> bool {
-    signature.value.name.as_str() == "main" && matches!(signature.value.method_type, SoulType::None)
+fn is_main(signature: &FunctionSignature, declares: &DeclareStore) -> bool {
+    signature.value.name.as_str() == "main"
+        && matches!(
+            declares.get_type(signature.value.method_type),
+            Some(SoulType::None)
+        )
 }
 
 fn check_function_name(name: &Ident) -> Result<(), AstFault> {

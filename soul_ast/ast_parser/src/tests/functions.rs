@@ -8,7 +8,8 @@ use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn expression_bodied_function() {
-    let (module, store, context) = parse("describe(value: int): str => \"a\"");
+    let (module, store, context, declares) =
+        parse_with_declares("describe(value: int): str => \"a\"");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -27,7 +28,10 @@ fn expression_bodied_function() {
         _ => panic!("expected Normal function"),
     };
     assert_eq!(signature.value.name.as_str(), "describe");
-    assert_eq!(signature.value.return_type, SoulType::String);
+    assert_eq!(
+        declares.get_type(signature.value.return_type),
+        Some(&SoulType::String)
+    );
 
     let body = &store.blocks[*block];
     assert_eq!(body.statements.len(), 1);
@@ -45,7 +49,7 @@ fn expression_bodied_function() {
 
 #[test]
 fn simple_function() {
-    let (module, store, context) = parse("foo() {}");
+    let (module, store, context, declares) = parse_with_declares("foo() {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -65,7 +69,10 @@ fn simple_function() {
     };
     assert_eq!(signature.value.name.as_str(), "foo");
     assert_eq!(signature.value.parameters.len(), 0);
-    assert_eq!(signature.value.return_type, SoulType::None);
+    assert_eq!(
+        declares.get_type(signature.value.return_type),
+        Some(&SoulType::None)
+    );
 
     let body = &store.blocks[*block];
     assert!(body.statements.is_empty());
@@ -98,7 +105,8 @@ fn function_with_params() {
 
 #[test]
 fn function_with_return_type() {
-    let (module, store, context) = parse("add(a: int, b: int): int {}");
+    let (module, store, context, declares) =
+        parse_with_declares("add(a: int, b: int): int {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -117,8 +125,10 @@ fn function_with_return_type() {
         _ => panic!("expected Normal function"),
     };
     assert_eq!(
-        signature.value.return_type,
-        SoulType::Primitive(soul_utils::soul_names::PrimitiveTypes::Int)
+        declares.get_type(signature.value.return_type),
+        Some(&SoulType::Primitive(
+            soul_utils::soul_names::PrimitiveTypes::Int
+        ))
     );
 }
 
@@ -654,7 +664,8 @@ fn extern_function_missing_language_string_is_rejected() {
 
 #[test]
 fn return_impl_trait() {
-    let (module, store, context) = parse("makeDefault(): impl Display {}");
+    let (module, store, context, declares) =
+        parse_with_declares("makeDefault(): impl Display {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -673,7 +684,9 @@ fn return_impl_trait() {
         _ => panic!("expected Normal function"),
     };
     assert_eq!(
-        signature.value.return_type,
-        SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new("Display"))))
+        declares.get_type(signature.value.return_type),
+        Some(&SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new(
+            "Display"
+        )))))
     );
 }
