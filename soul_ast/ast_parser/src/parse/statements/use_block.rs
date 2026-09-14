@@ -41,7 +41,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         if !impls.is_empty() || !methodes.is_empty() {
             self.current.this_type = prev;
             let use_block = UseBlock {
-                ty: method_type,
+                ty: self.intern_type(method_type),
                 impls,
                 methods: methodes,
                 statements,
@@ -111,7 +111,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&CURLY_CLOSE)?;
         self.current.this_type = prev;
         let use_block = UseBlock {
-            ty: method_type,
+            ty: self.intern_type(method_type),
             impls,
             methods: methodes,
             statements,
@@ -191,7 +191,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         let impls = vec![self.parse_impl_block(&method_type, start_span)?];
 
         let use_block = UseBlock {
-            ty: method_type,
+            ty: self.intern_type(method_type),
             impls,
             methods: vec![],
             statements: vec![],

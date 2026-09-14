@@ -395,7 +395,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
         self.push_str(USE_STR)?;
         self.write_generic_defines(&use_block.use_generics)?;
         self.push_char(' ')?;
-        self.write_type(&use_block.ty)?;
+        let use_block_ty = self
+            .ast
+            .declares
+            .get_type(use_block.ty)
+            .expect("UseBlock.ty is always an interned TypeId");
+        self.write_type(use_block_ty)?;
         self.push_str(" {\n")?;
         self.push_depth();
         for id in &use_block.statements {

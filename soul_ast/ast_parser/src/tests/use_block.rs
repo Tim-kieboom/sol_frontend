@@ -5,7 +5,7 @@ use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn use_block_empty() {
-    let (module, store, context) = parse("use Foo {}");
+    let (module, store, context, declares) = parse_with_declares("use Foo {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -18,7 +18,10 @@ fn use_block_empty() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(use_block.ty, SoulType::Stub(Stub::new("Foo")));
+    assert_eq!(
+        declares.get_type(use_block.ty),
+        Some(&SoulType::Stub(Stub::new("Foo")))
+    );
     assert!(use_block.use_generics.is_empty());
     assert!(use_block.methods.is_empty());
     assert!(use_block.impls.is_empty());
@@ -27,7 +30,7 @@ fn use_block_empty() {
 
 #[test]
 fn use_block_method() {
-    let (module, store, context) = parse("use Foo { bar() {} }");
+    let (module, store, context, declares) = parse_with_declares("use Foo { bar() {} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -40,7 +43,10 @@ fn use_block_method() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(use_block.ty, SoulType::Stub(Stub::new("Foo")));
+    assert_eq!(
+        declares.get_type(use_block.ty),
+        Some(&SoulType::Stub(Stub::new("Foo")))
+    );
     assert_eq!(use_block.methods.len(), 1);
     assert!(!use_block.methods[0].is_public);
     let func = &store.functions[use_block.methods[0].id];
@@ -136,7 +142,8 @@ fn use_block_impl_block() {
 
 #[test]
 fn use_block_with_generic_type() {
-    let (module, store, context) = parse("use Foo<int> { bar() {} }");
+    let (module, store, context, declares) =
+        parse_with_declares("use Foo<int> { bar() {} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -150,11 +157,11 @@ fn use_block_with_generic_type() {
         _ => panic!("expected UseBlock"),
     };
     assert_eq!(
-        use_block.ty,
-        SoulType::Stub(Stub {
+        declares.get_type(use_block.ty),
+        Some(&SoulType::Stub(Stub {
             name: SharedStr::new("Foo"),
             generics: vec![SoulType::Primitive(PrimitiveTypes::Int)]
-        })
+        }))
     );
     assert!(use_block.use_generics.is_empty());
     assert_eq!(use_block.methods.len(), 1);
@@ -242,7 +249,7 @@ fn use_block_type_alias_inside() {
 
 #[test]
 fn use_block_inline_method() {
-    let (module, store, context) = parse("use Foo bar() {}");
+    let (module, store, context, declares) = parse_with_declares("use Foo bar() {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -255,7 +262,10 @@ fn use_block_inline_method() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(use_block.ty, SoulType::Stub(Stub::new("Foo")));
+    assert_eq!(
+        declares.get_type(use_block.ty),
+        Some(&SoulType::Stub(Stub::new("Foo")))
+    );
     assert_eq!(use_block.methods.len(), 1);
     assert!(!use_block.methods[0].is_public);
     let func = &store.functions[use_block.methods[0].id];

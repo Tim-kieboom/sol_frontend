@@ -669,8 +669,14 @@ that landing first, in order.
         `!is_distinct` alias-registration branch, which still stores a real `SoulType` in
         `DeclareStore::type_aliases`, doesn't need a second lookup); `soul_tester`'s AST display.
         Proven by the same full `cargo test --workspace` + 30-exe-test bar as the fields above.
+  - [x] `UseBlock.ty` (`SoulType` -> `TypeId`, `use Foo { .. }`'s own type). 3 `ast_parser`
+        construction sites (`parse_use_block`'s two exit paths, `parse_impl_statement`) now intern;
+        `soul_name_resolver`'s `collect_use_block` and `soul_tester`'s AST display resolve back.
+        `ImplBlock.impl_trait` (also read by `collect_use_block`/`check_impl_conformance`) is a
+        separate, still-`SoulType` field — deliberately not touched here. Proven by the same full
+        `cargo test --workspace` + 30-exe-test bar as the fields above.
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
-        consumer audit, same as the fields above): `UseBlock.ty`,
+        consumer audit, same as the fields above):
         `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see

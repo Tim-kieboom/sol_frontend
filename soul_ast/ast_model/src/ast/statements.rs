@@ -139,7 +139,7 @@ impl Methode {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UseBlock {
     pub use_generics: Vec<Generic>,
-    pub ty: SoulType,
+    pub ty: TypeId,
     pub impls: Vec<ImplBlock>,
     pub methods: Vec<Methode>,
     pub statements: Vec<StatementId>,

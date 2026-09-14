@@ -123,7 +123,9 @@ impl<'a> NameResolver<'a> {
 
         let prev = self.current.in_global;
         self.current.in_global = false;
-        self.collect_type(ty);
+        if let Some(ty) = self.declares.get_type(*ty).cloned() {
+            self.collect_type(&ty);
+        }
         for method in methods {
             self.collect_function_id(method.id);
         }
