@@ -449,7 +449,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
         // pattern can't carry `mut` at this level at all.
         self.write_var_pattern(&variable.pattern)?;
 
-        if let Some(ty) = &variable.ty {
+        if let Some(ty) = variable.ty.and_then(|id| self.ast.declares.get_type(id)) {
             self.push_str(": ")?;
             self.write_type(ty)?;
         }
@@ -598,7 +598,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
             }
 
             self.write_var_pattern(&field.value.pattern)?;
-            if let Some(ty) = &field.value.ty {
+            if let Some(ty) = field.value.ty.and_then(|id| self.ast.declares.get_type(id)) {
                 self.push_str(": ")?;
                 self.write_type(ty)?;
             }

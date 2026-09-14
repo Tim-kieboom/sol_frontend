@@ -756,7 +756,7 @@ fn chained_function_calls() {
 // ----------------------------------------------------------------
 #[test]
 fn optional_type_variable() {
-    let (module, store, context) = parse("x: ?int = null");
+    let (module, store, context, declares) = parse_with_declares("x: ?int = null");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -770,7 +770,7 @@ fn optional_type_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Optional(Box::new(SoulType::Primitive(
             soul_utils::soul_names::PrimitiveTypes::Int
         ))))
@@ -782,7 +782,7 @@ fn optional_type_variable() {
 // ----------------------------------------------------------------
 #[test]
 fn reference_type_variable() {
-    let (module, store, context) = parse("x: &int = &1");
+    let (module, store, context, declares) = parse_with_declares("x: &int = &1");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -796,7 +796,7 @@ fn reference_type_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Reference(ReferenceType::new(
             SoulType::Primitive(PrimitiveTypes::Int),
             Mutable::Immut
@@ -806,7 +806,7 @@ fn reference_type_variable() {
 
 #[test]
 fn mut_reference_type_variable() {
-    let (module, store, context) = parse("x: &mut int = &mut 1");
+    let (module, store, context, declares) = parse_with_declares("x: &mut int = &mut 1");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -820,7 +820,7 @@ fn mut_reference_type_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Reference(ReferenceType::new(
             SoulType::Primitive(PrimitiveTypes::Int),
             Mutable::Mut
@@ -1336,7 +1336,7 @@ fn compound_sub_assign() {
 // ----------------------------------------------------------------
 #[test]
 fn array_type_wildcard_variable() {
-    let (module, store, context) = parse("mut x: [_]int");
+    let (module, store, context, declares) = parse_with_declares("mut x: [_]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1350,7 +1350,7 @@ fn array_type_wildcard_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
             of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::StackArrayWildcard,
@@ -1360,7 +1360,7 @@ fn array_type_wildcard_variable() {
 
 #[test]
 fn array_type_const_slice_variable() {
-    let (module, store, context) = parse("mut x: [&]int");
+    let (module, store, context, declares) = parse_with_declares("mut x: [&]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1374,7 +1374,7 @@ fn array_type_const_slice_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
             of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::ConstSlice,
@@ -1384,7 +1384,7 @@ fn array_type_const_slice_variable() {
 
 #[test]
 fn array_type_mut_slice_variable() {
-    let (module, store, context) = parse("mut x: [&mut]int");
+    let (module, store, context, declares) = parse_with_declares("mut x: [&mut]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1398,7 +1398,7 @@ fn array_type_mut_slice_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
             of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::MutSlice,
@@ -1408,7 +1408,7 @@ fn array_type_mut_slice_variable() {
 
 #[test]
 fn array_type_heap_variable() {
-    let (module, store, context) = parse("mut x: []int");
+    let (module, store, context, declares) = parse_with_declares("mut x: []int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1422,7 +1422,7 @@ fn array_type_heap_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
             of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::HeapArray,
@@ -1432,7 +1432,7 @@ fn array_type_heap_variable() {
 
 #[test]
 fn array_type_sized_variable() {
-    let (module, store, context) = parse("mut x: [5]int");
+    let (module, store, context, declares) = parse_with_declares("mut x: [5]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1446,7 +1446,7 @@ fn array_type_sized_variable() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
             of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::StackArray(5),
@@ -1459,7 +1459,7 @@ fn array_type_sized_variable() {
 // ----------------------------------------------------------------
 #[test]
 fn pointer_type_variable() {
-    let (module, store, context) = parse("mut x: *int");
+    let (module, store, context, declares) = parse_with_declares("mut x: *int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1475,7 +1475,7 @@ fn pointer_type_variable() {
 
     let inner = Box::new(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Pointer(ReferenceType {
             inner,
             lifetime: None,
@@ -1486,7 +1486,7 @@ fn pointer_type_variable() {
 
 #[test]
 fn pointer_mut_type_variable() {
-    let (module, store, context) = parse("mut x: *mut int");
+    let (module, store, context, declares) = parse_with_declares("mut x: *mut int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1502,7 +1502,7 @@ fn pointer_mut_type_variable() {
 
     let inner = Box::new(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Pointer(ReferenceType {
             inner,
             lifetime: None,
@@ -1519,7 +1519,7 @@ fn pointer_mut_type_variable() {
 // ----------------------------------------------------------------
 #[test]
 fn raw_ptr_type_void() {
-    let (module, store, context) = parse("mut x: RawPtr");
+    let (module, store, context, declares) = parse_with_declares("mut x: RawPtr");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1532,12 +1532,12 @@ fn raw_ptr_type_void() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(*ty, Some(SoulType::RawPtr(None)));
+    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::RawPtr(None)));
 }
 
 #[test]
 fn raw_ptr_type_with_generic() {
-    let (module, store, context) = parse("mut x: RawPtr<int>");
+    let (module, store, context, declares) = parse_with_declares("mut x: RawPtr<int>");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1551,7 +1551,7 @@ fn raw_ptr_type_with_generic() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::RawPtr(Some(Box::new(SoulType::Primitive(
             PrimitiveTypes::Int
         )))))
@@ -1560,7 +1560,7 @@ fn raw_ptr_type_with_generic() {
 
 #[test]
 fn raw_ptr_type_explicit_none() {
-    let (module, store, context) = parse("mut x: RawPtr<none>");
+    let (module, store, context, declares) = parse_with_declares("mut x: RawPtr<none>");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1573,7 +1573,7 @@ fn raw_ptr_type_explicit_none() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(*ty, Some(SoulType::RawPtr(Some(Box::new(SoulType::None)))));
+    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::RawPtr(Some(Box::new(SoulType::None)))));
 }
 
 // ----------------------------------------------------------------
@@ -1581,7 +1581,7 @@ fn raw_ptr_type_explicit_none() {
 // ----------------------------------------------------------------
 #[test]
 fn res_type_void() {
-    let (module, store, context) = parse("mut x: Res");
+    let (module, store, context, declares) = parse_with_declares("mut x: Res");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1595,7 +1595,7 @@ fn res_type_void() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Res {
             ok: None,
             err: None
@@ -1605,7 +1605,7 @@ fn res_type_void() {
 
 #[test]
 fn res_type_one_generic() {
-    let (module, store, context) = parse("mut x: Res<int>");
+    let (module, store, context, declares) = parse_with_declares("mut x: Res<int>");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1619,7 +1619,7 @@ fn res_type_one_generic() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Res {
             ok: Some(Box::new(SoulType::Primitive(PrimitiveTypes::Int))),
             err: None,
@@ -1629,7 +1629,7 @@ fn res_type_one_generic() {
 
 #[test]
 fn res_type_two_generics() {
-    let (module, store, context) = parse("mut x: Res<int, str>");
+    let (module, store, context, declares) = parse_with_declares("mut x: Res<int, str>");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1643,7 +1643,7 @@ fn res_type_two_generics() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
+        ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Res {
             ok: Some(Box::new(SoulType::Primitive(PrimitiveTypes::Int))),
             err: Some(Box::new(SoulType::String)),
@@ -1653,7 +1653,7 @@ fn res_type_two_generics() {
 
 #[test]
 fn error_type() {
-    let (module, store, context) = parse("mut x: Error");
+    let (module, store, context, declares) = parse_with_declares("mut x: Error");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1666,12 +1666,12 @@ fn error_type() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    assert_eq!(*ty, Some(SoulType::Error));
+    assert_eq!(ty.map(|id| declares.get_type(id).unwrap().clone()), Some(SoulType::Error));
 }
 
 #[test]
 fn named_variant_type_variable() {
-    let (module, store, context) = parse("mut x: Foo.Bar");
+    let (module, store, context, declares) = parse_with_declares("mut x: Foo.Bar");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1684,7 +1684,8 @@ fn named_variant_type_variable() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
-    match ty {
+    let resolved_ty = ty.and_then(|id| declares.get_type(id));
+    match resolved_ty {
         Some(SoulType::NamedVariant { base, variant }) => {
             assert_eq!(variant.as_str(), "Bar");
             assert_eq!(

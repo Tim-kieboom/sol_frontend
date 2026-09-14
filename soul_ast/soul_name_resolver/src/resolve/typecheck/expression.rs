@@ -60,9 +60,11 @@ impl<'a> NameResolver<'a> {
                 continue;
             };
 
-            let Some(field_ty) = &field.value.ty else {
+            let Some(field_ty) = field.value.ty.and_then(|id| self.declares.get_type(id).cloned())
+            else {
                 continue;
             };
+            let field_ty = &field_ty;
 
             let span = self.store.expressions.get(*value_id).map(|expr| expr.span);
 
@@ -353,7 +355,7 @@ impl<'a> NameResolver<'a> {
             if binding.ident.as_str() != field_name {
                 return None;
             }
-            field.value.ty.clone()
+            field.value.ty.and_then(|id| self.declares.get_type(id).cloned())
         })
     }
 

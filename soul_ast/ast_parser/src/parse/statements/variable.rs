@@ -35,7 +35,8 @@ impl<'a, 'f> Parser<'a, 'f> {
         let ty = match self.current_is(&COLON) {
             true => {
                 self.bump();
-                Some(self.try_parse_type().merge_to_result()?)
+                let ty = self.try_parse_type().merge_to_result()?;
+                Some(self.intern_type(ty))
             }
             false => None,
         };

@@ -1,7 +1,7 @@
 use ast_model::{Function, SoulType, StatementKind, VarPattern};
 use soul_utils::fault::Severity;
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn empty_struct() {
@@ -26,7 +26,8 @@ fn empty_struct() {
 
 #[test]
 fn struct_with_fields() {
-    let (module, store, context) = parse("struct Foo { pub x: int = 5 }");
+    let (module, store, context, declares) =
+        parse_with_declares("struct Foo { pub x: int = 5 }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -43,8 +44,11 @@ fn struct_with_fields() {
     assert_eq!(struct_.fields[0].value.name().unwrap().as_str(), "x");
     assert!(struct_.fields[0].is_public);
     assert_eq!(
-        struct_.fields[0].value.ty,
-        Some(SoulType::Primitive(
+        struct_.fields[0]
+            .value
+            .ty
+            .and_then(|id| declares.get_type(id)),
+        Some(&SoulType::Primitive(
             soul_utils::soul_names::PrimitiveTypes::Int
         ))
     );

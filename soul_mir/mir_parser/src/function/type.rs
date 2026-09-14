@@ -23,7 +23,8 @@ impl<'a> FunctionLowerer<'a> {
                         types.get(*index)?.clone()
                     } else {
                         let struct_ = self.resolve_struct(&ty)?;
-                        struct_.fields.get(*index)?.value.ty.clone()?
+                        let field_ty_id = struct_.fields.get(*index)?.value.ty?;
+                        self.declares.get_type(field_ty_id)?.clone()
                     }
                 }
                 mir::PlaceElem::Index(_) => {

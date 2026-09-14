@@ -633,8 +633,21 @@ that landing first, in order.
         it. Proven by the full `cargo test --workspace` suite plus all 30 real exe tests
         (`scripts/run_codegen_tests.py`) still passing unchanged — this field is on the hot path for
         every function parameter in every one of those programs.
+  - [x] `Variable.ty` (`Option<SoulType>` -> `Option<TypeId>`) — this is the one field shared by
+        both plain variable declarations *and* struct fields (`Field.value` is a `Variable`), so it
+        touched the widest consumer set so far: `ast_parser`'s single `parse_variable`/
+        `try_parse_from_mut` interning sites; `soul_name_resolver`'s `collect_variable` (backfill vs.
+        declared-type precedence — `declared_ty` is now resolved once and reused for both the
+        `insert_variable_type` call and the `collect_type` call), `resolve_variable`'s explicit-
+        annotation check, and `struct_field_type`/struct-constructor field-type-checking in
+        `resolve/typecheck/expression.rs`; `mir_parser`'s `resolve_field_place`/`place_type` (struct
+        field reads) and `mir_codegen`'s `resolve_place`/`stub_type` (struct field codegen +
+        LLVM struct-type construction); `soul_tester`'s AST display for both a plain variable's type
+        annotation and a struct field's. Proven by the same full `cargo test --workspace` +
+        30-exe-test bar as `Parameter.ty` — struct field types are exercised by `09_struct_field_
+        read.soul`/`10_struct_field_write.soul`/`11_nested_struct_field.soul` and others.
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
-        consumer audit, same as `Parameter.ty` above): `Variable.ty`, `InnerFunctionSignature.
+        consumer audit, same as `Parameter.ty`/`Variable.ty` above): `InnerFunctionSignature.
         {method_type, return_type}`, `TypeDef.{new_type, old_type}`, `UseBlock.ty`,
         `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/

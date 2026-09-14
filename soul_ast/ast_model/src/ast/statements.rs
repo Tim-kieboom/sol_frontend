@@ -256,7 +256,7 @@ pub struct Variable {
     /// The modifier of the variable.
     pub modifier: TypeModifier,
     /// The type of the variable.
-    pub ty: Option<SoulType>,
+    pub ty: Option<TypeId>,
     /// Optional initial value expression.
     pub initialize_value: Option<ExpressionId>,
 }
@@ -265,7 +265,7 @@ impl Variable {
     pub fn new_const(
         id: NodeId,
         pattern: VarPattern,
-        ty: Option<SoulType>,
+        ty: Option<TypeId>,
         value: Option<ExpressionId>,
     ) -> Self {
         Self {

@@ -158,12 +158,12 @@ impl<'a> NameResolver<'a> {
     fn resolve_variable(&mut self, variable: &Variable) {
         if let Some(value) = variable.initialize_value {
             self.resolve_expression(value);
-            match &variable.ty {
+            match variable.ty.and_then(|id| self.declares.get_type(id).cloned()) {
                 // An explicit annotation (`x: T = value`) is never inferred —
                 // it must instead be checked against the initializer, the
                 // same way a plain `x = value` reassignment already is (see
                 // `check_assignment`).
-                Some(declared_ty) => self.check_variable_declaration(declared_ty, value),
+                Some(declared_ty) => self.check_variable_declaration(&declared_ty, value),
                 None => self.backfill_variable_type(variable, value),
             }
         }

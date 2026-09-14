@@ -232,7 +232,8 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             struct_
                 .fields
                 .get(index)
-                .and_then(|field| field.value.ty.clone())
+                .and_then(|field| field.value.ty)
+                .and_then(|id| self.ctx.declares.get_type(id).cloned())
                 .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?
         };
 

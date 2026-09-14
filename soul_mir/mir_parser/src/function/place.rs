@@ -219,9 +219,11 @@ impl<'a> FunctionLowerer<'a> {
                 )
             })?;
 
-        let field_ty = field_ty.ok_or_else(|| {
-            Fault::error_with_kind(MirErrorKind::VariableHasNoResolvedType, Some(span))
-        })?;
+        let field_ty = field_ty
+            .and_then(|id| self.declares.get_type(id).cloned())
+            .ok_or_else(|| {
+                Fault::error_with_kind(MirErrorKind::VariableHasNoResolvedType, Some(span))
+            })?;
 
         place.projection.push(mir::PlaceElem::Field(index));
         Ok((place, field_ty))

@@ -240,14 +240,18 @@ fn stub_type<'ctx>(
         .fields
         .iter()
         .map(|field| {
-            let field_ty = field.value.ty.as_ref().ok_or_else(|| {
-                Fault::error_with_kind(
-                    CodegenErrorKind::NonPrimitiveType {
-                        ty: format!("{ty:?}").into_boxed_str(),
-                    },
-                    span,
-                )
-            })?;
+            let field_ty = field
+                .value
+                .ty
+                .and_then(|id| declares.get_type(id))
+                .ok_or_else(|| {
+                    Fault::error_with_kind(
+                        CodegenErrorKind::NonPrimitiveType {
+                            ty: format!("{ty:?}").into_boxed_str(),
+                        },
+                        span,
+                    )
+                })?;
             llvm_type(context, platform, declares, module, field_ty, span)
         })
         .collect::<CodegenResult<Vec<_>>>()?;

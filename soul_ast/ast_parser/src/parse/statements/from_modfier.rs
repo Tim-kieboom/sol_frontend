@@ -38,7 +38,8 @@ impl<'a, 'f> Parser<'a, 'f> {
         let mut ty = None;
         if self.current_is(&COLON) {
             self.bump();
-            ty = Some(self.try_parse_type().merge_to_result()?);
+            let parsed_ty = self.try_parse_type().merge_to_result()?;
+            ty = Some(self.intern_type(parsed_ty));
         }
 
         if self.current_is_any(STAMENT_END_TOKENS) {

@@ -3,7 +3,7 @@ use ast_model::{
 };
 use soul_utils::{TypeModifier, fault::Severity};
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn variable_declaration_with_init() {
@@ -40,7 +40,7 @@ fn variable_declaration_with_init() {
 
 #[test]
 fn variable_declaration_typed() {
-    let (module, store, context) = parse("x: int = 10");
+    let (module, store, context, declares) = parse_with_declares("x: int = 10");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -54,8 +54,8 @@ fn variable_declaration_typed() {
         _ => panic!("expected Variable"),
     };
     assert_eq!(
-        *ty,
-        Some(SoulType::Primitive(
+        ty.and_then(|id| declares.get_type(id)),
+        Some(&SoulType::Primitive(
             soul_utils::soul_names::PrimitiveTypes::Int
         ))
     );

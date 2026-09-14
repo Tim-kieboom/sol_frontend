@@ -6,7 +6,7 @@ use ast_model::{
 };
 use soul_utils::{TypeModifier, fault::Severity, soul_names::PrimitiveTypes};
 
-use crate::tests::parse;
+use crate::tests::parse_with_declares;
 
 const CODE: &str = r#"
 import soul.core
@@ -74,7 +74,7 @@ pub const GLOBAL := 100
 
 #[test]
 fn all_kinds() {
-    let (module, store, context) = parse(CODE);
+    let (module, store, context, declares) = parse_with_declares(CODE);
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -188,8 +188,8 @@ fn all_kinds() {
     );
     assert_eq!(*v1_mod, TypeModifier::Comptime);
     assert_eq!(
-        *v1_ty,
-        Some(SoulType::Primitive(
+        v1_ty.and_then(|id| declares.get_type(id)),
+        Some(&SoulType::Primitive(
             soul_utils::soul_names::PrimitiveTypes::Int
         ))
     );
@@ -225,8 +225,8 @@ fn all_kinds() {
     assert!(matches!(v5_pat, VarPattern::Simple { binding, .. } if binding.ident.as_str() == "w"));
     assert_eq!(*v5_mod, TypeModifier::Mut);
     assert_eq!(
-        *v5_ty,
-        Some(SoulType::Primitive(
+        v5_ty.and_then(|id| declares.get_type(id)),
+        Some(&SoulType::Primitive(
             soul_utils::soul_names::PrimitiveTypes::Int
         ))
     );
