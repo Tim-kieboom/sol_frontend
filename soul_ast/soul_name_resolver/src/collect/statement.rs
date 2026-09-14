@@ -78,14 +78,20 @@ impl<'a> NameResolver<'a> {
                 }
             }
             StatementKind::TypeDef(type_def) => {
-                self.collect_type(&type_def.new_type);
-                self.collect_type(&type_def.old_type);
+                let new_type = self.declares.get_type(type_def.new_type).cloned();
+                let old_type = self.declares.get_type(type_def.old_type).cloned();
+                if let Some(ty) = &new_type {
+                    self.collect_type(ty);
+                }
+                if let Some(ty) = &old_type {
+                    self.collect_type(ty);
+                }
 
                 if !type_def.is_distinct
-                    && let SoulType::Stub(stub) = &type_def.new_type
+                    && let Some(SoulType::Stub(stub)) = &new_type
+                    && let Some(old_type) = old_type
                 {
-                    self.declares
-                        .insert_type_alias(stub.name.clone(), type_def.old_type.clone());
+                    self.declares.insert_type_alias(stub.name.clone(), old_type);
                 }
             }
             StatementKind::Variable(variable) => self.collect_variable(variable),

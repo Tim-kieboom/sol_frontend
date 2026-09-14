@@ -228,8 +228,8 @@ impl<'a, 'f> Parser<'a, 'f> {
             self.skip_till(&[TokenKind::EndLine, TokenKind::EndFile]);
         }
         let typedef = TypeDef {
-            new_type,
-            old_type,
+            new_type: self.intern_type(new_type),
+            old_type: self.intern_type(old_type),
             is_distinct,
         };
 

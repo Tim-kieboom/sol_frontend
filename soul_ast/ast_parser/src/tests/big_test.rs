@@ -614,8 +614,14 @@ fn all_kinds() {
             ..
         }) => {
             assert!(!is_distinct);
-            assert_eq!(*new_type, SoulType::Stub(Stub::new("MyInt".to_string())));
-            assert_eq!(*old_type, SoulType::Primitive(PrimitiveTypes::Int));
+            assert_eq!(
+                declares.get_type(*new_type),
+                Some(&SoulType::Stub(Stub::new("MyInt".to_string())))
+            );
+            assert_eq!(
+                declares.get_type(*old_type),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
         }
         other => panic!("statement 4: expected TypeDef, got {:?}", other),
     }
@@ -631,10 +637,13 @@ fn all_kinds() {
         }) => {
             assert!(is_distinct);
             assert_eq!(
-                *new_type,
-                SoulType::Stub(Stub::new("DistinctInt".to_string()))
+                declares.get_type(*new_type),
+                Some(&SoulType::Stub(Stub::new("DistinctInt".to_string())))
             );
-            assert_eq!(*old_type, SoulType::Primitive(PrimitiveTypes::Int));
+            assert_eq!(
+                declares.get_type(*old_type),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
         }
         other => panic!("statement 5: expected TypeDef, got {:?}", other),
     }

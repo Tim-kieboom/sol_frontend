@@ -530,7 +530,7 @@ fn new_ptr() {
 // ----------------------------------------------------------------
 #[test]
 fn type_alias() {
-    let (module, store, context) = parse("type MyInt = int");
+    let (module, store, context, declares) = parse_with_declares("type MyInt = int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -542,13 +542,16 @@ fn type_alias() {
     match &stmt.node {
         StatementKind::TypeDef(def) => {
             assert_eq!(
-                def.new_type,
-                SoulType::Stub(Stub {
+                declares.get_type(def.new_type),
+                Some(&SoulType::Stub(Stub {
                     name: "MyInt".into(),
                     generics: vec![]
-                })
+                }))
             );
-            assert_eq!(def.old_type, SoulType::Primitive(PrimitiveTypes::Int));
+            assert_eq!(
+                declares.get_type(def.old_type),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
             assert!(!def.is_distinct);
         }
         _ => panic!("expected TypeDef statement"),

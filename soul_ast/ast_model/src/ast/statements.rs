@@ -59,8 +59,8 @@ pub enum StatementKind {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TypeDef {
-    pub new_type: SoulType,
-    pub old_type: SoulType,
+    pub new_type: TypeId,
+    pub old_type: TypeId,
     pub is_distinct: bool,
 }
 

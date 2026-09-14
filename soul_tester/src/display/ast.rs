@@ -577,12 +577,22 @@ impl<'a, W: Writer> Displayer<'a, W> {
     fn write_typedef(&mut self, type_def: &TypeDef) -> Result<()> {
         self.push_str(TYPE_STR)?;
         self.push_char(' ')?;
-        self.write_type(&type_def.new_type)?;
+        let new_type = self
+            .ast
+            .declares
+            .get_type(type_def.new_type)
+            .expect("TypeDef.new_type is always an interned TypeId");
+        self.write_type(new_type)?;
         self.push_str(" = ")?;
         if type_def.is_distinct {
             push_fmt!(self, "{DISTINCT_STR} ")?;
         }
-        self.write_type(&type_def.old_type)
+        let old_type = self
+            .ast
+            .declares
+            .get_type(type_def.old_type)
+            .expect("TypeDef.old_type is always an interned TypeId");
+        self.write_type(old_type)
     }
 
     fn write_struct(&mut self, struct_: &Struct) -> Result<()> {

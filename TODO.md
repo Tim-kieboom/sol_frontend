@@ -663,8 +663,14 @@ that landing first, in order.
         Proven by the same full `cargo test --workspace` + 30-exe-test bar as the two fields above —
         every single one of the 30 exe tests calls at least one function, so this field is exercised
         end-to-end by all of them, not just a subset.
+  - [x] `TypeDef.{new_type, old_type}` (`SoulType` -> `TypeId`, `type X := Y`/`type X := distinct Y`)
+        — smaller, well-contained surface: `ast_parser`'s single `parse_typedef` interning site;
+        `soul_name_resolver`'s `collect_statement` (both types resolved once up front so the
+        `!is_distinct` alias-registration branch, which still stores a real `SoulType` in
+        `DeclareStore::type_aliases`, doesn't need a second lookup); `soul_tester`'s AST display.
+        Proven by the same full `cargo test --workspace` + 30-exe-test bar as the fields above.
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
-        consumer audit, same as the fields above): `TypeDef.{new_type, old_type}`, `UseBlock.ty`,
+        consumer audit, same as the fields above): `UseBlock.ty`,
         `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
