@@ -69,10 +69,11 @@ impl<'a> NameResolver<'a> {
     /// method's `method_type` is the concrete implementing type — the two
     /// are never expected to be equal.
     fn check_impl_conformance(&mut self, impl_block: &ImplBlock, span: Span) {
-        let SoulType::Stub(stub) = &impl_block.impl_trait else {
+        let impl_trait = self.declares.get_type(impl_block.impl_trait);
+        let Some(SoulType::Stub(stub)) = impl_trait else {
             self.log_error(
                 AstErrorKind::ImplTargetIsNotATrait {
-                    name: format!("{:?}", impl_block.impl_trait).into(),
+                    name: format!("{impl_trait:?}").into(),
                 },
                 Some(span),
             );

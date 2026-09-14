@@ -112,7 +112,8 @@ fn use_block_multiple_methods() {
 
 #[test]
 fn use_block_impl_block() {
-    let (module, store, context) = parse("use Foo { impl Bar { baz() {} } }");
+    let (module, store, context, declares) =
+        parse_with_declares("use Foo { impl Bar { baz() {} } }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -127,8 +128,8 @@ fn use_block_impl_block() {
     };
     assert_eq!(use_block.impls.len(), 1);
     assert_eq!(
-        use_block.impls[0].impl_trait,
-        SoulType::Stub(Stub::new("Bar"))
+        declares.get_type(use_block.impls[0].impl_trait),
+        Some(&SoulType::Stub(Stub::new("Bar")))
     );
     assert_eq!(use_block.impls[0].methods.len(), 1);
     let func = &store.functions[use_block.impls[0].methods[0]];
@@ -279,7 +280,8 @@ fn use_block_inline_method() {
 
 #[test]
 fn use_block_mixed_methods_and_impl() {
-    let (module, store, context) = parse("use Foo { bar() {}\nimpl Baz { qux() {} }\nbaz() {} }");
+    let (module, store, context, declares) =
+        parse_with_declares("use Foo { bar() {}\nimpl Baz { qux() {} }\nbaz() {} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -295,8 +297,8 @@ fn use_block_mixed_methods_and_impl() {
     assert_eq!(use_block.methods.len(), 2);
     assert_eq!(use_block.impls.len(), 1);
     assert_eq!(
-        use_block.impls[0].impl_trait,
-        SoulType::Stub(Stub::new("Baz"))
+        declares.get_type(use_block.impls[0].impl_trait),
+        Some(&SoulType::Stub(Stub::new("Baz")))
     );
     assert_eq!(use_block.impls[0].methods.len(), 1);
     let func = &store.functions[use_block.impls[0].methods[0]];

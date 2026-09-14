@@ -131,6 +131,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     ) -> AstResult<ImplBlock> {
         self.expect(&IMPL)?;
         let impl_trait = self.try_parse_type().merge_to_result()?;
+        let impl_trait = self.intern_type(impl_trait);
 
         let mut methods = vec![];
         if !self.current_is(&CURLY_OPEN) {

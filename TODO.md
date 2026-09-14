@@ -675,9 +675,17 @@ that landing first, in order.
         `ImplBlock.impl_trait` (also read by `collect_use_block`/`check_impl_conformance`) is a
         separate, still-`SoulType` field — deliberately not touched here. Proven by the same full
         `cargo test --workspace` + 30-exe-test bar as the fields above.
+  - [x] `ImplBlock.impl_trait` (`SoulType` -> `TypeId`, `impl Trait { .. }`'s target). Single
+        `ast_parser` interning site (`parse_impl_block`, shared by both its early-return and
+        curly-brace exit paths); `soul_name_resolver`'s `check_impl_conformance` (the
+        `let SoulType::Stub(stub) = &impl_block.impl_trait else { .. }` pattern became a `let
+        Some(SoulType::Stub(stub)) = self.declares.get_type(..) else { .. }`, same shape) and
+        `collect_use_block`; `soul_tester`'s `write_impl`. Proven by the same full
+        `cargo test --workspace` + 30-exe-test bar as the fields above (`26_trait_impl_dispatch.soul`
+        specifically exercises this field at runtime).
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
         consumer audit, same as the fields above):
-        `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
+        `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
         above) — only fields directly on an AST node.

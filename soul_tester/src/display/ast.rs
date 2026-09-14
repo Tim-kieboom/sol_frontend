@@ -435,7 +435,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
     fn write_impl(&mut self, impl_: &ImplBlock) -> Result<()> {
         self.push_str(IMPL_STR)?;
         self.push_char(' ')?;
-        self.write_type(&impl_.impl_trait)?;
+        let impl_trait = self
+            .ast
+            .declares
+            .get_type(impl_.impl_trait)
+            .expect("ImplBlock.impl_trait is always an interned TypeId");
+        self.write_type(impl_trait)?;
         self.push_str(" {\n")?;
         self.push_depth();
         for methode in &impl_.methods {

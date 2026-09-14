@@ -131,7 +131,9 @@ impl<'a> NameResolver<'a> {
         }
 
         for impl_block in impls {
-            self.collect_type(&impl_block.impl_trait);
+            if let Some(ty) = self.declares.get_type(impl_block.impl_trait).cloned() {
+                self.collect_type(&ty);
+            }
             for method in &impl_block.methods {
                 self.collect_function_id(*method);
             }

@@ -147,7 +147,7 @@ pub struct UseBlock {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImplBlock {
-    pub impl_trait: SoulType,
+    pub impl_trait: TypeId,
     pub methods: Vec<FunctionId>,
 }
 
