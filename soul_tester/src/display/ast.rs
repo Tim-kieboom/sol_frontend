@@ -806,7 +806,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 },
                 parameter.name.as_str()
             )?;
-            self.write_type(&parameter.ty)?;
+            let parameter_ty = self
+                .ast
+                .declares
+                .get_type(parameter.ty)
+                .expect("Parameter.ty is always an interned TypeId, set at parse time");
+            self.write_type(parameter_ty)?;
             if let Some(value) = parameter.default {
                 self.write_expression(value)?;
             }

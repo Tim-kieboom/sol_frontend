@@ -442,7 +442,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             parameters: vec![Parameter {
                 name: arg,
                 default: None,
-                ty: array_type,
+                ty: self.intern_type(array_type),
                 id: arg_id,
                 mutable: Mutable::Immut,
             }],
@@ -671,6 +671,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ));
             }
 
+            let ty = self.intern_type(ty);
             types.push(Parameter {
                 id: self.alloc_node(),
                 ty,
@@ -734,6 +735,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 }
             };
 
+            let ty = self.intern_type(ty);
             types.push(Parameter {
                 id: self.alloc_node(),
                 ty,

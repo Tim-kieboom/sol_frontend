@@ -19,6 +19,8 @@ use std::{collections::HashMap, path::PathBuf};
 
 mod ast;
 pub mod declare_store;
+#[cfg(test)]
+mod declare_store_tests;
 pub mod fault;
 pub mod scope;
 

@@ -9,7 +9,7 @@ use ast_parser::{ParseInfo, fault::AstErrorKind, parse_module};
 use soul_tokenizer::to_token_stream;
 use soul_utils::collections::{crate_store::CrateStore, module_store::ModuleStore};
 
-use crate::name_resolve;
+use crate::{collect::tests::fault_count_matching, name_resolve};
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,19 +45,13 @@ fn resolve_in_dir(dir: &Path, source: &str) -> AstTree {
         modules: &mut module_store,
         context: &mut ast.context,
         forest: &mut ast.crates,
+        declares: &mut ast.declares,
         crate_store: &crate_store,
     };
     parse_module(tokens, "crate".to_string(), info);
 
     name_resolve(&mut module_store, &mut ast, &crate_store);
     ast
-}
-
-fn fault_count_matching(ast: &AstTree, predicate: impl Fn(&AstErrorKind) -> bool) -> usize {
-    ast.faults()
-        .iter()
-        .filter(|fault| predicate(fault.kind()))
-        .count()
 }
 
 #[test]

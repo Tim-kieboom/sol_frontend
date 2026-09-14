@@ -593,6 +593,59 @@ that landing first, in order.
 - [ ] Const generics (`Limit<T, RANGE>`)
 - [ ] Full reflection (`intrinsic.typeinfo`) — AST/compile-time design exists in
       [reflection-system.md](docs/reflection-system.md), backend (HIR/MIR/LLVM) not started
+- [ ] `TypeId` interning for `any` (a runtime `void*` + `TypeId` payload) and `var.typeof == int`
+      (requires `SoulType::Type` to carry a comparable `TypeId`). Scoped down via `/grill-me` from
+      an original "single global `BiMap<TypeId, SoulType>`, flatten every recursive `SoulType`
+      field (`ArrayType.of_type`, `Reference.inner`, `Optional`, etc.) to `TypeId`, used everywhere"
+      plan:
+  - Slice is `any`/`typeof` only for now — `trait_impls` (a comptime-built dispatch table also
+    keyed by `TypeId`) is a separate, deferred follow-up, not part of this work.
+  - `SoulType`'s internal recursive structure stays `Box<SoulType>` as-is; only boundary/leaf
+    usages (an AST node's own type, an `any` payload, a `typeof` comparison target) get interned —
+    not `ArrayType.of_type`/`Reference.inner`/etc. Full flattening was dropped: it would force every
+    `SoulType`-constructing site across `soul_ast`/`soul_mir` (~30 files) to carry interner access,
+    and there's no way to `Debug`-print a bare `TypeId` without a context parameter `fmt::Debug`
+    can't carry.
+  - Because monomorphized generics aren't implemented yet, there's no codegen-time type discovery
+    to worry about: the interner can just grow as the parser/resolver encounter types — no
+    incremental-during-codegen insertion, no risk of a runtime table being emitted before all
+    `TypeId`s exist. Revisit this once generics/monomorphization land (`M3`) — that reopens the
+    incremental-discovery problem this slice sidesteps.
+  - [x] Foundation: `TypeId` (`impl_soul_ids!(TypeId)` in `ast_model/src/ast/soul_type.rs`, a plain
+        monotonic `usize` like every other id type) plus `DeclareStore::{intern_type, get_type,
+        get_type_id}` wrapping the existing `soul_utils::collections::bimap::BiMap<TypeId,
+        SoulType>` (this collection already existed — no new interning mechanism had to be built).
+        `SoulType` and its nested types (`TupleKind`, `ArrayType`, `ReferenceType`, `Stub`) gained
+        `Eq`/`Hash` (plus `Mutable` in `soul_utils`) so they can key the `BiMap`; no other behavior
+        changed. Proven via 5 `ast_model::declare_store_tests` cases (same-value interning dedupes,
+        structurally-equal nested types built separately canonicalize to the same id, different
+        types get different ids, `get_type`/`get_type_id` round-trip).
+  - [x] `ast_parser::Parser` threaded a `&mut DeclareStore` (new `ParseInfo.declares` field, plumbed
+        through both module-parsing entry points) so it can call `intern_type` at the exact point an
+        AST node's type gets built — not a later pass, so the AST node's own field is genuinely
+        `TypeId` from the moment it exists, never a transient `SoulType`.
+  - [x] First real field converted end-to-end: `Parameter.ty` (`SoulType` -> `TypeId`) —
+        `ast_parser`'s 3 construction sites now call `self.intern_type(..)`; every consumer
+        (`soul_name_resolver::collect::statement`'s `collect_extern_signature`/`collect_function`,
+        `soul_name_resolver::resolve::typecheck::function_call`'s argument-type checking,
+        `mir_parser`'s `FunctionLowerer::lower` and `lower_extern_signature`, `soul_tester`'s AST
+        display) now resolves the `TypeId` back to `&SoulType` via `declares.get_type` before using
+        it. Proven by the full `cargo test --workspace` suite plus all 30 real exe tests
+        (`scripts/run_codegen_tests.py`) still passing unchanged — this field is on the hot path for
+        every function parameter in every one of those programs.
+  - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
+        consumer audit, same as `Parameter.ty` above): `Variable.ty`, `InnerFunctionSignature.
+        {method_type, return_type}`, `TypeDef.{new_type, old_type}`, `UseBlock.ty`,
+        `ImplBlock.impl_trait`, `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
+        parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
+        `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
+        above) — only fields directly on an AST node.
+  - [ ] Wire `any`'s runtime representation (`{ptr, TypeId}`) into `mir_parser`/`mir_codegen` (today
+        `require_lowerable` rejects `SoulType::Any` outright).
+  - [ ] `.typeof`/`==` comparison lowering. No syntax exists yet for "a type name used as a value"
+        (e.g. the `int` in `var.typeof == int`) — needs a language-design decision, not just an
+        implementation, before this can be parsed at all. `ExpressionKind::TypeOf` currently has
+        zero `mir_parser`/`mir_codegen` lowering (resolver-only, typed as `SoulType::Type`).
 - [ ] Operator overloading
 - [ ] Goul
 

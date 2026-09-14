@@ -31,6 +31,7 @@ mod function;
 
 pub struct MirLowerer<'a> {
     store: &'a AstStore,
+    declares: &'a DeclareStore,
     function_lowerer: FunctionLowerer<'a>,
     functions: VecMap<FunctionId, mir::Function>,
     externs: VecMap<FunctionId, mir::ExternFunction>,
@@ -43,6 +44,7 @@ impl<'a> MirLowerer<'a> {
     ) -> Self {
         Self {
             store,
+            declares,
             functions: VecMap::new(),
             externs: VecMap::new(),
             function_lowerer: FunctionLowerer::new(store, declares, options),
@@ -77,7 +79,7 @@ impl<'a> MirLowerer<'a> {
                         Some(signature.span),
                     ));
                 }
-                let extern_fn = lower_extern_signature(&signature.value);
+                let extern_fn = lower_extern_signature(&signature.value, self.declares);
                 self.externs.insert(signature.value.id, extern_fn);
                 Ok(())
             }
@@ -85,11 +87,23 @@ impl<'a> MirLowerer<'a> {
     }
 }
 
-fn lower_extern_signature(signature: &ast::InnerFunctionSignature) -> mir::ExternFunction {
+fn lower_extern_signature(
+    signature: &ast::InnerFunctionSignature,
+    declares: &DeclareStore,
+) -> mir::ExternFunction {
     let is_none_return = matches!(signature.return_type, ast::SoulType::None);
     mir::ExternFunction {
         id: signature.id,
-        params: signature.parameters.iter().map(|p| p.ty.clone()).collect(),
+        params: signature
+            .parameters
+            .iter()
+            .map(|p| {
+                declares
+                    .get_type(p.ty)
+                    .cloned()
+                    .expect("Parameter.ty is always an interned TypeId, set at parse time")
+            })
+            .collect(),
         return_type: (!is_none_return).then(|| signature.return_type.clone()),
     }
 }

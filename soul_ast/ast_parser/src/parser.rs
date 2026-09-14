@@ -1,4 +1,6 @@
-use ast_model::{AstModuleStore, Block, BlockId, CrateForest, Module, SoulType};
+use ast_model::{
+    AstModuleStore, Block, BlockId, CrateForest, Module, SoulType, declare_store::DeclareStore,
+};
 use soul_tokenizer::TokenStream;
 #[cfg(debug_assertions)]
 use soul_tokenizer::model::Token;
@@ -43,6 +45,7 @@ pub(crate) struct Parser<'a, 'f> {
     pub(crate) context: &'f mut CrateContext<crate::fault::AstErrorKind>,
     pub(crate) forest: &'f mut CrateForest,
     pub(crate) crate_store: &'f CrateStore,
+    pub(crate) declares: &'f mut DeclareStore,
 }
 impl<'a, 'f> Parser<'a, 'f> {
     pub fn parse(tokens: TokenStream<'a>, name: String, info: ParseInfo<'f>) {
@@ -114,7 +117,16 @@ impl<'a, 'f> Parser<'a, 'f> {
             source_path: info.source_folder,
             crate_source_path: info.crate_source_folder,
             crate_store: info.crate_store,
+            declares: info.declares,
             current: Current::default(),
         }
+    }
+
+    /// Interns `ty`, returning its canonical [`ast_model::TypeId`] — the one
+    /// place a `SoulType` an AST node stores actually gets built into that
+    /// node, so every such site goes through here instead of storing the
+    /// `SoulType` value directly.
+    pub(crate) fn intern_type(&mut self, ty: SoulType) -> ast_model::TypeId {
+        self.declares.intern_type(ty)
     }
 }

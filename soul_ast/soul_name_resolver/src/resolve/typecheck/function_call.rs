@@ -31,7 +31,11 @@ impl<'a> NameResolver<'a> {
             let mut generic_bindings: Vec<(&str, SoulType)> = Vec::new();
 
             for (argument, parameter) in call.arguments.iter().zip(&parameters) {
-                if matches!(parameter.ty, SoulType::ImplTrait(_)) {
+                let Some(parameter_ty) = self.declares.get_type(parameter.ty).cloned() else {
+                    continue;
+                };
+
+                if matches!(parameter_ty, SoulType::ImplTrait(_)) {
                     continue;
                 }
 
@@ -46,7 +50,7 @@ impl<'a> NameResolver<'a> {
                     .map(|expr| expr.span)
                     .unwrap_or(call.name.span());
 
-                if let Some(generic_name) = generic_name_of(&parameter.ty, &generics) {
+                if let Some(generic_name) = generic_name_of(&parameter_ty, &generics) {
                     match generic_bindings
                         .iter()
                         .find(|(name, _)| *name == generic_name)
@@ -68,13 +72,13 @@ impl<'a> NameResolver<'a> {
                     continue;
                 }
 
-                if self.combine_operand_types(&arg_ty, &parameter.ty).is_some() {
+                if self.combine_operand_types(&arg_ty, &parameter_ty).is_some() {
                     continue;
                 }
 
                 self.log_error(
                     AstErrorKind::ArgumentTypeMismatch {
-                        expected: format!("{:?}", parameter.ty).into(),
+                        expected: format!("{:?}", parameter_ty).into(),
                         got: format!("{arg_ty:?}").into(),
                     },
                     Some(span),

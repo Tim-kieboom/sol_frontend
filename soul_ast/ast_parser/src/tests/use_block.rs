@@ -1,7 +1,7 @@
 use ast_model::{FunctionKind, Import, ImportKind, SoulType, StatementKind, Struct, Stub};
 use soul_utils::{SharedStr, fault::Severity, soul_names::PrimitiveTypes};
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn use_block_empty() {
@@ -405,7 +405,8 @@ fn unclosed_impl_block_is_rejected() {
 
 #[test]
 fn use_block_method_with_params() {
-    let (module, store, context) = parse("use Foo { bar(x: int, y: string) {} }");
+    let (module, store, context, declares) =
+        parse_with_declares("use Foo { bar(x: int, y: string) {} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -426,7 +427,7 @@ fn use_block_method_with_params() {
     assert_eq!(f.signature.value.parameters.len(), 2);
     assert_eq!(f.signature.value.parameters[0].name.as_str(), "x");
     assert_eq!(
-        f.signature.value.parameters[0].ty,
-        SoulType::Primitive(PrimitiveTypes::Int)
+        declares.get_type(f.signature.value.parameters[0].ty),
+        Some(&SoulType::Primitive(PrimitiveTypes::Int))
     );
 }

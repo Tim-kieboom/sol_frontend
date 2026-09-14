@@ -176,7 +176,9 @@ impl<'a> NameResolver<'a> {
         self.collect_type(&inner.method_type);
         self.collect_type(&inner.return_type);
         for parameter in &inner.parameters {
-            self.collect_type(&parameter.ty);
+            if let Some(ty) = self.declares.get_type(parameter.ty).cloned() {
+                self.collect_type(&ty);
+            }
         }
 
         self.declares
@@ -209,7 +211,10 @@ impl<'a> NameResolver<'a> {
         }
 
         for parameter in signature.parameters.iter() {
-            self.collect_type(&parameter.ty);
+            let resolved_ty = self.declares.get_type(parameter.ty).cloned();
+            if let Some(ty) = &resolved_ty {
+                self.collect_type(ty);
+            }
             let span = parameter.name.span();
             let name = parameter.name.as_shared_str();
             self.insert_value(name, parameter.id, span, ScopeValue::Variable);
@@ -218,7 +223,7 @@ impl<'a> NameResolver<'a> {
             self.declares.insert_variable_type(
                 parameter.id,
                 modifier,
-                Some(parameter.ty.clone()),
+                resolved_ty,
                 self.current.module,
             );
 

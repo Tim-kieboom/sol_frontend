@@ -7,21 +7,9 @@ use soul_utils::collections::{crate_store::CrateStore, module_store::ModuleStore
 
 use crate::name_resolve;
 
-mod assignment_tests;
-mod binary_expression_tests;
-mod enum_variant_construction_tests;
-mod field_access_type_tests;
-mod foreach_element_type_tests;
-mod function_call_argument_tests;
-mod function_call_tests;
-mod lambda_type_tests;
-mod redeclaration_tests;
-mod return_type_tests;
-mod struct_constructor_tests;
-mod trait_impl_tests;
-mod undefined_name_tests;
-mod variable_order_tests;
-mod variable_type_backfill_tests;
+mod function_and_variable_name_tests;
+mod import_tests;
+mod statement_tests;
 
 fn resolve_source(source: &str) -> AstTree {
     let mut module_store = ModuleStore::new();
@@ -55,4 +43,3 @@ fn fault_count_matching(ast: &AstTree, predicate: impl Fn(&AstErrorKind) -> bool
         .filter(|fault| predicate(fault.kind()))
         .count()
 }
-

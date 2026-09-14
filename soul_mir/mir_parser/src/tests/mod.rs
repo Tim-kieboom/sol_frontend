@@ -45,6 +45,7 @@ fn resolve_source(source: &str) -> AstTree {
         modules: &mut module_store,
         context: &mut ast.context,
         forest: &mut ast.crates,
+        declares: &mut ast.declares,
         crate_store: &crate_store,
     };
     parse_module(tokens, "crate".to_string(), info);

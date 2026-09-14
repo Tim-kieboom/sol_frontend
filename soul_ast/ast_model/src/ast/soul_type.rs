@@ -1,8 +1,12 @@
 use std::{fmt, rc::Rc};
 
-use soul_utils::{Ident, Mutable, SharedStr, soul_names::PrimitiveTypes};
+use soul_utils::{Ident, Mutable, SharedStr, impl_soul_ids, soul_names::PrimitiveTypes};
 
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+// TypeId: uniquely identifies a canonical, interned SoulType — see
+// DeclareStore::intern_type.
+impl_soul_ids!(TypeId);
+
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SoulType {
     /// empty type
     None,
@@ -117,7 +121,7 @@ impl fmt::Debug for SoulType {
 
 /// A tuple type, either positional (`(int, str)`) or with named fields
 /// (`(number: int, text: str)`).
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TupleKind {
     /// A positional tuple: `(int, str)`.
     Tuple(Tuple),
@@ -173,7 +177,7 @@ pub type Tuple = Vec<SoulType>;
 pub type NamedTuple = Vec<(Ident, SoulType)>;
 
 /// Array type
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ArrayType {
     /// The element type of the array.
     pub of_type: Box<SoulType>,
@@ -207,7 +211,7 @@ pub enum ArrayKind {
     ConstSlice,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceType {
     /// The inner type being referenced.
     pub inner: Box<SoulType>,
@@ -219,7 +223,7 @@ pub struct ReferenceType {
 
 /// An as-yet-unresolved named type reference (e.g. a struct/enum/trait name
 /// before it has been linked to its declaration), with any generic arguments.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Stub {
     /// The referenced type's name.
     pub name: SharedStr,

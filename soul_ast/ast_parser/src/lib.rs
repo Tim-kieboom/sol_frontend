@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ast_model::CrateForest;
+use ast_model::{CrateForest, declare_store::DeclareStore};
 use soul_tokenizer::TokenStream;
 use soul_utils::{
     CrateContext,
@@ -28,6 +28,7 @@ pub struct ParseInfo<'f> {
     pub context: &'f mut CrateContext<crate::fault::AstErrorKind>,
     pub forest: &'f mut CrateForest,
     pub crate_store: &'f CrateStore,
+    pub declares: &'f mut DeclareStore,
 }
 
 pub fn parse_module<'a, 'f>(input: TokenStream<'a>, name: String, info: ParseInfo<'f>) {

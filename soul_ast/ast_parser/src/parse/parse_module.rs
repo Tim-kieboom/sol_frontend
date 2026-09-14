@@ -200,6 +200,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             context: self.context,
             modules: self.modules,
             forest: self.forest,
+            declares: self.declares,
             crate_source_folder: self.crate_source_path.clone(),
             crate_store: self.crate_store,
         };

@@ -4,7 +4,7 @@ use ast_model::{
 };
 use soul_utils::fault::Severity;
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn expression_bodied_function() {
@@ -540,7 +540,8 @@ fn function_with_multi_where_clause() {
 // ----------------------------------------------------------------
 #[test]
 fn param_impl_trait() {
-    let (module, store, context) = parse("describeImpl(value: impl Display): str {}");
+    let (module, store, context, declares) =
+        parse_with_declares("describeImpl(value: impl Display): str {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -560,8 +561,10 @@ fn param_impl_trait() {
     };
     assert_eq!(signature.value.parameters.len(), 1);
     assert_eq!(
-        signature.value.parameters[0].ty,
-        SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new("Display"))))
+        declares.get_type(signature.value.parameters[0].ty),
+        Some(&SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new(
+            "Display"
+        )))))
     );
 }
 

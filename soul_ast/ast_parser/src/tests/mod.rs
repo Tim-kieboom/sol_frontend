@@ -74,6 +74,21 @@ fn create_test_crate_store(test_env: &TestEnv) -> CrateStore {
 }
 
 fn parse(source: &str) -> (Module, AstStore, CrateContext<AstErrorKind>) {
+    let (module, store, context, _declares) = parse_with_declares(source);
+    (module, store, context)
+}
+
+/// Like [`parse`], but also returns the `DeclareStore` populated during
+/// parsing — needed by tests that inspect an interned `TypeId` (e.g. a
+/// `Parameter.ty`) back to its `SoulType`.
+fn parse_with_declares(
+    source: &str,
+) -> (
+    Module,
+    AstStore,
+    CrateContext<AstErrorKind>,
+    ast_model::declare_store::DeclareStore,
+) {
     let test_env = &*TEST_ENV;
     let module_id = module_id();
     let stream = to_token_stream(source, module_id).unwrap();
@@ -88,6 +103,7 @@ fn parse(source: &str) -> (Module, AstStore, CrateContext<AstErrorKind>) {
         context: &mut ast.context,
         modules: &mut modules,
         forest: &mut ast.crates,
+        declares: &mut ast.declares,
         crate_store: &crate_store,
     };
     parse_module(stream, "test".to_string(), info);
@@ -98,7 +114,7 @@ fn parse(source: &str) -> (Module, AstStore, CrateContext<AstErrorKind>) {
         .remove(module_id)
         .expect("should have module");
 
-    (module, ast.crates.store, ast.context)
+    (module, ast.crates.store, ast.context, ast.declares)
 }
 
 fn get_statement<'a>(store: &'a AstStore, module: &Module, index: usize) -> &'a Statement {

@@ -1,6 +1,6 @@
 use crate::{
     AstStore, Binding, BlockId, Expression, ExpressionId, ExpressionKind, FunctionCall, Generic,
-    NodeId, SoulType,
+    NodeId, SoulType, TypeId,
 };
 use soul_utils::{
     FunctionId, Ident, Mutable, TypeModifier, bitflags,
@@ -352,7 +352,7 @@ pub struct InnerFunctionSignature {
 pub struct Parameter {
     pub id: NodeId,
     pub name: Ident,
-    pub ty: SoulType,
+    pub ty: TypeId,
     pub mutable: Mutable,
     pub default: Option<ExpressionId>,
 }

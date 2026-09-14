@@ -2,10 +2,14 @@ use std::collections::HashMap;
 
 use crate::{
     CustomType, Enum, ExpressionId, InnerFunctionSignature, NodeId, SoulType, Struct, Trait,
+    TypeId,
 };
 use soul_utils::{
-    FunctionId, SharedStr, TypeModifier, collections::vec_map::VecMap,
-    intrinsics::IntrinsicFunction, span::ModuleId,
+    FunctionId, SharedStr, TypeModifier,
+    collections::{bimap::BiMap, vec_map::VecMap},
+    ids::IdGenerator,
+    intrinsics::IntrinsicFunction,
+    span::ModuleId,
 };
 
 /// A store of all declarations in a module.
@@ -49,6 +53,9 @@ pub struct DeclareStore {
     /// underlying type `Y`. A `distinct` alias is deliberately not
     /// interchangeable with its underlying type, so it's never registered here.
     type_aliases: HashMap<SharedStr, SoulType>,
+    /// Canonical `TypeId <-> SoulType` interning table — see [`Self::intern_type`].
+    type_ids: BiMap<TypeId, SoulType>,
+    type_id_alloc: IdGenerator<TypeId>,
 }
 impl DeclareStore {
     /// Creates a new empty declaration store.
@@ -66,6 +73,8 @@ impl DeclareStore {
             expression_types: VecMap::new(),
             type_aliases: HashMap::new(),
             receiver_bindings: VecMap::new(),
+            type_ids: BiMap::new(),
+            type_id_alloc: IdGenerator::new(),
         }
     }
 
@@ -288,6 +297,25 @@ impl DeclareStore {
     /// The underlying type of a non-`distinct` alias by name, if `name` is one.
     pub fn get_type_alias(&self, name: &str) -> Option<&SoulType> {
         self.type_aliases.get(name)
+    }
+
+    /// Interns `ty`, returning its canonical `TypeId`. Interning the same
+    /// `SoulType` value twice (by `PartialEq`) always returns the same id —
+    /// this is the single entry point that keeps the `TypeId <-> SoulType`
+    /// mapping 1:1, so callers should never construct a `TypeId` any other way.
+    pub fn intern_type(&mut self, ty: SoulType) -> TypeId {
+        self.type_ids.insert(&mut self.type_id_alloc, ty)
+    }
+
+    /// Looks up the canonical `SoulType` a `TypeId` was interned from.
+    pub fn get_type(&self, id: TypeId) -> Option<&SoulType> {
+        self.type_ids.get_value(id)
+    }
+
+    /// Looks up the `TypeId` `ty` was interned as, without interning it if
+    /// it hasn't been seen before.
+    pub fn get_type_id(&self, ty: &SoulType) -> Option<TypeId> {
+        self.type_ids.get_key(ty)
     }
 }
 

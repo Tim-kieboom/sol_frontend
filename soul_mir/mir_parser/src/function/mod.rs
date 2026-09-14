@@ -139,9 +139,14 @@ impl<'a> FunctionLowerer<'a> {
 
         for parameter in &signature.parameters {
             let span = parameter.name.span();
-            self.require_lowerable(&parameter.ty, span)?;
+            let ty = self
+                .declares
+                .get_type(parameter.ty)
+                .cloned()
+                .expect("Parameter.ty is always an interned TypeId, set at parse time");
+            self.require_lowerable(&ty, span)?;
             let modifier = parameter.mutable.to_type_modifier();
-            let local = self.alloc_local(parameter.ty.clone(), modifier, span);
+            let local = self.alloc_local(ty, modifier, span);
             self.node_to_local.insert(parameter.id, local);
         }
 

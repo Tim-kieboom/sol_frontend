@@ -40,6 +40,7 @@ pub fn to_ast<'a>(
         modules: module_store,
         context: &mut ast.context,
         forest: &mut ast.crates,
+        declares: &mut ast.declares,
         source_folder: source_folder.clone(),
         crate_source_folder: source_folder.clone(),
     };

@@ -139,6 +139,7 @@ fn bench_parse(c: &mut Criterion) {
                         modules: &mut module_store,
                         context: &mut ast.context,
                         forest: &mut ast.crates,
+                        declares: &mut ast.declares,
                         source_folder: input.source_folder.clone(),
                         crate_source_folder: input.source_folder.clone(),
                     };
@@ -172,6 +173,7 @@ fn bench_resolve(c: &mut Criterion) {
                         modules: &mut module_store,
                         context: &mut ast.context,
                         forest: &mut ast.crates,
+                        declares: &mut ast.declares,
                         source_folder: input.source_folder.clone(),
                         crate_source_folder: input.source_folder.clone(),
                     };
