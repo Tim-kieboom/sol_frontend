@@ -1,7 +1,7 @@
 use ast_model::{EnumVariant, ExpressionKind, Literal, SoulType, StatementKind, UnionKind};
 use soul_utils::{fault::Severity, soul_names::PrimitiveTypes};
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn enum_empty() {
@@ -233,7 +233,8 @@ fn enum_named_union_variant_single_field() {
 
 #[test]
 fn enum_with_underlying_type() {
-    let (module, store, context) = parse("enum Foo: int { A = 1, B = 2 }");
+    let (module, store, context, declares) =
+        parse_with_declares("enum Foo: int { A = 1, B = 2 }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -248,8 +249,8 @@ fn enum_with_underlying_type() {
     };
     assert_eq!(enum_.variants.len(), 2);
     assert_eq!(
-        enum_.impl_type,
-        Some(SoulType::Primitive(PrimitiveTypes::Int))
+        enum_.impl_type.and_then(|id| declares.get_type(id)),
+        Some(&SoulType::Primitive(PrimitiveTypes::Int))
     );
 }
 

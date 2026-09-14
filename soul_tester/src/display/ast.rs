@@ -695,7 +695,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
     fn write_enum(&mut self, enum_: &Enum) -> Result<()> {
         push_fmt!(self, "{ENUM_STR} {}", enum_.name)?;
-        if let Some(ty) = &enum_.impl_type {
+        if let Some(ty) = enum_.impl_type.and_then(|id| self.ast.declares.get_type(id)) {
             self.push_str(": ")?;
             self.write_type(ty)?;
         }

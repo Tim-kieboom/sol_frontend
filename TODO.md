@@ -683,9 +683,17 @@ that landing first, in order.
         `collect_use_block`; `soul_tester`'s `write_impl`. Proven by the same full
         `cargo test --workspace` + 30-exe-test bar as the fields above (`26_trait_impl_dispatch.soul`
         specifically exercises this field at runtime).
+  - [x] `Enum.impl_type` (`Option<SoulType>` -> `Option<TypeId>`, `enum Foo: int { .. }`'s backing
+        type). The smallest surface yet — no `soul_name_resolver`/`mir_parser` consumer reads this
+        field at all today (it's parsed and stored but never type-checked or used for discriminant
+        lowering; `union`'s own `Enum` value always passes `impl_type: None` and isn't affected).
+        Only `ast_parser`'s `parse_enum` interning site and `soul_tester`'s `write_enum` needed
+        changes. Proven by the same full `cargo test --workspace` + 30-exe-test bar as the fields
+        above (none of the 30 exe tests use an enum backing type — this field genuinely isn't
+        exercised by codegen yet, only by the parser test that round-trips it).
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
         consumer audit, same as the fields above):
-        `Enum.impl_type`, `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
+        `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
         parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
         above) — only fields directly on an AST node.

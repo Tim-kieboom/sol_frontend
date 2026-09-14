@@ -82,7 +82,7 @@ pub struct Enum {
 
     pub name: Ident,
     pub variants: Vec<EnumVariant>,
-    pub impl_type: Option<SoulType>,
+    pub impl_type: Option<TypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

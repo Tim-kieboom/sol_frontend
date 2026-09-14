@@ -89,7 +89,8 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let impl_type = if self.current_is_any(&[AS, COLON]) {
             self.bump();
-            Some(self.try_parse_type().merge_to_result()?)
+            let ty = self.try_parse_type().merge_to_result()?;
+            Some(self.intern_type(ty))
         } else {
             None
         };
