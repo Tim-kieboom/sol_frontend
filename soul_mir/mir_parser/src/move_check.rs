@@ -129,7 +129,9 @@ fn check_rvalue(
             check_operand(function, left, moved, faults);
             check_operand(function, right, moved, faults);
         }
-        mir::Rvalue::UnaryOp(_, operand) | mir::Rvalue::Cast(operand, _) => {
+        mir::Rvalue::UnaryOp(_, operand)
+        | mir::Rvalue::Cast(operand, _)
+        | mir::Rvalue::HeapAlloc(_, operand) => {
             check_operand(function, operand, moved, faults);
         }
         mir::Rvalue::Ref { place, .. } | mir::Rvalue::Len(place) => {

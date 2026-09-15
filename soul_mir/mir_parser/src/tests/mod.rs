@@ -2051,7 +2051,7 @@ fn function_span(ast: &AstTree, name: &str) -> soul_utils::span::Span {
 }
 
 #[test]
-fn is_auto_copy_treats_primitives_references_and_pointers_as_autocopy() {
+fn is_auto_copy_treats_primitives_and_references_as_autocopy() {
     let mut ast = resolve_source("f(): none {}\n");
     let span = function_span(&ast, "f");
     let int_ty = ast
@@ -2062,6 +2062,20 @@ fn is_auto_copy_treats_primitives_references_and_pointers_as_autocopy() {
         lifetime: None,
         mutable: Mutable::Immut,
     }));
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    assert!(lowerer.is_auto_copy(int_ty, span).expect("lowerable"));
+    assert!(lowerer.is_auto_copy(ref_ty, span).expect("lowerable"));
+}
+
+#[test]
+fn is_auto_copy_treats_an_owning_pointer_as_move_only() {
+    // Unlike `&T`/`RawPtr<T>`, `*T` (`SoulType::Pointer`) is an *owning*
+    // heap pointer — `new(expr)`'s own result type, freed by its `Drop` —
+    // so it's move-only, same as a struct: copying it would produce two
+    // "owners" of the same allocation.
+    let mut ast = resolve_source("f(): none {}\n");
+    let span = function_span(&ast, "f");
     let ptr_ty = ast.declares.intern_type(SoulType::Pointer(ReferenceType {
         inner: TypeId::NONE,
         lifetime: None,
@@ -2069,9 +2083,10 @@ fn is_auto_copy_treats_primitives_references_and_pointers_as_autocopy() {
     }));
     let lowerer = lowerer_for_is_auto_copy(&mut ast);
 
-    assert!(lowerer.is_auto_copy(int_ty, span).expect("lowerable"));
-    assert!(lowerer.is_auto_copy(ref_ty, span).expect("lowerable"));
-    assert!(lowerer.is_auto_copy(ptr_ty, span).expect("lowerable"));
+    assert!(
+        !lowerer.is_auto_copy(ptr_ty, span).expect("lowerable"),
+        "an owning *T pointer should be move-only"
+    );
 }
 
 #[test]
@@ -2819,4 +2834,54 @@ fn check_moves_flags_a_borrow_of_an_already_moved_value() {
         faults
     );
     assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn new_expression_lowers_to_a_heap_alloc_rvalue() {
+    let mir = lower_source("f(): int {\n    p := new(5)\n    return *p\n}\n", "f")
+        .expect("expected successful lowering");
+
+    let heap_alloc = mir.blocks.entries().find_map(|(_, block)| {
+        block.statements.iter().find_map(|statement| {
+            let mir_model::Statement::Assign(place, Rvalue::HeapAlloc(_, operand)) = statement
+            else {
+                return None;
+            };
+            Some((place.local, operand.clone()))
+        })
+    });
+    let Some((p_local, operand)) = heap_alloc else {
+        panic!(
+            "expected a HeapAlloc rvalue assigned into p, got {:#?}",
+            mir.blocks
+        );
+    };
+    assert!(
+        matches!(operand, Operand::Constant(ConstValue::Uint(5))),
+        "expected the allocated value to be the constant 5, got {operand:#?}"
+    );
+
+    // `return *p` reads through a Deref projection on p's own place, same
+    // as any other reference/pointer dereference.
+    let return_place = mir.blocks.entries().find_map(|(_, block)| {
+        block.statements.iter().find_map(|statement| {
+            let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Copy(deref_place))) =
+                statement
+            else {
+                return None;
+            };
+            (Some(place.local) == mir.return_local).then(|| deref_place.clone())
+        })
+    });
+    let Some(deref_place) = return_place else {
+        panic!(
+            "expected the return value to read through a Deref place, got {:#?}",
+            mir.blocks
+        );
+    };
+    assert_eq!(deref_place.local, p_local);
+    assert!(matches!(
+        deref_place.projection.as_slice(),
+        [mir_model::PlaceElem::Deref]
+    ));
 }

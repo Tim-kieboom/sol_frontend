@@ -222,7 +222,10 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
     fn write_operand(&mut self, operand: &Operand) -> Result<()> {
         match operand {
-            Operand::Copy(place) => self.write_place(place)?,
+            Operand::Copy(place) => {
+                self.write_place(place)?;
+                self.push_str(".copy")?;
+            }
             Operand::Move(place) => {
                 self.push_str("move ")?;
                 self.write_place(place)?;
@@ -280,6 +283,17 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.push_str("len(")?;
                 self.write_place(place)?;
                 self.push_char(')')?;
+            }
+            Rvalue::HeapAlloc(ty, operand) => {
+                self.push_str("new(")?;
+                self.write_operand(operand)?;
+                let ty = ast_model::print_type(
+                    self.declares
+                        .get_type(*ty)
+                        .expect("mir::Type is always an interned TypeId"),
+                    self.declares,
+                );
+                push_fmt!(self, ") /* -> *{ty} */")?;
             }
         }
         Ok(())

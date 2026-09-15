@@ -28,8 +28,12 @@ impl<'a> NameResolver<'a> {
             | ExpressionKind::Literal(_)
             | ExpressionKind::Undefined(_) => (),
 
-            ExpressionKind::New(value)
-            | ExpressionKind::Pass(value)
+            ExpressionKind::New(value) => {
+                self.resolve_expression(*value);
+                self.check_new_expression(expression_id, *value);
+            }
+
+            ExpressionKind::Pass(value)
             | ExpressionKind::Copy(value)
             | ExpressionKind::Sizeof(value) => self.resolve_expression(*value),
 

@@ -7,13 +7,13 @@ use ast_model::{
     operators::{BinaryOperatorKind, UnaryOperatorKind},
 };
 use inkwell::{
-    FloatPredicate, IntPredicate,
+    AddressSpace, FloatPredicate, IntPredicate,
     intrinsics::Intrinsic,
     module::Linkage,
-    types::BasicTypeEnum,
+    types::{BasicType, BasicTypeEnum},
     values::{BasicValueEnum, FloatValue, IntValue, PointerValue},
 };
-use mir_model::{AggregateKind, ConstValue, Operand, Place, Rvalue};
+use mir_model::{AggregateKind, ConstValue, Operand, Place, Rvalue, Type};
 
 use crate::{
     err,
@@ -73,8 +73,59 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             }
             Rvalue::Len(place) => self.codegen_len(place),
             Rvalue::Cast(operand, _) => self.codegen_cast(operand, result_ty),
+            Rvalue::HeapAlloc(ty, operand) => self.codegen_heap_alloc(*ty, operand),
             Rvalue::Aggregate(..) => Err(err(CodegenErrorKind::UnsupportedRvalue)),
         }
+    }
+
+    /// `new(expr)`: `malloc`s a fresh slot sized for `ty`, stores `operand`'s
+    /// value into it, evaluates to the resulting pointer. No null check on
+    /// `malloc`'s result yet (an OOM `Assert`, the same shape checked
+    /// arithmetic already uses) — this is the minimal "allocate and use it"
+    /// slice; freeing it at `Drop` and OOM-checking are both separate,
+    /// later steps (see M2's TODO.md entry).
+    fn codegen_heap_alloc(
+        &mut self,
+        ty: Type,
+        operand: &Operand,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let elem_ty = self
+            .ctx
+            .llvm_type(self.soul_module, self.ctx.resolve_type(ty), None)?;
+        let size = elem_ty.size_of().expect(
+            "every type require_lowerable accepts is sized — size_of only ever fails for void/opaque/function types, none of which reach here",
+        );
+
+        let malloc_fn = self.malloc_function();
+        let call = self
+            .builder
+            .build_call(malloc_fn, &[size.into()], "malloc_call")
+            .map_err(llvm_err)?;
+        let raw_ptr = call
+            .try_as_basic_value()
+            .left()
+            .expect("malloc is declared to return ptr, never void")
+            .into_pointer_value();
+
+        let value = self.codegen_operand(operand, elem_ty)?;
+        self.builder.build_store(raw_ptr, value).map_err(llvm_err)?;
+
+        Ok(raw_ptr.into())
+    }
+
+    /// The C runtime's `malloc(size) -> ptr`, declared lazily (once per
+    /// module) — `new(expr)`'s only current producer of a heap allocation.
+    fn malloc_function(&self) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(existing) = self.ctx.module.get_function("malloc") {
+            return existing;
+        }
+        let ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
+        let size_ty = crate::types::platform_int_type(
+            self.ctx.context,
+            self.ctx.options.platform.pointer_bits,
+        );
+        let fn_type = ptr_ty.fn_type(&[size_ty.into()], false);
+        self.ctx.module.add_function("malloc", fn_type, None)
     }
 
     fn codegen_unary(

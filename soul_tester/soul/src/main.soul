@@ -2,9 +2,8 @@ consume(v: int) {}
 
 struct Number {inner: i32}
 main(): i32 {
-    num := 1
+    one: int = 1
+    num: *int = new(one)
     value := Number{inner: 1}
-    consume(num)
-    consume(num)
     return 0
 }

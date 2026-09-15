@@ -7,11 +7,18 @@ define_str_enum!(
     /// or `intrinsic.fieldIndex(t, index)`. Namespaced paths use a dotted
     /// string (`"array.toRaw"`); unnamespaced ones use a bare name (`"typeinfo"`).
     pub enum IntrinsicFunction {
-        /// `intrinsic.array.toRaw<T>(arr: []T) -> *T` (unsafe)
+        /// `intrinsic.array.toRaw<T>(arr: []T) -> RawPtr<T>` (unsafe). A raw,
+        /// non-owning view — `RawPtr<T>`, never `*T`: `*T` is an *owning*
+        /// heap pointer (see `new(expr)`), and this doesn't allocate or
+        /// transfer ownership of anything, it just reinterprets an existing
+        /// array's own storage.
         ArrayToRaw => "array.toRaw",
-        /// `intrinsic.ptr.toSlice<T>(ptr: *T, len: uint) -> []T` (unsafe)
+        /// `intrinsic.ptr.toSlice<T>(ptr: RawPtr<T>, len: uint) -> []T`
+        /// (unsafe)
         PtrToSlice => "ptr.toSlice",
-        /// `intrinsic.ptr.offset<T>(ptr: *T, index: int) -> *T` (unsafe)
+        /// `intrinsic.ptr.offset<T>(ptr: RawPtr<T>, index: int) -> RawPtr<T>`
+        /// (unsafe) — pointer arithmetic on an existing raw pointer, not a
+        /// new allocation, so `RawPtr<T>` (non-owning), not `*T`.
         PtrOffset => "ptr.offset",
         /// `intrinsic.typeinfo(t: typeid) -> TypeInfo`
         TypeInfo => "typeinfo",

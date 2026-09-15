@@ -167,8 +167,43 @@ impl<'a> FunctionLowerer<'a> {
             ast::ExpressionKind::Array(ast::AnyArray::Array(array)) => {
                 self.lower_array_literal(array)
             }
+            ast::ExpressionKind::New(inner_expr) => {
+                self.lower_new_expression(expr_id, *inner_expr, expr.span)
+            }
             _ => Ok(mir::Rvalue::Use(self.lower_operand(expr_id)?)),
         }
+    }
+
+    /// Lowers `new(expr)` into `Rvalue::HeapAlloc` — the allocated element
+    /// type comes from unwrapping `new(expr)`'s *own* expression type (`*T`,
+    /// recorded by the resolver's `expression_type`), not by separately
+    /// re-deriving `expr`'s type: they're the same `T` either way, and this
+    /// expression's own type is already the resolved, guaranteed-present one
+    /// (see this function's own error path).
+    fn lower_new_expression(
+        &mut self,
+        expr_id: ast::ExpressionId,
+        inner_expr: ast::ExpressionId,
+        span: Span,
+    ) -> MirResult<mir::Rvalue> {
+        let ptr_ty = self
+            .declares
+            .get_expression_type(expr_id)
+            .cloned()
+            .ok_or_else(|| {
+                Fault::error_with_kind(MirErrorKind::NestedExpressionHasNoResolvedType, Some(span))
+            })?;
+        let SoulType::Pointer(reference) = &ptr_ty else {
+            return Err(soul_error_internal!(
+                "new(expr)'s own expression type is always SoulType::Pointer",
+                Some(span)
+            )
+            .into_kind());
+        };
+        let inner_ty = reference.inner;
+        self.require_lowerable(inner_ty, span)?;
+        let operand = self.lower_move_aware_operand(inner_expr)?;
+        Ok(mir::Rvalue::HeapAlloc(inner_ty, operand))
     }
 
     /// Lowers `Struct{field: value, ...}` into `Rvalue::Aggregate`, with the

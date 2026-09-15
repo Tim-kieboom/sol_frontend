@@ -254,7 +254,7 @@ impl<'a> fmt::Display for PrintType<'a> {
                 self.write_id(f, *inner)
             }
             SoulType::Stub(stub) => {
-                write!(f, "{}", stub.name)?;
+                write!(f, "/*Stub*/{}", stub.name)?;
                 if !stub.generics.is_empty() {
                     write!(f, "<")?;
                     for (i, id) in stub.generics.iter().enumerate() {

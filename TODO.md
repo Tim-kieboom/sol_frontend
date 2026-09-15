@@ -751,6 +751,67 @@ that landing first, in order.
     reached only through a branch doesn't, yet). All 30 exe tests still pass unchanged — the actual
     proof this shipped with zero regressions, since the exe-test harness has no mechanism for an
     expected-to-fail-to-compile program (a separate, bigger tooling gap, not addressed here).
+- [ ] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the
+      user asking whether `*int` gets a real `dealloc` at `Drop` yet (it didn't — `Drop` is a pure
+      no-op for every type right now). `/grill-me`'d and sequenced into three slices, since it
+      touches parsing, resolution, a brand-new MIR shape, and codegen all at once:
+  - [x] **Slice 1** — prerequisite correctness fixes, landed first since they were needed
+        regardless of how `new` itself gets built:
+    - Corrected 3 existing (unimplemented, forward-declared-only) intrinsics' doc comments —
+      `array.toRaw`/`ptr.toSlice`/`ptr.offset` — from `*T` to `RawPtr<T>`. They're raw,
+      non-owning pointer operations (a view into existing storage, or arithmetic on an existing
+      pointer) — `*T` is reserved for an *owning* heap pointer, the very thing `new(expr)` will
+      produce, and reusing it for these would make an owning and a non-owning pointer the exact
+      same `SoulType`, indistinguishable to `is_auto_copy`/`Drop`.
+    - `is_auto_copy` no longer treats `SoulType::Pointer` (`*T`) as `AutoCopy` — corrected to
+      move-only, same as a struct. `&T`/`&mut T` (`SoulType::Reference`) is unaffected, still
+      `AutoCopy` (a reference is always non-owning, unlike `*T`). Zero regression risk: nothing in
+      the current pipeline constructs a `Pointer`-typed *value* anywhere (only the type-annotation
+      parser path exists so far — confirmed by grep before landing), so this couldn't have
+      affected any existing exe test.
+    - Updated/split the existing `is_auto_copy_treats_primitives_references_and_pointers_as_
+      autocopy` unit test into `..._primitives_and_references_as_autocopy` (unchanged behavior)
+      and a new `is_auto_copy_treats_an_owning_pointer_as_move_only` (the corrected behavior).
+  - [x] **Slice 2** — `new(expr)` allocates via `malloc` and produces a usable `*T`. Deliberately
+        *not* freed yet — proving allocation/use works in isolation first.
+    - Went in assuming `new(expr)` needed building as a new bare-callable intrinsic (like
+      `assert`) — wrong assumption, caught by actually tracing why a first attempt silently failed
+      to type `p := new(1)`: `ExpressionKind::New(ExpressionId)`/`NewArray(AnyArray)` already exist
+      in the AST (parser, collect-pass, and resolve-pass dispatch all already handle them), grouped
+      under `expression_type`'s own "not yet impl → `None`" bucket — the intrinsic-based attempt
+      was reverted once this surfaced (dead code that never even matched, since `new(9)` never
+      becomes a `FunctionCall` in the first place).
+    - The one real gap: `expression_type`'s `New(_)` arm computed `*T` correctly when called
+      directly, but never *persisted* it — `resolve_expression`'s own dispatch just recursed into
+      the inner value without calling `insert_expression_type`. MIR lowering's `get_expression_type`
+      only ever reads that persisted cache, never recomputes, so it silently saw no type at all.
+      Fixed by adding `check_new_expression` (mirrors `check_binary_expression`'s own persist-at-
+      resolve-time pattern) and calling it from `resolve_expression`'s `New` arm.
+    - New `mir_model::Rvalue::HeapAlloc(Type, Operand)` — carries the element type explicitly
+      (like `Cast`), since `mir_codegen` can't recover the pointee's size from context alone: the
+      destination place's own LLVM type is just an opaque `ptr`. A plain `Rvalue`, not its own
+      terminator — no OOM check (an unconditional `Assert` on a null result) is emitted yet, and
+      unlike a real Soul function call there's nothing to branch on, so it doesn't need `Call`'s
+      terminator shape.
+    - `mir_codegen` declares `malloc(size_t) -> ptr` lazily, the same pattern as
+      `abort`/`exit`/`printf`/`fflush`; `codegen_heap_alloc` computes the element's size via
+      inkwell's own `BasicType::size_of()`.
+    - Proven via a new `mir_parser` unit test (`new_expression_lowers_to_a_heap_alloc_rvalue`), a
+      new resolver unit test (`variable_from_new_expression_can_have_its_dereferenced_value_used_
+      in_a_binary_expression`), and a new exe test (`31_new_expression.soul`: `new(9)` then `*p`
+      returns `9`) — the first real proof this allocates and round-trips correctly, not just that
+      it constructs a plausible-looking shape.
+  - [ ] **Slice 3** — `Drop` actually calls `free()` for a `*T`, gated entirely at *compile time*
+        (no runtime drop-flag storage needed, since move-checking is already static): teach
+        `FunctionLowerer` itself to track live moved-state *during* lowering (mirroring
+        `move_check`'s own logic) and exclude an already-moved local from its own scope's drop
+        chain — otherwise a moved-then-dropped `*T` double-frees, since nothing at the LLVM level
+        currently reflects "this was moved" (the local's stack slot still holds the same pointer
+        value after a move). This also requires fixing `return`'s own Move-awareness first:
+        `return p` doesn't go through the Move-lowering path at all today (`lower_rvalue` directly,
+        not `lower_movable_rvalue`) — scoped out of every earlier Move/MarkMoved slice — so
+        `f(): *int { p := new(1); return p }` would otherwise free `p` at the function's own end
+        right after handing that same pointer back to the caller.
 
 ### M3 — unions, generics, full traits (not started)
 

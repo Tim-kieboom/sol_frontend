@@ -1,0 +1,5 @@
+// expect: 9
+main(): i32 {
+    p := new(9)
+    return *p
+}

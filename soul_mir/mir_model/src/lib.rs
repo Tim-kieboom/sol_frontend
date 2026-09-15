@@ -131,6 +131,21 @@ pub enum Rvalue {
     /// `len` field) — always `uint`-typed. Used by bounds-check lowering to
     /// compare against an index before an `Assert`, same as rustc's `Len`.
     Len(Place),
+    /// `new(expr)`: allocates a fresh heap slot sized for `Type`, stores
+    /// `Operand`'s value into it, evaluates to the resulting pointer — a
+    /// `SoulType::Pointer` (`*T`), an *owning* pointer freed by its own
+    /// `Drop` (see M2's TODO.md entry), unlike a plain `Ref`. Doesn't fit
+    /// `Terminator::Call`, which requires a real Soul-level `FunctionId` —
+    /// `malloc` is a codegen-synthesized libc call, the same category as
+    /// `abort`/`exit`/`panic`, not a MIR-level one; and unlike those, this
+    /// produces a value rather than diverging, so it's an `Rvalue`, not
+    /// its own terminator — no OOM check (an unconditional `Assert` on a
+    /// null result) is emitted yet, so this stays a plain, non-branching
+    /// `Rvalue` rather than needing a terminator's own control-flow shape.
+    /// Carries `Type` explicitly (like `Cast`) since `mir_codegen` can't
+    /// recover the pointee's size from context alone — the destination
+    /// place's own LLVM type is just an opaque `ptr`.
+    HeapAlloc(Type, Operand),
 }
 
 #[derive(Debug, serde::Serialize)]

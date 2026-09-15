@@ -165,6 +165,34 @@ impl<'a> NameResolver<'a> {
             .insert_expression_type(expression_id, result_ty);
     }
 
+    /// Persists `new(expr)`'s own type (`*T`, `T` being `expr`'s own
+    /// resolved type) — unlike most of `expression_type`'s own arms, this
+    /// can't stay purely on-demand: `expr_id`'s type is what MIR lowering
+    /// later reads back via `get_expression_type` (which only ever sees
+    /// whatever was explicitly persisted, never recomputes anything), so a
+    /// `New` expression needs its result actually written into the
+    /// `DeclareStore`, the same way `check_binary_expression` does for a
+    /// `Binary` — silently leaves it untyped if `value` itself couldn't be
+    /// typed (e.g. an unresolvable inner expression); nothing to log here,
+    /// since whatever fault caused that already got logged resolving
+    /// `value` itself.
+    pub(crate) fn check_new_expression(
+        &mut self,
+        expression_id: ExpressionId,
+        value: ExpressionId,
+    ) {
+        let Some(inner) = self.expression_type(value) else {
+            return;
+        };
+        let inner = self.declares.intern_type(inner);
+        let ptr_ty = SoulType::Pointer(ReferenceType {
+            inner,
+            lifetime: None,
+            mutable: Mutable::Immut,
+        });
+        self.declares.insert_expression_type(expression_id, ptr_ty);
+    }
+
     pub(crate) fn expression_type(&mut self, expression_id: ExpressionId) -> Option<SoulType> {
         if let Some(ty) = self.declares.get_expression_type(expression_id) {
             return Some(ty.clone());
@@ -286,9 +314,21 @@ impl<'a> NameResolver<'a> {
                 }
             }),
 
+            // `new(expr)`'s own type is `*T`, `T` being `expr`'s own
+            // resolved type — the one expression kind whose type depends on
+            // an inner expression's type rather than being fixed or `None`.
+            ExpressionKind::New(value) => {
+                let inner = self.expression_type(*value)?;
+                let inner = self.declares.intern_type(inner);
+                Some(SoulType::Pointer(ReferenceType {
+                    inner,
+                    lifetime: None,
+                    mutable: Mutable::Immut,
+                }))
+            }
+
             // not yet impl
             ExpressionKind::If(_)
-            | ExpressionKind::New(_)
             | ExpressionKind::Null(_)
             | ExpressionKind::Copy(_)
             | ExpressionKind::Pass(_)
@@ -343,7 +383,10 @@ impl<'a> NameResolver<'a> {
     fn array_literal_element_type(&mut self, any_array: &AnyArray) -> Option<SoulType> {
         match any_array {
             AnyArray::Array(array) => {
-                match array.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                match array
+                    .element_type
+                    .and_then(|id| self.declares.get_type(id).cloned())
+                {
                     Some(ty) => Some(ty),
                     None => Some(default_concrete_type(
                         self.expression_type(*array.values.first()?)?,
@@ -351,7 +394,10 @@ impl<'a> NameResolver<'a> {
                 }
             }
             AnyArray::ArrayFiller(filler) => {
-                match filler.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                match filler
+                    .element_type
+                    .and_then(|id| self.declares.get_type(id).cloned())
+                {
                     Some(ty) => Some(ty),
                     None => Some(default_concrete_type(self.expression_type(filler.element)?)),
                 }

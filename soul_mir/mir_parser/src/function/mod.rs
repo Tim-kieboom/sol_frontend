@@ -412,13 +412,21 @@ impl<'a> FunctionLowerer<'a> {
     /// by the exact same accept list instead of two independent matches that
     /// could silently drift apart as `SoulType` grows new variants.
     ///
-    /// Primitives and references/pointers are `AutoCopy` — a reference never
-    /// owns what it points at, so copying the pointer is always sound
+    /// Primitives and references are `AutoCopy` — a `&T`/`&mut T` reference
+    /// never owns what it points at, so copying it is always sound
     /// regardless of what's on the other end. A slice (`[&]T`/`[&mut]T`) is
     /// the same fat-pointer case: non-owning, so `AutoCopy` too, even though
-    /// it's a `SoulType::Array`. A resolved struct (`Stub`) and an *owning*
-    /// array (`StackArray`/`HeapArray`) are move-only — everything else that
-    /// reaches this point (only those two `SoulType::Array` kinds remain
+    /// it's a `SoulType::Array`.
+    ///
+    /// `SoulType::Pointer` (`*T`) is deliberately **not** in that list —
+    /// unlike `&T`/`RawPtr<T>`, a `*T` is an *owning* heap pointer (the
+    /// `new(expr)` intrinsic's own result type; its `Drop` frees the
+    /// allocation), so it's move-only, same as a struct: copying it would
+    /// produce two "owners" of the same allocation, both trying to free it.
+    ///
+    /// A resolved struct (`Stub`) and an *owning* array (`StackArray`/
+    /// `HeapArray`) are also move-only — everything else that reaches this
+    /// point (only those two `SoulType::Array` kinds and `Pointer` remain
     /// possible once `require_lowerable` has already accepted `ty`) falls
     /// through to that move-only default.
     pub(crate) fn is_auto_copy(&self, ty: mir::Type, span: Span) -> MirResult<bool> {
@@ -428,7 +436,7 @@ impl<'a> FunctionLowerer<'a> {
             .get_type(ty)
             .expect("mir::Type is always an interned TypeId");
         Ok(match resolved {
-            SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_) => true,
+            SoulType::Primitive(_) | SoulType::Reference(_) => true,
             SoulType::Array(array) => {
                 matches!(
                     array.kind,

@@ -76,3 +76,12 @@ fn variable_from_a_typeof_null_check_can_be_used_in_a_logical_expression() {
     let ast = resolve_source("main() {\n    a := 1 typeof null\n    b := a && true\n}\n");
     assert_eq!(fault_count_matching(&ast, is_type_mismatch), 0);
 }
+
+#[test]
+fn variable_from_new_expression_can_have_its_dereferenced_value_used_in_a_binary_expression() {
+    // `p := new(1)`'s own type is `*int` (`new(expr)`'s type is always `*T`,
+    // `T` being `expr`'s own type) — `*p` (a deref) should type as `int`,
+    // usable in an ordinary binary expression with no mismatch.
+    let ast = resolve_source("main() {\n    p := new(1)\n    b := *p + 1\n}\n");
+    assert_eq!(fault_count_matching(&ast, is_type_mismatch), 0);
+}
