@@ -721,11 +721,29 @@ that landing first, in order.
         `soul_tester`'s enum-variant display. `ast_parser`'s 3 interning sites: `parse_trait`'s
         `type Bar;` loop, `parse_enum_tuple_union`, `parse_enum_named_union`. Proven by the same full
         `cargo test --workspace` + 30-exe-test bar as the fields above.
-  - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
-        consumer audit, same as the fields above):
-        `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
-        `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
-        above) — only fields directly on an AST node.
+  - [x] `StructConstructor.struct_type` (`Point{x:1}`'s own target type) and `Array`/`ArrayFiller`'s
+        `element_type`/`collection_type` (`List.[1,2,3]`/`List.[for 3 => 0]`'s optional explicit
+        element/collection types — despite the earlier wording here, there's no separate `Ref`
+        struct with these fields; they live on `Array`/`ArrayFiller`, both variants of `AnyArray`).
+        Widest single-pass consumer set of this whole series: `ast_parser`'s 4 interning sites
+        (`parse_struct_contructor`, the wildcard-array branch and both exit paths of
+        `parse_array`/`parse_array_filler`/`parse_array_literal`); `soul_name_resolver`'s
+        `collect_struct_constructor`/`collect_any_array`, `check_struct_constructor` (the
+        `let SoulType::Stub(stub) = &struct_constructor.struct_type` pattern became `let Some(
+        SoulType::Stub(stub)) = self.declares.get_type(..)`, same shape as `check_impl_conformance`
+        earlier), and `expression_type`'s `StructConstructor`/`Array` arms plus
+        `array_literal_element_type`; `mir_parser`'s `lower_struct_constructor` (resolves
+        `struct_type` once up front, same pattern as `Parameter.ty`); `soul_tester`'s
+        `StructConstructor`/`Array`/`ArrayFiller` display. Proven by the same full
+        `cargo test --workspace` + 30-exe-test bar as every field above —
+        `25_ctor_and_methode.soul`/`28_untyped_struct_constructor.soul` exercise `struct_type`
+        specifically; heap/wildcard arrays (where `element_type`/`collection_type` actually get used)
+        aren't lowered by `mir_parser` yet, so those two fields are proven only at the parser/resolver
+        level, same caveat as `Enum.impl_type`.
+        This closes out every AST-node-attached `SoulType` field identified when this series started
+        — `SoulType`'s own internal recursive fields (`ArrayType.of_type`, `Reference.inner`,
+        `Optional`'s payload, etc.) remain intentionally un-interned, per the scope decision at the
+        top of this entry.
   - [ ] Wire `any`'s runtime representation (`{ptr, TypeId}`) into `mir_parser`/`mir_codegen` (today
         `require_lowerable` rejects `SoulType::Any` outright).
   - [ ] `.typeof`/`==` comparison lowering. No syntax exists yet for "a type name used as a value"

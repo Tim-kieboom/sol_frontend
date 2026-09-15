@@ -8,7 +8,7 @@ use soul_utils::{
 };
 
 use crate::{
-    AstStore, BlockId, Literal, NodeId, SoulType, VarPattern,
+    AstStore, BlockId, Literal, NodeId, SoulType, TypeId, VarPattern,
     operators::{BinaryOperator, UnaryOperator},
 };
 
@@ -178,7 +178,7 @@ impl MatchMethodVariant {
 /// An struct literal, e.g., `Struct{field: 1, field2: 2}`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StructConstructor {
-    pub struct_type: SoulType,
+    pub struct_type: TypeId,
     pub values: Arr<(Ident, ExpressionId)>,
     pub defaults: bool,
 }
@@ -391,8 +391,8 @@ pub struct Array {
     pub id: NodeId,
 
     pub values: Arr<ExpressionId>,
-    pub element_type: Option<SoulType>,
-    pub collection_type: Option<SoulType>,
+    pub element_type: Option<TypeId>,
+    pub collection_type: Option<TypeId>,
 }
 
 /// An array filler, e.g., `[for 3 => 0] //creates [0, 0, 0]`, `int.[for 1 => 1]`.
@@ -403,8 +403,8 @@ pub struct ArrayFiller {
     pub amount: ExpressionId,
     pub element: ExpressionId,
     pub for_index: Option<Binding>,
-    pub element_type: Option<SoulType>,
-    pub collection_type: Option<SoulType>,
+    pub element_type: Option<TypeId>,
+    pub collection_type: Option<TypeId>,
 }
 
 /// a contructor/typeCast, e.g. `int.(1)`, `Struct.(1, 2, "foo")`
@@ -650,7 +650,7 @@ impl AnyArray {
     }
 }
 impl Array {
-    pub fn new(id: NodeId, collection_type: Option<SoulType>) -> Self {
+    pub fn new(id: NodeId, collection_type: Option<TypeId>) -> Self {
         Self {
             id,
             values: Arr::new(),

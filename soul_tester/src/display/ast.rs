@@ -942,7 +942,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.push_char(')')
             }
             ExpressionKind::StructConstructor(ctor) => {
-                self.write_type(&ctor.struct_type)?;
+                let struct_type = self
+                    .ast
+                    .declares
+                    .get_type(ctor.struct_type)
+                    .expect("StructConstructor.struct_type is always an interned TypeId");
+                self.write_type(struct_type)?;
                 let last_index = ctor.values.len().saturating_sub(1);
                 self.push_char('{')?;
                 for (i, arg) in ctor.values.iter().enumerate() {
@@ -1412,12 +1417,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
     fn write_any_array(&mut self, any_array: &AnyArray) -> Result<()> {
         match any_array {
             AnyArray::Array(array) => {
-                if let Some(ty) = &array.collection_type {
+                if let Some(ty) = array.collection_type.and_then(|id| self.ast.declares.get_type(id)) {
                     self.write_type(ty)?;
                     self.push_char('.')?;
                 }
                 self.push_char('[')?;
-                if let Some(ty) = &array.element_type {
+                if let Some(ty) = array.element_type.and_then(|id| self.ast.declares.get_type(id)) {
                     self.write_type(ty)?;
                     self.push_str(": ")?;
                 }
@@ -1431,12 +1436,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.push_char(']')
             }
             AnyArray::ArrayFiller(array) => {
-                if let Some(collection) = &array.collection_type {
+                if let Some(collection) = array.collection_type.and_then(|id| self.ast.declares.get_type(id)) {
                     self.write_type(collection)?;
                     self.push_char('.')?;
                 }
                 self.push_char('[')?;
-                if let Some(ty) = &array.element_type {
+                if let Some(ty) = array.element_type.and_then(|id| self.ast.declares.get_type(id)) {
                     self.write_type(ty)?;
                     self.push_str(": ")?;
                 }

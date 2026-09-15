@@ -23,6 +23,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         let start_span = self.token().span;
         if self.current_is(&ARRAY) {
             self.bump();
+            let collection_type = collection_type.map(|ty| self.intern_type(ty));
             return Ok(Spanned::new(
                 AnyArray::Array(Array::new(self.alloc_node(), collection_type)),
                 self.span_combine(start_span),
@@ -64,6 +65,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&CURLY_OPEN)?;
         self.skip_end_lines();
         let struct_type = self.type_from_ident(ident, generics);
+        let struct_type = self.intern_type(struct_type);
 
         if self.current_is(&CURLY_CLOSE) {
             self.bump();
@@ -158,6 +160,8 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&LAMBDA_ARROW)?;
         let element = self.parse_expression_id(&[SQUARE_CLOSE])?;
         self.expect(&SQUARE_CLOSE)?;
+        let element_type = element_type.map(|ty| self.intern_type(ty));
+        let collection_type = collection_type.map(|ty| self.intern_type(ty));
         Ok(Spanned::new(
             ArrayFiller {
                 amount,
@@ -197,6 +201,8 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         self.skip_end_lines();
         self.expect(&SQUARE_CLOSE)?;
+        let element_type = element_type.map(|ty| self.intern_type(ty));
+        let collection_type = collection_type.map(|ty| self.intern_type(ty));
         Ok(Spanned::new(
             Array {
                 id: self.alloc_node(),

@@ -113,7 +113,9 @@ impl<'a> NameResolver<'a> {
     }
 
     fn collect_struct_constructor(&mut self, ctor: &StructConstructor) {
-        self.collect_type(&ctor.struct_type);
+        if let Some(ty) = self.declares.get_type(ctor.struct_type).cloned() {
+            self.collect_type(&ty);
+        }
         for (_, value) in &ctor.values {
             self.collect_expression(*value);
         }
@@ -178,12 +180,12 @@ impl<'a> NameResolver<'a> {
     fn collect_any_array(&mut self, any_array: &AnyArray) {
         match any_array {
             AnyArray::Array(array) => {
-                if let Some(ty) = &array.collection_type {
-                    self.collect_type(ty);
+                if let Some(ty) = array.collection_type.and_then(|id| self.declares.get_type(id)).cloned() {
+                    self.collect_type(&ty);
                 }
 
-                if let Some(ty) = &array.element_type {
-                    self.collect_type(ty);
+                if let Some(ty) = array.element_type.and_then(|id| self.declares.get_type(id)).cloned() {
+                    self.collect_type(&ty);
                 }
 
                 for value in &array.values {
@@ -191,12 +193,20 @@ impl<'a> NameResolver<'a> {
                 }
             }
             AnyArray::ArrayFiller(array_filler) => {
-                if let Some(ty) = &array_filler.collection_type {
-                    self.collect_type(ty);
+                if let Some(ty) = array_filler
+                    .collection_type
+                    .and_then(|id| self.declares.get_type(id))
+                    .cloned()
+                {
+                    self.collect_type(&ty);
                 }
 
-                if let Some(ty) = &array_filler.element_type {
-                    self.collect_type(ty);
+                if let Some(ty) = array_filler
+                    .element_type
+                    .and_then(|id| self.declares.get_type(id))
+                    .cloned()
+                {
+                    self.collect_type(&ty);
                 }
 
                 if let Some(index) = &array_filler.for_index {

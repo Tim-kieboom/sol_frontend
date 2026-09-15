@@ -13,7 +13,8 @@ use crate::NameResolver;
 
 impl<'a> NameResolver<'a> {
     pub(crate) fn check_struct_constructor(&mut self, struct_constructor: &StructConstructor) {
-        let SoulType::Stub(stub) = &struct_constructor.struct_type else {
+        let Some(SoulType::Stub(stub)) = self.declares.get_type(struct_constructor.struct_type)
+        else {
             return;
         };
 
@@ -185,7 +186,9 @@ impl<'a> NameResolver<'a> {
             // The constructor's own target type is already fully spelled out
             // in the syntax (`Struct{field: value, ..}`) — no inference
             // needed, just read it straight off the AST node.
-            ExpressionKind::StructConstructor(ctor) => Some(ctor.struct_type.clone()),
+            ExpressionKind::StructConstructor(ctor) => {
+                self.declares.get_type(ctor.struct_type).cloned()
+            }
             ExpressionKind::Index(index) => match self.expression_type(index.collection)? {
                 SoulType::Array(array_ty) => Some(*array_ty.of_type),
                 _ => None,
@@ -228,8 +231,11 @@ impl<'a> NameResolver<'a> {
             }
             // `NewArray`/`ArrayFiller` are heap arrays — not lowered by
             // `mir_parser` yet, so left unhandled here too.
-            ExpressionKind::Array(AnyArray::Array(array)) => match &array.collection_type {
-                Some(ty) => Some(ty.clone()),
+            ExpressionKind::Array(AnyArray::Array(array)) => match array
+                .collection_type
+                .and_then(|id| self.declares.get_type(id).cloned())
+            {
+                Some(ty) => Some(ty),
                 None => {
                     // Deliberately *not* `array_literal_element_type` (which
                     // defaults an inferred element type, e.g. `UntypedInt` ->
@@ -237,8 +243,8 @@ impl<'a> NameResolver<'a> {
                     // needs the raw, still-untyped element type to coerce
                     // `[1, 2]` against a declared `[2]i32` the same way a bare
                     // untyped literal already coerces against `i32`.
-                    let of_type = match &array.element_type {
-                        Some(ty) => ty.clone(),
+                    let of_type = match array.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                        Some(ty) => ty,
                         None => self.expression_type(*array.values.first()?)?,
                     };
                     Some(SoulType::Array(ArrayType {
@@ -320,16 +326,20 @@ impl<'a> NameResolver<'a> {
 
     fn array_literal_element_type(&self, any_array: &AnyArray) -> Option<SoulType> {
         match any_array {
-            AnyArray::Array(array) => match &array.element_type {
-                Some(ty) => Some(ty.clone()),
-                None => Some(default_concrete_type(
-                    self.expression_type(*array.values.first()?)?,
-                )),
-            },
-            AnyArray::ArrayFiller(filler) => match &filler.element_type {
-                Some(ty) => Some(ty.clone()),
-                None => Some(default_concrete_type(self.expression_type(filler.element)?)),
-            },
+            AnyArray::Array(array) => {
+                match array.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                    Some(ty) => Some(ty),
+                    None => Some(default_concrete_type(
+                        self.expression_type(*array.values.first()?)?,
+                    )),
+                }
+            }
+            AnyArray::ArrayFiller(filler) => {
+                match filler.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                    Some(ty) => Some(ty),
+                    None => Some(default_concrete_type(self.expression_type(filler.element)?)),
+                }
+            }
         }
     }
 

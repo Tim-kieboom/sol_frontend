@@ -187,19 +187,20 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
+        let struct_type = self
+            .declares
+            .get_type(ctor.struct_type)
+            .expect("StructConstructor.struct_type is always an interned TypeId");
         // Cloned so the field list doesn't keep borrowing `self.declares`
         // across the `&mut self` calls to `lower_operand` below.
-        let struct_ = self
-            .resolve_struct(&ctor.struct_type)
-            .cloned()
-            .ok_or_else(|| {
-                Fault::error_with_kind(
-                    MirErrorKind::NonPrimitiveType {
-                        ty: format!("{:?}", ctor.struct_type).into(),
-                    },
-                    Some(span),
-                )
-            })?;
+        let struct_ = self.resolve_struct(struct_type).cloned().ok_or_else(|| {
+            Fault::error_with_kind(
+                MirErrorKind::NonPrimitiveType {
+                    ty: format!("{struct_type:?}").into(),
+                },
+                Some(span),
+            )
+        })?;
 
         let mut operands = Vec::with_capacity(struct_.fields.len());
         for field in &struct_.fields {
