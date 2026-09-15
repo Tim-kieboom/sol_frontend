@@ -4,7 +4,7 @@ use ast_model::{
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
-    collections::{array::Arr, try_result::TryError},
+    collections::{array::RcArr, try_result::TryError},
     fault::Fault,
     span::{Span, Spanned},
 };
@@ -61,7 +61,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     pub(super) fn parse_struct_contructor(
         &mut self,
         ident: Ident,
-        generics: Arr<TypeId>,
+        generics: RcArr<TypeId>,
         start_span: Span,
     ) -> Result<Spanned<StructConstructor>, crate::fault::AstFault> {
         self.expect(&CURLY_OPEN)?;

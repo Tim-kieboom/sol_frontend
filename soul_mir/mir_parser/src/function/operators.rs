@@ -6,7 +6,7 @@ use ast_model as ast;
 use ast_model::{SoulType, TypeId, operators::BinaryOperatorKind};
 use mir_model as mir;
 use soul_utils::{
-    TypeModifier, collections::array::Arr, compiler_options::PlatformInfo, fault::Fault,
+    TypeModifier, compiler_options::PlatformInfo, fault::Fault,
     soul_names::PrimitiveTypes, span::Span,
 };
 
@@ -46,10 +46,10 @@ impl<'a> FunctionLowerer<'a> {
         require_primitive(self.declares, &result_ty, span)?;
 
         let result_ty = self.declares.intern_type(result_ty);
-        let tuple_ty = SoulType::TupleKind(ast::TupleKind::Tuple(Arr::from_array([
+        let tuple_ty = SoulType::TupleKind(ast::TupleKind::Tuple(vec![
             result_ty,
             TypeId::PRIM_BOOLEAN,
-        ])));
+        ].into()));
         let tuple_local = self.alloc_local(tuple_ty, TypeModifier::Immut, span);
         let tuple_place = mir::Place::local(tuple_local);
         self.push_assign(

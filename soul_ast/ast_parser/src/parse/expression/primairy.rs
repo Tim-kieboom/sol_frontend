@@ -4,7 +4,7 @@ use ast_model::{Array, Expression, ExpressionId, ExpressionKind, Literal, String
 use soul_tokenizer::model::{StringFormatTag, TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident, TypeModifier,
-    collections::{array::Arr, try_result::TryError},
+    collections::{try_result::TryError},
     fault::Fault,
     literal::{Number, StringLiteral, TokenLiteral},
     soul_error_internal,
@@ -327,7 +327,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             }
             &CURLY_OPEN if !end_tokens.contains(&CURLY_OPEN) => {
                 return self
-                    .parse_struct_contructor(ident, Arr::new(), start_span)
+                    .parse_struct_contructor(ident, vec![].into(), start_span)
                     .map(Expression::from_struct_contructor);
             }
             _ => (),

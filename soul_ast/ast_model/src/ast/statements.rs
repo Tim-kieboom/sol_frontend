@@ -4,7 +4,10 @@ use crate::{
 };
 use soul_utils::{
     FunctionId, Ident, Mutable, TypeModifier, bitflags,
-    collections::{array::Arr, soul_import_path::SoulImportPath},
+    collections::{
+        array::{Arr, RcArr},
+        soul_import_path::SoulImportPath,
+    },
     define_symbols,
     error::SoulResult,
     fault::Fault,
@@ -70,10 +73,10 @@ pub struct Trait {
     pub id: NodeId,
 
     pub name: Ident,
-    pub generics: Arr<Generic>,
-    pub typedefs: Arr<TypeId>,
-    pub trait_impls: Arr<Ident>,
-    pub methods: Arr<FunctionId>,
+    pub generics: RcArr<Generic>,
+    pub typedefs: RcArr<TypeId>,
+    pub trait_impls: RcArr<Ident>,
+    pub methods: RcArr<FunctionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -81,7 +84,7 @@ pub struct Enum {
     pub id: NodeId,
 
     pub name: Ident,
-    pub variants: Arr<EnumVariant>,
+    pub variants: RcArr<EnumVariant>,
     pub impl_type: Option<TypeId>,
 }
 
@@ -96,11 +99,11 @@ pub enum EnumVariant {
 pub enum UnionKind {
     Tuple {
         name: Ident,
-        parameters: Arr<TypeId>,
+        parameters: RcArr<TypeId>,
     },
     NamedTuple {
         name: Ident,
-        parameters: Arr<(Ident, TypeId)>,
+        parameters: RcArr<(Ident, TypeId)>,
     },
 }
 
@@ -109,9 +112,9 @@ pub struct Struct {
     pub id: NodeId,
 
     pub name: Ident,
-    pub fields: Arr<Field>,
-    pub generics: Arr<Generic>,
-    pub statements: Arr<StatementId>,
+    pub fields: RcArr<Field>,
+    pub generics: RcArr<Generic>,
+    pub statements: RcArr<StatementId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -138,17 +141,17 @@ impl Methode {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UseBlock {
-    pub use_generics: Arr<Generic>,
+    pub use_generics: RcArr<Generic>,
     pub ty: TypeId,
-    pub impls: Arr<ImplBlock>,
-    pub methods: Arr<Methode>,
-    pub statements: Arr<StatementId>,
+    pub impls: RcArr<ImplBlock>,
+    pub methods: RcArr<Methode>,
+    pub statements: RcArr<StatementId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImplBlock {
     pub impl_trait: TypeId,
-    pub methods: Arr<FunctionId>,
+    pub methods: RcArr<FunctionId>,
 }
 
 /// Imported paths
@@ -342,8 +345,8 @@ pub struct InnerFunctionSignature {
     /// Return type, if specified.
     pub return_type: TypeId,
     /// Function parameters.
-    pub parameters: Arr<Parameter>,
-    pub generics: Arr<Generic>,
+    pub parameters: RcArr<Parameter>,
+    pub generics: RcArr<Generic>,
     pub function_kind: FunctionThisKind,
     pub external: Option<ExternLanguage>,
 }

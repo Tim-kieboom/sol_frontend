@@ -10,7 +10,6 @@ use soul_tokenizer::to_token_stream;
 use soul_utils::{
     CrateContext, Mutable, SharedStr,
     collections::{
-        array::Arr,
         crate_store::{CrateEntry, CrateStore},
         module_store::ModuleStore,
     },
@@ -383,7 +382,7 @@ fn struct_constructor() {
                         declares.get_type(*struct_type),
                         Some(&SoulType::Stub(Stub {
                             name: "Point".into(),
-                            generics: Arr::new()
+                            generics: vec![].into()
                         }))
                     );
                     assert_eq!(values.len(), 2);
@@ -546,7 +545,7 @@ fn type_alias() {
                 declares.get_type(def.new_type),
                 Some(&SoulType::Stub(Stub {
                     name: "MyInt".into(),
-                    generics: Arr::new()
+                    generics: vec![].into()
                 }))
             );
             assert_eq!(
@@ -1104,7 +1103,7 @@ fn array_contructor_generic_literal() {
                     let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
                     let collection = SoulType::Stub(Stub {
                         name: SharedStr::new("List"),
-                        generics: Arr::from_array([int_id]),
+                        generics: vec![int_id].into(),
                     });
                     assert_eq!(
                         arr.collection_type.and_then(|id| declares.get_type(id)),
@@ -1275,7 +1274,7 @@ fn constructor_expression() {
                         *ty,
                         SoulType::Stub(Stub {
                             name: "Foo".into(),
-                            generics: Arr::new()
+                            generics: vec![].into()
                         })
                     );
                     assert_eq!(arguments.len(), 2);
@@ -1718,7 +1717,7 @@ fn named_variant_type_variable() {
                 declares.get_type(*base),
                 Some(&SoulType::Stub(Stub {
                     name: "Foo".into(),
-                    generics: Arr::new()
+                    generics: vec![].into()
                 }))
             );
         }

@@ -5,7 +5,6 @@ use soul_tokenizer::model::TokenKind;
 use soul_utils::{
     Ident, TypeModifier,
     collections::{
-        array::Arr,
         try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
     },
     fault::Fault,
@@ -443,7 +442,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&DOT)?;
         let method_ident = self.try_bump_consume_ident()?;
 
-        let recv_type = self.type_from_ident(receiver_ident, Arr::new());
+        let recv_type = self.type_from_ident(receiver_ident, vec![].into());
         let saved = self.current.this_type.take();
         self.current.this_type = Some(recv_type.clone());
         let result =

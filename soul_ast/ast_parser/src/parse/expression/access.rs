@@ -9,7 +9,6 @@ use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
     collections::{
-        array::Arr,
         try_result::{ToResult, TryError},
     },
     fault::Fault,
@@ -221,7 +220,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             let ctor = Constructor {
                 id: self.alloc_node(),
                 ty,
-                arguments: Arr::new(),
+                arguments: vec![].into(),
             };
             *left = Expression::new(
                 ExpressionKind::Constructor(ctor),

@@ -1,7 +1,7 @@
 use std::{fmt, rc::Rc};
 
 use soul_utils::{
-    Ident, Mutable, SharedStr, collections::array::Arr, impl_soul_ids, soul_names::PrimitiveTypes,
+    Ident, Mutable, SharedStr, collections::array::RcArr, impl_soul_ids, soul_names::PrimitiveTypes,
 };
 
 use crate::declare_store::DeclareStore;
@@ -306,9 +306,9 @@ impl TupleKind {
 }
 
 /// The element types of a positional tuple.
-pub type Tuple = Arr<TypeId>;
+pub type Tuple = RcArr<TypeId>;
 /// The name/type pairs of a named tuple.
-pub type NamedTuple = Arr<(Ident, TypeId)>;
+pub type NamedTuple = RcArr<(Ident, TypeId)>;
 
 /// Array type
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -350,7 +350,7 @@ pub struct Stub {
     /// The referenced type's name.
     pub name: SharedStr,
     /// The generic type arguments applied to the reference, if any.
-    pub generics: Arr<TypeId>,
+    pub generics: RcArr<TypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -365,7 +365,7 @@ impl Stub {
     /// Creates a stub reference to a named type with no generic arguments.
     pub fn new(name: impl Into<Rc<str>>) -> Self {
         Self {
-            generics: Arr::new(),
+            generics: RcArr::new(),
             name: SharedStr::new(name),
         }
     }

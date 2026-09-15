@@ -7,7 +7,7 @@ use soul_tokenizer::model::{TokenKind, keyword::KeyWord, types::Types};
 use soul_utils::{
     Ident, Mutable,
     collections::{
-        array::Arr,
+        array::RcArr,
         try_result::{
             ResultTryErr, ResultTryNotValue, ToResult, TryErr, TryError, TryNotValue, TryOk,
         },
@@ -37,7 +37,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         result
     }
 
-    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: Arr<TypeId>) -> SoulType {
+    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: RcArr<TypeId>) -> SoulType {
         if ident.as_str() == PrimitiveTypes::None.as_str() {
             self.bump();
             return SoulType::None;

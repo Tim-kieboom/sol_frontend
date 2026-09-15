@@ -1,5 +1,5 @@
 use ast_model::{FunctionKind, Import, ImportKind, SoulType, StatementKind, Struct, Stub};
-use soul_utils::{SharedStr, collections::array::Arr, fault::Severity, soul_names::PrimitiveTypes};
+use soul_utils::{SharedStr, fault::Severity, soul_names::PrimitiveTypes};
 
 use crate::tests::{get_statement, parse, parse_with_declares};
 
@@ -161,7 +161,7 @@ fn use_block_with_generic_type() {
         declares.get_type(use_block.ty),
         Some(&SoulType::Stub(Stub {
             name: SharedStr::new("Foo"),
-            generics: Arr::from_array([int_id])
+            generics: vec![int_id].into()
         }))
     );
     assert!(use_block.use_generics.is_empty());

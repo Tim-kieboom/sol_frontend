@@ -1,21 +1,20 @@
 use core::slice;
 use std::{
     ops::{Deref, Index},
-    rc::Rc,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Arr<T>(Rc<[T]>);
+pub struct Arr<T>(Box<[T]>);
 impl<T> Arr<T> {
     pub fn new() -> Self {
-        Self(Rc::new([]))
+        Self(Box::new([]))
     }
 
     pub fn with_size(size: usize, value: T) -> Self
     where
         T: Clone,
     {
-        Self(Rc::from(vec![value; size]))
+        Self(Box::from(vec![value; size]))
     }
 
     pub fn from_vec(v: Vec<T>) -> Self {
@@ -23,7 +22,7 @@ impl<T> Arr<T> {
     }
 
     pub fn from_array<const N: usize>(v: [T; N]) -> Self {
-        Self(Rc::new(v))
+        Self(Box::new(v))
     }
 
     pub fn from_slice(slice: &[T]) -> Self

@@ -328,7 +328,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&ROUND_OPEN)?;
         if self.current_is(&ROUND_CLOSE) {
             self.bump();
-            return Ok(Arr::new());
+            return Ok(vec![].into());
         }
 
         let mut values = vec![];
