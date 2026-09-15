@@ -196,7 +196,7 @@ impl<'a> FunctionLowerer<'a> {
         )?;
 
         // Cloned so the field list doesn't keep borrowing `self.declares`
-        // across the `&mut self` calls to `lower_operand` below.
+        // across the `&mut self` calls to `lower_move_aware_operand` below.
         let struct_ty_msg = self.print_ty(struct_type);
         let struct_ = self.resolve_struct(struct_type).cloned().ok_or_else(|| {
             Fault::error_with_kind(
@@ -232,7 +232,7 @@ impl<'a> FunctionLowerer<'a> {
                     )
                 })?;
 
-            operands.push(self.lower_operand(value_id)?);
+            operands.push(self.lower_move_aware_operand(value_id)?);
         }
 
         Ok(mir::Rvalue::Aggregate(mir::AggregateKind::Struct, operands))
@@ -245,7 +245,7 @@ impl<'a> FunctionLowerer<'a> {
     fn lower_array_literal(&mut self, array: &ast::Array) -> MirResult<mir::Rvalue> {
         let mut operands = Vec::with_capacity(array.values.len());
         for &value_id in &array.values {
-            operands.push(self.lower_operand(value_id)?);
+            operands.push(self.lower_move_aware_operand(value_id)?);
         }
         Ok(mir::Rvalue::Aggregate(mir::AggregateKind::Array, operands))
     }

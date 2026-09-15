@@ -243,7 +243,7 @@ impl<'a> FunctionLowerer<'a> {
                 // variable operand as an ordinary argument below (`obj.consume()`
                 // reads `obj` exactly like `consume(obj)` would) — same
                 // Move-eligibility treatment.
-                _ => self.lower_call_operand(receiver_expr)?,
+                _ => self.lower_move_aware_operand(receiver_expr)?,
             };
             args.push(receiver_operand);
         }
@@ -254,7 +254,7 @@ impl<'a> FunctionLowerer<'a> {
                     Some(span),
                 ));
             }
-            args.push(self.lower_call_operand(argument.value)?);
+            args.push(self.lower_move_aware_operand(argument.value)?);
         }
 
         let is_none_return = return_type_id == TypeId::NONE;
@@ -280,20 +280,30 @@ impl<'a> FunctionLowerer<'a> {
         Ok(destination_local.map(|local| mir::Operand::Copy(mir::Place::local(local))))
     }
 
-    /// Lowers a call argument (or a consuming-`this` receiver, which reads
-    /// exactly the same way — see `lower_call`) to an `Operand`, choosing
-    /// `Move` over `Copy` when it's a bare `Variable` of a move-only type
-    /// (per `is_auto_copy`) — `docs/mir-design.md`'s move/drop mechanics,
-    /// deliberately scoped for now to exactly this bare-variable case:
-    /// `SetDropFlag` is per-`LocalId`, not per-place, so a field/index/deref
-    /// projection (`consume(container.item)`) has no sound way to express
-    /// "only this one field moved" yet — that stays a plain `Copy` (falls
-    /// through to `lower_operand`, same as before this existed) until
-    /// partial-move tracking lands (see M2's TODO.md entry). Anything that
-    /// isn't a bare variable at all (a literal, a nested computation, a
-    /// struct-constructor literal passed inline, ...) has no existing place
-    /// to move from in the first place, so it falls through the same way.
-    fn lower_call_operand(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Operand> {
+    /// Lowers `expr_id` to an `Operand`, choosing `Move` over `Copy` when
+    /// it's a bare `Variable` of a move-only type (per `is_auto_copy`) —
+    /// `docs/mir-design.md`'s move/drop mechanics, deliberately scoped for
+    /// now to exactly this bare-variable case: `SetDropFlag` is per-
+    /// `LocalId`, not per-place, so a field/index/deref projection
+    /// (`consume(container.item)`) has no sound way to express "only this
+    /// one field moved" yet — that stays a plain `Copy` (falls through to
+    /// `lower_operand`, same as before this existed) until partial-move
+    /// tracking lands (see M2's TODO.md entry). Anything that isn't a bare
+    /// variable at all (a literal, a nested computation, a struct-
+    /// constructor literal, ...) has no existing place to move from in the
+    /// first place, so it falls through the same way.
+    ///
+    /// Shared by every "operand read at a point that can actually move its
+    /// source" site: call arguments and the consuming-`this` receiver
+    /// (`lower_call`), and — via `lower_movable_rvalue` below — declaration
+    /// initializers and plain reassignment. Struct-constructor field values
+    /// and array-literal elements (`rvalue.rs`) call this directly too, for
+    /// the exact same reason: each is "read an existing place, write it
+    /// into a fresh one," identical in shape to a call argument.
+    pub(super) fn lower_move_aware_operand(
+        &mut self,
+        expr_id: ast::ExpressionId,
+    ) -> MirResult<mir::Operand> {
         match self.move_eligible_operand(expr_id) {
             Some(result) => result,
             None => self.lower_operand(expr_id),
@@ -302,11 +312,11 @@ impl<'a> FunctionLowerer<'a> {
 
     /// Lowers `expr_id` the same way `lower_rvalue` would, except a bare
     /// `Variable` right-hand side goes through `move_eligible_operand`
-    /// first — the exact same decision `lower_call_operand` makes for a
-    /// call argument, shared via that one helper. Used by `lower_variable`'s
-    /// initializer and `lower_assignment`'s right-hand side: `x := y` and
-    /// `x = y` are both, structurally, "read `y`, write into `x`," so both
-    /// get the same Move-eligibility treatment.
+    /// first — the exact same decision `lower_move_aware_operand` makes.
+    /// Used by `lower_variable`'s initializer and `lower_assignment`'s
+    /// right-hand side: `x := y` and `x = y` are both, structurally, "read
+    /// `y`, write into `x`," so both get the same Move-eligibility
+    /// treatment.
     fn lower_movable_rvalue(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Rvalue> {
         match self.move_eligible_operand(expr_id) {
             Some(result) => Ok(mir::Rvalue::Use(result?)),
@@ -314,23 +324,22 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    /// Shared move-vs-copy decision for a bare `Variable` operand —
-    /// `lower_call_operand` (call arguments, the consuming-`this` receiver)
-    /// and `lower_movable_rvalue` (declaration initializers, plain
-    /// reassignment) both need the exact same check. Returns `None` when
-    /// `expr_id` isn't a bare `Variable` at all (a literal, a nested
-    /// computation, a struct-constructor literal, a field/index/deref
-    /// projection, ...) — none of those have an existing place a caller
-    /// could move out of in the first place, so it's on the caller's own
-    /// fallback (`lower_operand`/`lower_rvalue`) to lower them. `Some(_)`
-    /// means it is a bare variable: `Operand::Copy` when `is_auto_copy` says
-    /// so, otherwise `Operand::Move` plus the `MarkMoved`/
-    /// `SetDropFlag(local, false)` bookkeeping `docs/mir-design.md`'s
-    /// move/drop rules call for. Deliberately scoped to exactly this
-    /// bare-variable case: `SetDropFlag` is per-`LocalId`, not per-place, so
-    /// a field/index/deref projection (`consume(container.item)`) has no
-    /// sound way to express "only this one field moved" yet — that needs
-    /// partial-move tracking, which doesn't exist (see M2's TODO.md entry).
+    /// Shared move-vs-copy decision for a bare `Variable` operand — every
+    /// caller listed on `lower_move_aware_operand`'s docs needs the exact
+    /// same check. Returns `None` when `expr_id` isn't a bare `Variable` at
+    /// all (a literal, a nested computation, a struct-constructor literal,
+    /// a field/index/deref projection, ...) — none of those have an
+    /// existing place a caller could move out of in the first place, so
+    /// it's on the caller's own fallback (`lower_operand`/`lower_rvalue`) to
+    /// lower them. `Some(_)` means it is a bare variable: `Operand::Copy`
+    /// when `is_auto_copy` says so, otherwise `Operand::Move` plus the
+    /// `MarkMoved`/`SetDropFlag(local, false)` bookkeeping
+    /// `docs/mir-design.md`'s move/drop rules call for. Deliberately scoped
+    /// to exactly this bare-variable case: `SetDropFlag` is per-`LocalId`,
+    /// not per-place, so a field/index/deref projection
+    /// (`consume(container.item)`) has no sound way to express "only this
+    /// one field moved" yet — that needs partial-move tracking, which
+    /// doesn't exist (see M2's TODO.md entry).
     fn move_eligible_operand(
         &mut self,
         expr_id: ast::ExpressionId,

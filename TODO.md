@@ -561,11 +561,11 @@ that landing first, in order.
     rewritten pre-existing tests above) — no new exe test needed since `Drop`/`SetDropFlag` have no
     runtime effect yet; the full 30-test exe suite re-passing unchanged is what proves this feature
     didn't silently break anything it now runs through on every single function.
-- [ ] `Move`/`MarkMoved` lowering for straight-line code (function-call arguments,
-      struct-constructor fields, array-literal elements, plain reassignment), now that
-      `is_auto_copy` (below) exists — no opt-in mechanism for a struct to become `AutoCopy` yet (a
-      non-generic trait can't express a marker bound), so this is still the concrete (M1) subset
-      only.
+- [x] `Move`/`MarkMoved` lowering for straight-line code (function-call arguments,
+      struct-constructor fields, array-literal elements, plain reassignment/declarations) — every
+      sub-item below is done. No opt-in mechanism for a struct to become `AutoCopy` exists (a
+      non-generic trait can't express a marker bound), so this stays the concrete (M1) subset
+      only; extending it is M3's job once generics/traits do more.
   - [x] `is_auto_copy(SoulType)` classification. `/grill-me`'d once the user's own `SoulType`
         `TypeId`-flattening refactor landed (nested fields like `ReferenceType.inner`/
         `ArrayType.of_type` are now interned `TypeId`s, not inline `Box<SoulType>`), to re-derive
@@ -634,7 +634,26 @@ that landing first, in order.
       is_still_copied`, `a_move_only_declaration_initializer_reached_through_a_field_projection_
       is_still_copied`. No exe-test regressions (still all 30 passing) — same zero-codegen-risk
       reasoning as the call-argument slice: `Operand::Move` already codegens identically to `Copy`.
-  - [ ] Struct-constructor fields, array-literal elements — not started.
+  - [x] Struct-constructor fields, array-literal elements — `/grill-me`'d as "what's next" once
+        plain reassignment landed; the TODO originally implied treating these as separate slices
+        the way call-arguments/declarations had been, but `lower_struct_constructor` and
+        `lower_array_literal` (`rvalue.rs`) turned out to be structurally identical adjacent
+        functions (`operands.push(self.lower_operand(value_id)?)` in a loop, nothing else) — no
+        real complexity boundary between them, so done together in one pass instead of two.
+    - `lower_call_operand` renamed to `lower_move_aware_operand` (`statement.rs`) and made
+      `pub(super)`, since its body was already fully generic — "move-aware operand, falling back
+      to `lower_operand`" — with nothing call-specific about it; `lower_struct_constructor`/
+      `lower_array_literal` now call it directly instead of a third near-duplicate wrapper.
+    - Same field-projection scoping as every prior slice, same reason (`SetDropFlag` is
+      per-`LocalId`, not per-place): a field/index/deref-projection field/element value still
+      falls through to a plain `Copy`.
+    - Pre-flight checked `mir_codegen`'s `codegen_aggregate` before implementing (same discipline
+      as the call-argument slice): both the struct and array branches route every operand through
+      the same `codegen_operand` call already confirmed `Copy`/`Move`-agnostic — zero codegen risk.
+    - Proven via 4 new `mir_parser` unit tests: `a_move_only_struct_constructor_field_moves_its_
+      source`, `an_autocopy_struct_constructor_field_is_still_copied`, `move_only_array_literal_
+      elements_move_their_sources`, `an_autocopy_array_literal_is_still_copied`. All 30 exe tests
+      still pass unchanged.
 - [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
       "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
       (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested

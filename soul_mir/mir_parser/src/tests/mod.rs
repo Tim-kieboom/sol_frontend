@@ -2307,3 +2307,144 @@ fn a_move_only_declaration_initializer_reached_through_a_field_projection_is_sti
         "a field-projection source should still be Copy, not MarkMoved"
     );
 }
+
+#[test]
+fn a_move_only_struct_constructor_field_moves_its_source() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nstruct Wrapper {\n    s: Session\n}\nf() {\n    s := Session{n: 1}\n    w := Wrapper{s: s}\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    let aggregate_moved_local = all_statements.iter().find_map(|statement| {
+        let mir_model::Statement::Assign(
+            _,
+            Rvalue::Aggregate(mir_model::AggregateKind::Struct, operands),
+        ) = statement
+        else {
+            return None;
+        };
+        operands.iter().find_map(|operand| match operand {
+            Operand::Move(place) => Some(place.local),
+            _ => None,
+        })
+    });
+    let Some(s_local) = aggregate_moved_local else {
+        panic!(
+            "expected Wrapper's field to Move s, got {:#?}",
+            all_statements
+        );
+    };
+    assert!(
+        all_statements
+            .iter()
+            .any(|s| matches!(s, mir_model::Statement::MarkMoved(local) if *local == s_local)),
+        "expected a MarkMoved(s), got {:#?}",
+        all_statements
+    );
+    assert!(
+        all_statements.iter().any(|s| matches!(
+            s,
+            mir_model::Statement::SetDropFlag(local, false) if *local == s_local
+        )),
+        "expected a SetDropFlag(s, false), got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
+fn an_autocopy_struct_constructor_field_is_still_copied() {
+    let mir = lower_source(
+        "struct Point {\n    x: int\n}\nf() {\n    n := 1\n    p := Point{x: n}\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_move = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|s| matches!(s, mir_model::Statement::MarkMoved(_)));
+    assert!(
+        !has_move,
+        "an AutoCopy primitive field should never be MarkMoved"
+    );
+}
+
+#[test]
+fn move_only_array_literal_elements_move_their_sources() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nf() {\n    s := Session{n: 1}\n    t := Session{n: 2}\n    arr: [2]Session = [s, t]\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    let moved_locals: Vec<mir_model::LocalId> = all_statements
+        .iter()
+        .find_map(|statement| {
+            let mir_model::Statement::Assign(
+                _,
+                Rvalue::Aggregate(mir_model::AggregateKind::Array, operands),
+            ) = statement
+            else {
+                return None;
+            };
+            Some(
+                operands
+                    .iter()
+                    .filter_map(|operand| match operand {
+                        Operand::Move(place) => Some(place.local),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        moved_locals.len(),
+        2,
+        "expected both array elements to Move, got {:#?}",
+        all_statements
+    );
+
+    for local in &moved_locals {
+        assert!(
+            all_statements
+                .iter()
+                .any(|s| matches!(s, mir_model::Statement::MarkMoved(l) if l == local)),
+            "expected a MarkMoved for {local:?}, got {:#?}",
+            all_statements
+        );
+    }
+}
+
+#[test]
+fn an_autocopy_array_literal_is_still_copied() {
+    let mir = lower_source(
+        "f() {\n    a := 1\n    b := 2\n    arr: [2]int = [a, b]\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_move = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|s| matches!(s, mir_model::Statement::MarkMoved(_)));
+    assert!(
+        !has_move,
+        "AutoCopy primitive array elements should never be MarkMoved"
+    );
+}
