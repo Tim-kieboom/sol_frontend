@@ -654,11 +654,39 @@ that landing first, in order.
       source`, `an_autocopy_struct_constructor_field_is_still_copied`, `move_only_array_literal_
       elements_move_their_sources`, `an_autocopy_array_literal_is_still_copied`. All 30 exe tests
       still pass unchanged.
-- [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
-      "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
-      (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested
-      scopes each one jumps out of — needed before `if`/`for` bodies can be in scope for the
-      `Drop`/move lowering above.
+- [x] Scope-stack tracking in `FunctionLowerer`, for `if`/`else` branches (`/grill-me`'d "what's
+      next" down from the full bullet: `for`/`break`/`continue` deferred — a `break`/`continue`
+      only unwinds up to its nearest enclosing *loop*, a materially different target than
+      `return`'s "unwind everything," and `for` needs a per-iteration re-drop/rebuild story this
+      slice doesn't build; see the follow-up bullet below).
+  - `body_locals: Vec<LocalId>` (a single flat list) became `scopes: Vec<Vec<LocalId>>` — a real
+    stack of frames, frame `0` the function's own top level, `lower_if` pushing one fresh frame
+    per branch body (`then`, and a plain `else { .. }`) it lowers. An `else if` isn't a body of
+    statements at that level at all — it's a compound statement whose own recursive `lower_if`
+    call already manages its own frames, so that position gets no frame of its own, matching its
+    behavior from before this slice.
+  - Two distinct scope-exit shapes, both new methods on `FunctionLowerer`: `seal_scope_exit`
+    (falling through a branch to its join block — pops *just* that branch's own frame, drops it,
+    `Goto`) and `seal_return` (rewritten to unwind the *entire* `scopes` stack, innermost frame
+    first) — confirmed with the user before implementing: a branch's own locals go out of scope
+    at its own join point regardless of whether the branch returns early, but only an actual
+    `return` needs to unwind enclosing scopes too. Both share a new `drop_chain` helper.
+  - `nesting_depth: usize` (used for both `if` and `for`) narrowed to `for_loop_depth: usize`
+    (`lower_for` only) — confirmed explicitly: a `return` reached through *any* enclosing `for`,
+    however many `if`s are also on the way, is still a hard stop with zero drops, even for
+    otherwise-safe-to-drop locals declared entirely outside the loop. `seal_return` checks this
+    before touching `scopes` at all.
+  - `push_assign`'s "is this local tracked" check now searches every open frame (`scopes.iter()`),
+    not just one flat list.
+  - Proven via 4 new `mir_parser` unit tests (`an_if_branch_local_is_dropped_at_its_own_join_
+    point_not_the_functions_end`, `return_inside_an_if_branch_drops_branch_then_enclosing_locals_
+    in_order`, `for_loop_is_a_hard_stop_for_return_unwinding`) plus rewriting one whose premise —
+    "a return inside an if gets zero drops" — stopped holding the moment `if`/`else` got real
+    scope tracking (renamed `a_return_nested_inside_an_if_now_drops_enclosing_scope_locals`). All
+    30 exe tests still pass unchanged.
+- [ ] Extend scope-stack tracking to `for` bodies plus `break`/`continue` unwinding to the correct
+      loop-boundary frame (not all the way to the function root, unlike `return`) — the deferred
+      half of the bullet above.
 - [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset
 
 ### M3 — unions, generics, full traits (not started)

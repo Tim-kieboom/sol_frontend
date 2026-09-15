@@ -1877,12 +1877,13 @@ fn reassigning_a_parameter_gets_no_drop_flag_and_is_never_dropped() {
 }
 
 #[test]
-fn a_return_nested_inside_an_if_gets_no_drop_chain_yet() {
-    // `nesting_depth > 0` inside an `if`/`for` branch: `seal_return` still
-    // behaves exactly as before this feature existed (a plain `Return`, no
-    // `Drop`s) — there's no scope stack yet to know which locals actually
-    // belong to the branch being exited (see M2's TODO.md entry: this is
-    // explicitly deferred, not a bug).
+fn a_return_nested_inside_an_if_now_drops_enclosing_scope_locals() {
+    // Once per-branch scope tracking landed, a `return` from inside an
+    // `if`/`else` branch is no longer a hard "no drops at all" case — that's
+    // now only true for a `return` reached through an enclosing `for` (see
+    // `for_loop_is_a_hard_stop_for_return_unwinding` below). It unwinds the
+    // *entire* `scopes` stack, including locals declared in enclosing,
+    // non-loop scopes.
     let mir = lower_source(
         "f(cond: bool): int {\n    x := 1\n    if cond {\n        return x\n    }\n    return x\n}\n",
         "f",
@@ -1894,11 +1895,105 @@ fn a_return_nested_inside_an_if_gets_no_drop_chain_yet() {
         .entries()
         .filter(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }))
         .count();
-    // Only the function's own top-level (depth-0) final `return x` gets a
-    // Drop(x) chain; the one nested inside the `if` does not.
+    // Both the `return x` inside the if-branch and the top-level `return x`
+    // each drop `x` — two separate Drop(x) chains, one per return site.
+    assert_eq!(
+        drop_count, 2,
+        "expected a Drop(x) chain at both return sites, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn an_if_branch_local_is_dropped_at_its_own_join_point_not_the_functions_end() {
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(cond: bool): int {\n    if cond {\n        y := Thing{n: 1}\n    }\n    return 0\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    // Exactly one Drop(y) — at the if-branch's own fallthrough to the join
+    // block — not a second one bundled into the function's final return
+    // (that return's own frame never held `y` in the first place: `y` was
+    // popped off `scopes` the moment the branch's own join-exit ran).
+    let drop_count = mir
+        .blocks
+        .entries()
+        .filter(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }))
+        .count();
     assert_eq!(
         drop_count, 1,
-        "expected exactly one Drop chain (the top-level return), got {:#?}",
+        "expected exactly one Drop(y), at the branch's own join point, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn return_inside_an_if_branch_drops_branch_then_enclosing_locals_in_order() {
+    let mir = lower_source(
+        "struct A {\n    n: int\n}\nstruct B {\n    n: int\n}\nf(cond: bool): int {\n    x := A{n: 1}\n    if cond {\n        y := B{n: 2}\n        return 0\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    // Walk the Drop chain reachable from the `if`-branch's own early
+    // `return` in execution order (each Drop's target is the next block) —
+    // `y` (innermost, declared inside the branch) must be dropped before
+    // `x` (the enclosing, function-level local).
+    let mut drops = Vec::new();
+    let mut current = mir.blocks.entries().find_map(|(id, block)| {
+        matches!(block.terminator, mir_model::Terminator::Drop { .. }).then_some(id)
+    });
+    while let Some(id) = current {
+        let block = &mir.blocks[id];
+        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+            break;
+        };
+        drops.push(place.local);
+        current = mir
+            .blocks
+            .get(*target)
+            .is_some_and(|b| matches!(b.terminator, mir_model::Terminator::Drop { .. }))
+            .then_some(*target);
+    }
+    assert_eq!(
+        drops.len(),
+        2,
+        "expected exactly 2 Drops (y then x) on the branch's own return path, got {:#?}",
+        mir.blocks
+    );
+    assert!(
+        drops[0] > drops[1],
+        "expected the innermost local (y, higher LocalId) to be dropped before the enclosing one (x), got order {:#?}",
+        drops
+    );
+}
+
+#[test]
+fn for_loop_is_a_hard_stop_for_return_unwinding() {
+    // A `return` reached through *any* enclosing `for` — regardless of how
+    // many `if`s are also in between — is still a hard stop with no drops
+    // at all, exactly as before per-branch `if`/`else` scope tracking
+    // existed: a `for` body's own locals never get a scope frame, and
+    // unwinding through a loop needs a per-iteration story this slice
+    // deliberately doesn't build (see M2's TODO.md entry).
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(cond: bool): int {\n    x := Thing{n: 1}\n    for cond {\n        if cond {\n            return 0\n        }\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let drop_count = mir
+        .blocks
+        .entries()
+        .filter(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }))
+        .count();
+    // Only the top-level `return 1` (reached with no enclosing `for`) drops
+    // `x`; the `return 0` inside the `for`+`if` doesn't, even though `x` is
+    // a perfectly ordinary, otherwise-trackable enclosing-scope local.
+    assert_eq!(
+        drop_count, 1,
+        "expected exactly one Drop(x), from the return outside the for loop, got {:#?}",
         mir.blocks
     );
 }

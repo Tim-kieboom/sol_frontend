@@ -73,15 +73,19 @@ impl<'a> FunctionLowerer<'a> {
         let rvalue = self.lower_movable_rvalue(init)?;
         let local = self.alloc_local(ty, *modifier, binding.ident.span());
         self.node_to_local.insert(binding.id, local);
-        // Tracked as a `body_locals` entry *before* `push_assign` so this
-        // very declaration's own initializing write already gets its
-        // `SetDropFlag(local, true)` — matching `docs/mir-design.md`'s "every
-        // place written via Assign" rule, and making the local eligible for
-        // `seal_return`'s scope-exit `Drop` chain (parameters/`this`/the
+        // Tracked in the *innermost* currently-open `scopes` frame — before
+        // `push_assign`, so this very declaration's own initializing write
+        // already gets its `SetDropFlag(local, true)` — matching
+        // `docs/mir-design.md`'s "every place written via Assign" rule, and
+        // making the local eligible for that frame's own scope-exit `Drop`
+        // chain (`seal_return`/`seal_scope_exit`). Parameters/`this`/the
         // return local, and every compiler-internal temp elsewhere in this
-        // lowerer, are deliberately never added here — see `body_locals`'s
-        // own docs).
-        self.body_locals.push(local);
+        // lowerer, are deliberately never added to any frame — see
+        // `scopes`'s own docs.
+        self.scopes
+            .last_mut()
+            .expect("scopes always has at least the function's own top-level frame")
+            .push(local);
         self.push_assign(mir::Place::local(local), rvalue);
         Ok(())
     }

@@ -40,23 +40,32 @@ pub struct FunctionLowerer<'a> {
     current: Option<mir::BlockId>,
     statements: Vec<mir::Statement>,
     loops: Vec<LoopTargets>,
-    /// Locals bound to an explicit, user-written `x := ..`/`x: T = ..`
-    /// declaration inside the function body (via `lower_variable`), in
-    /// declaration order. This — not the full flat `locals` map — is the
-    /// scope `seal_return`'s `Drop` chain walks: parameters, the receiver,
-    /// the return local, and every compiler-internal temp (checked-overflow
-    /// tuples, bounds-check bookkeeping, ref/deref temps, ...) are
-    /// deliberately excluded, mirroring `docs/mir-design.md`'s own worked
-    /// example (`add(a, b)`'s `Drop(_3)` covers only `c`, never `_0`/`_1`).
-    body_locals: Vec<mir::LocalId>,
-    /// How many `if`/`for` bodies deep the lowerer currently is. Straight-line
-    /// `Drop`/`SetDropFlag` scope-exit lowering (see `seal_return`) only ever
-    /// fires at depth 0 — inside a nested `if`/`for` there's no scope stack
-    /// yet to know which locals actually belong to which branch, so those
-    /// early-exit paths keep behaving exactly as before this feature existed
-    /// (see M2's TODO.md entry). Incremented/decremented around
-    /// `lower_if`/`lower_for`'s own body lowering.
-    nesting_depth: usize,
+    /// A stack of lexical scope frames, each holding the locals bound to an
+    /// explicit, user-written `x := ..`/`x: T = ..` declaration inside that
+    /// scope (via `lower_variable`), in declaration order — parameters, the
+    /// receiver, the return local, and every compiler-internal temp
+    /// (checked-overflow tuples, bounds-check bookkeeping, ref/deref temps,
+    /// ...) are deliberately excluded everywhere, mirroring
+    /// `docs/mir-design.md`'s own worked example (`add(a, b)`'s `Drop(_3)`
+    /// covers only `c`, never `_0`/`_1`). Frame `0` is the function's own top
+    /// level, always present; `lower_if` pushes one fresh frame per branch
+    /// body it lowers (see `seal_scope_exit`) and pops it again once that
+    /// branch is done, whether it fell through or returned early — so at any
+    /// point during lowering, `scopes` holds exactly the frames for every
+    /// scope currently open, innermost last. `for` bodies don't get a frame
+    /// of their own yet (see `for_loop_depth`).
+    scopes: Vec<Vec<mir::LocalId>>,
+    /// How many `for` bodies deep the lowerer currently is. `seal_return`'s
+    /// full-stack `Drop`-chain unwind only ever fires at depth 0 — a `return`
+    /// reached through *any* enclosing `for` (regardless of how many `if`s
+    /// are also in between) is a hard stop, no drops at all, exactly as
+    /// before per-branch scope tracking (`scopes`, above) existed: a `for`
+    /// body's own locals never get a scope frame, and unwinding through a
+    /// loop needs a per-iteration `Drop`/rebuild story (`break`/`continue`
+    /// targets, loop-carried state) this slice deliberately doesn't build
+    /// (see M2's TODO.md entry — `if`/`else` branches only, for now).
+    /// Incremented/decremented around `lower_for`'s own body lowering.
+    for_loop_depth: usize,
 
     options: &'a CompilerOptions,
 }
@@ -74,8 +83,8 @@ impl<'a> FunctionLowerer<'a> {
             current: None,
             loops: vec![],
             statements: vec![],
-            body_locals: vec![],
-            nesting_depth: 0,
+            scopes: vec![Vec::new()],
+            for_loop_depth: 0,
             locals: VecMap::new(),
             blocks: VecMap::new(),
             node_to_local: VecMap::new(),
@@ -210,49 +219,88 @@ impl<'a> FunctionLowerer<'a> {
         self.node_to_local.clear();
         self.local_alloc = IdGenerator::new();
         self.block_alloc = IdGenerator::new();
-        self.body_locals.clear();
-        self.nesting_depth = 0;
+        self.scopes.clear();
+        self.scopes.push(Vec::new());
+        self.for_loop_depth = 0;
     }
 
     /// Pushes an `Assign`, followed by `SetDropFlag(place.local, true)` when
-    /// `place.local` is a tracked `body_locals` entry — i.e. this write
-    /// (re)initializes a user-declared variable, per `docs/mir-design.md`'s
-    /// move/drop rules ("every place written via Assign emits
-    /// `SetDropFlag(place.local, true)`"). A write into anything else
-    /// (a parameter, `this`, the return local, or a compiler-internal temp —
-    /// none of which are ever added to `body_locals`) gets no drop-flag
-    /// bookkeeping, mirroring `docs/mir-design.md`'s own worked example
-    /// (`_2 = Use(Copy(_3))`'s write into the *return* local gets no
-    /// `SetDropFlag` either).
+    /// `place.local` is a tracked `scopes` entry (any currently-open frame,
+    /// not just the innermost) — i.e. this write (re)initializes a
+    /// user-declared variable, per `docs/mir-design.md`'s move/drop rules
+    /// ("every place written via Assign emits `SetDropFlag(place.local,
+    /// true)`"). A write into anything else (a parameter, `this`, the return
+    /// local, or a compiler-internal temp — none of which are ever added to
+    /// `scopes`) gets no drop-flag bookkeeping, mirroring
+    /// `docs/mir-design.md`'s own worked example (`_2 = Use(Copy(_3))`'s
+    /// write into the *return* local gets no `SetDropFlag` either).
     pub(super) fn push_assign(&mut self, place: mir::Place, rvalue: mir::Rvalue) {
         let local = place.local;
         self.statements.push(mir::Statement::Assign(place, rvalue));
-        if self.body_locals.contains(&local) {
+        if self.scopes.iter().any(|frame| frame.contains(&local)) {
             self.statements
                 .push(mir::Statement::SetDropFlag(local, true));
         }
     }
 
     /// Seals the current block on a `return` — either the true end of a
-    /// straight-line function, or an explicit `return` at the function's own
-    /// top level (not nested inside an `if`/`for`, tracked via
-    /// `nesting_depth`). At depth 0, this is a real scope exit: every
-    /// tracked `body_locals` entry gets a `Drop` terminator, in reverse
-    /// declaration order, chained through fresh blocks ahead of the final
-    /// `Return` — parameters/`this`/the return local/internal temps are
-    /// never in `body_locals`, so none of those get dropped (see
-    /// `body_locals`'s own docs). Inside a nested `if`/`for` (depth > 0)
-    /// this is unchanged from before this feature existed: a plain `Return`
-    /// with no drops — there's no scope stack yet to know which locals
-    /// actually belong to the branch being exited (see M2's TODO.md entry).
+    /// straight-line function, or an explicit `return` reached from any
+    /// depth of nested `if`/`else` branches. Unless an enclosing `for` is
+    /// anywhere on the way up (`for_loop_depth > 0`, a hard stop with no
+    /// drops at all — see its own docs), this unwinds the *entire* `scopes`
+    /// stack: every tracked local in every currently-open frame gets a
+    /// `Drop` terminator, innermost frame first and reverse declaration
+    /// order within each frame, chained through fresh blocks ahead of the
+    /// final `Return`. Deliberately doesn't touch `self.scopes` itself
+    /// (no popping) — `scopes` is one stack shared across the whole
+    /// function, and a `return` reached from inside one branch must leave it
+    /// exactly as-is for whichever sibling branch or enclosing code lowers
+    /// next (`lower_if` is what actually pops the frame it pushed, once its
+    /// branch is fully done — see `seal_scope_exit`).
     pub(super) fn seal_return(&mut self) {
-        if self.nesting_depth > 0 {
+        if self.for_loop_depth > 0 {
             self.seal(mir::Terminator::Return, None);
             return;
         }
+        self.drop_chain(self.scopes.iter().flatten().copied().collect());
+        self.seal(mir::Terminator::Return, None);
+    }
 
-        let locals_to_drop = self.body_locals.clone();
-        for local in locals_to_drop.into_iter().rev() {
+    /// Pops the innermost `scopes` frame and seals the current block with a
+    /// `Drop` chain over just that frame's own locals (reverse declaration
+    /// order), finally sealing with `Terminator::Goto(target)` — the normal,
+    /// non-`return` way an `if`/`else` branch's own scope ends: falling
+    /// through to the join block after the branch. Unlike `seal_return`,
+    /// this always pops and always drops regardless of `for_loop_depth` —
+    /// a branch's own locals going out of scope at its own join point is
+    /// sound on every loop iteration, independent of whatever loop (if any)
+    /// happens to enclose it; it's only unwinding *past* a `for` on the way
+    /// to a `return` that's the deferred, unsound-to-attempt case.
+    pub(super) fn seal_scope_exit(&mut self, target: mir::BlockId) {
+        let frame = self
+            .scopes
+            .pop()
+            .expect("seal_scope_exit is only ever called for a frame lower_if itself just pushed");
+        self.drop_chain(frame);
+        // `next: None`, not `Some(target)` — `target` (the join block) isn't
+        // actually current yet: `lower_if` still has the *other* branch left
+        // to lower (with its own `self.current` set independently), and only
+        // sets `self.current = Some(target)` itself once, after checking
+        // both branches. Setting it here too would make the second branch's
+        // own lowering silently start inside the join block instead of its
+        // own fresh one.
+        self.seal(mir::Terminator::Goto(target), None);
+    }
+
+    /// Chains one `Drop` terminator per local in `locals`, in reverse order,
+    /// each through a fresh block — shared by `seal_return` (drops every
+    /// open scope, ending in `Return`) and `seal_scope_exit` (drops one
+    /// frame, ending in `Goto`). Leaves `self.current` set to the last fresh
+    /// block the chain opened (or unchanged if `locals` is empty) — it's the
+    /// caller's job to `seal` that final block with whatever terminator
+    /// actually ends the scope exit.
+    fn drop_chain(&mut self, locals: Vec<mir::LocalId>) {
+        for local in locals.into_iter().rev() {
             let next = self.new_block();
             self.seal(
                 mir::Terminator::Drop {
@@ -262,7 +310,6 @@ impl<'a> FunctionLowerer<'a> {
                 Some(next),
             );
         }
-        self.seal(mir::Terminator::Return, None);
     }
 
     /// Pretty-prints `ty` for a fault message — `SoulType`'s own `Debug` is

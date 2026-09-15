@@ -159,39 +159,52 @@ impl<'a> FunctionLowerer<'a> {
         // `FunctionLowerer::lower` exactly as before this feature existed.
         let branch_is_tail = is_tail && if_expr.branch.is_some();
 
-        // `nesting_depth` brackets both branches: `seal_return` (hit by any
-        // `return` inside either one) only emits a `Drop` scope-exit chain
-        // at depth 0 — there's no scope stack yet to know which locals
-        // actually belong to an `if`/`for` branch (see `seal_return`'s docs
-        // and M2's TODO.md entry), so a `return` inside either branch below
-        // keeps behaving exactly as before this feature existed.
+        // Each branch body (the `then` block, and a plain `else { .. }`
+        // block) is its own lexical scope: a fresh `scopes` frame is pushed
+        // before lowering it, and popped once the branch is done — either
+        // via `seal_scope_exit` (fell through: drops that frame's own
+        // locals, then `Goto(join_id)`), or a plain pop (errored, or
+        // returned early — either way, if it returned, `seal_return`'s own
+        // full-stack unwind already dropped this frame's contents on its
+        // way out, so there's nothing left to do here but discard the
+        // bookkeeping). An `else if` (`IfBranch::If`) is different: it's not
+        // a body of statements at this level at all, just a compound
+        // statement whose *recursive* `lower_if` call already manages its
+        // own frames internally — this level only ever forwards its own
+        // join to this `if`'s join, no frame of its own (matches this
+        // arm's behavior from before per-branch scope tracking existed).
         let then_statements = self.store.blocks[if_expr.block].statements.clone();
-        self.nesting_depth += 1;
+        self.scopes.push(Vec::new());
         let then_result = self.lower_body(return_local, &then_statements, branch_is_tail);
-        self.nesting_depth -= 1;
+        let then_reaches_join = then_result.is_ok() && !self.is_terminated();
+        if !then_reaches_join {
+            self.scopes.pop();
+        }
         then_result?;
-        let then_reaches_join = !self.is_terminated();
         if then_reaches_join {
-            self.seal(mir::Terminator::Goto(join_id), None);
+            self.seal_scope_exit(join_id);
         }
 
         let else_reaches_join = match &if_expr.branch {
             None => true,
-            Some(branch) => {
+            Some(ast::IfBranch::Else(block_id)) => {
                 self.current = else_id;
-                self.nesting_depth += 1;
-                let branch_result = match branch {
-                    ast::IfBranch::Else(block_id) => {
-                        let else_statements = self.store.blocks[*block_id].statements.clone();
-                        self.lower_body(return_local, &else_statements, branch_is_tail)
-                    }
-                    ast::IfBranch::If(nested_if) => {
-                        self.lower_if(return_local, nested_if, span, branch_is_tail)
-                    }
-                };
-                self.nesting_depth -= 1;
-                branch_result?;
-
+                self.scopes.push(Vec::new());
+                let else_statements = self.store.blocks[*block_id].statements.clone();
+                let else_result = self.lower_body(return_local, &else_statements, branch_is_tail);
+                let reaches = else_result.is_ok() && !self.is_terminated();
+                if !reaches {
+                    self.scopes.pop();
+                }
+                else_result?;
+                if reaches {
+                    self.seal_scope_exit(join_id);
+                }
+                reaches
+            }
+            Some(ast::IfBranch::If(nested_if)) => {
+                self.current = else_id;
+                self.lower_if(return_local, nested_if, span, branch_is_tail)?;
                 let reaches = !self.is_terminated();
                 if reaches {
                     self.seal(mir::Terminator::Goto(join_id), None);
@@ -243,9 +256,9 @@ impl<'a> FunctionLowerer<'a> {
         // (`check_tail_if`) never recurses into `For` either, since a loop
         // has no well-defined "trailing value" (it may run zero times).
         const IN_TAIL_POSITION: bool = false;
-        self.nesting_depth += 1;
+        self.for_loop_depth += 1;
         let body_result = self.lower_body(return_local, &body_statements, IN_TAIL_POSITION);
-        self.nesting_depth -= 1;
+        self.for_loop_depth -= 1;
         self.loops.pop();
         body_result?;
 
