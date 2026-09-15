@@ -742,8 +742,72 @@ that landing first, in order.
         level, same caveat as `Enum.impl_type`.
         This closes out every AST-node-attached `SoulType` field identified when this series started
         — `SoulType`'s own internal recursive fields (`ArrayType.of_type`, `Reference.inner`,
-        `Optional`'s payload, etc.) remain intentionally un-interned, per the scope decision at the
-        top of this entry.
+        `Optional`'s payload, etc.) remained intentionally un-interned at this point, per the scope
+        decision at the top of this entry.
+  - [x] The full flatten, reversing the scope decision above: every `SoulType`-internal recursive
+        field (`ArrayType.of_type`, `ReferenceType.inner`, `RawPtr`'s/`Optional`'s/`ImplTrait`'s
+        payload, `Res`'s `ok`/`err`, `Stub.generics`, `NamedVariant.base`, `Function.return_type`,
+        `TupleKind`'s `Tuple`/`NamedTuple` element types) is `TypeId` now, not `Box<SoulType>`/
+        `SoulType`. Also swept up two AST-node fields missed by the earlier series while here:
+        `FunctionCall.generics` and the (never-actually-constructed) `FunctionCalleeKind::Type`.
+    - The blocker flagged before starting — `SoulType`'s `Debug` impl recursing through owned
+      `Box<SoulType>` fields with no way to resolve a bare `TypeId` — is real and was resolved by
+      dropping the custom `Debug` (now `#[derive(Debug)]`, printing raw `TypeId`s, fine for internal
+      debugging) and adding `ast_model::{PrintType, print_type}`: a `Display` wrapper carrying `&
+      DeclareStore` alongside the `&SoulType`, resolving each nested `TypeId` as it recurses. Every
+      site that used to do `format!("{ty:?}")` for a user-facing error/fault message — ~30 of them
+      across `soul_name_resolver`'s typecheck modules, `mir_parser`, `mir_codegen` — now goes through
+      a small `print_ty(&self, ty: &SoulType) -> String` helper (one per crate that needs it) wrapping
+      `print_type`. Missing even one of these is a *silent* regression, not a compile error — a
+      derived-`Debug` string like `Function { arity: 0, return_type: TypeId(18) }` is still valid
+      `Box<str>`/`SharedStr`, so nothing fails to build; only fault-message-content assertions in
+      tests (`soul_name_resolver`'s `lambda_type_tests`, checking `got.contains("-> int")`) caught it
+      here (7 tests failed on exactly this before the sweep — grep for `format!("{` + a `:?}` type
+      specifier is what actually found the rest, not the compiler). One further, non-`SoulType`
+      instance of the same shape: `EnumVariantArgumentTypeMismatch` stored raw `SoulType` fields and
+      formatted them in its own `Display` impl (in `ast_model::fault`, with no interner reachable
+      either) — changed to pre-rendered `Box<str>` fields, computed at its one construction site
+      (`resolve/typecheck/function_call.rs`) where `self.print_ty` is available, matching every other
+      `AstErrorKind` variant's existing convention.
+    - Every one of the ~30 direct `SoulType`-recursive-variant construction sites across
+      `ast_parser`'s single type-parsing module (`parse/soul_type.rs`) now interns as it builds
+      nested structure — `parse_tuple`/`parse_named_tuple`, the wrapper loop in `inner_parse_type`
+      (`&`/`*`/`?`/array wrapping, interning the *previous* iteration's type before embedding it in
+      the next), `parse_raw_ptr`/`parse_res`/`get_base_type`'s `impl Trait` arm. `parse_generic_define`
+      (parses a `<T, U, ..>` argument list) now interns each argument as it's parsed and returns
+      `Vec<TypeId>` directly, since every caller only ever embeds the result into another interned
+      type or an AST node's own `generics` field — this single signature change is what surfaced
+      `FunctionCall.generics`/`FunctionCalleeKind::Type` as needing the same conversion, since they're
+      downstream of its return value.
+    - `mir_parser::FunctionLowerer.declares` had to become `&'a mut DeclareStore` (previously `&'a
+        DeclareStore`, since this crate — unlike `soul_name_resolver` — only ever *read* through the
+        interner before): lowering a `&this`/`&mut this` receiver or a checked-arithmetic op's
+        `(T, bool)` result tuple builds a brand-new `SoulType` on the fly that has to be interned to
+        get a `TypeId` for the wrapping `ReferenceType`/`TupleKind`. `MirLowerer` (the outer driver)
+        does *not* get its own separate `&mut DeclareStore` field — it would alias
+        `FunctionLowerer`'s — instead exposing `FunctionLowerer::declares_mut()` for the one thing
+        `MirLowerer` itself needs it for (`lower_extern_signature`, read-only). This required
+        widening `&AstTree` to `&mut AstTree` up the whole MIR-lowering call chain:
+        `mir_run::to_mir`, `soul_tester::main`'s own `fn mir`.
+    - In `soul_name_resolver`, several previously-`&self` methods that build a fresh nested
+        `SoulType` needed to become `&mut self` for the same reason (`expression_type`,
+        `combine_operand_types`/`combine_resolved_operand_types`/`combine_array_types`,
+        `get_owner_kind`, `first_lambda_return_type`, `array_literal_element_type`,
+        `foreach_collection_element_type`) — traced transitively from every call site already being
+        inside a `&mut self` resolve-phase method, so no further API widening was needed past this
+        crate's own boundary, unlike `mir_parser`'s case above. One real aliasing hazard surfaced by
+        this: `check_struct_constructor` held a `&Stub`/`&Struct` borrowed from `self.declares` across
+        a later call to `check_struct_fields` (needing `&mut self`) — fixed by cloning the small
+        `Stub`/`Struct` values before the call, same fix shape as `NameResolver.declares: &'a mut
+        DeclareStore` (not `&'a DeclareStore`) requires everywhere a resolved reference is held across
+        a later mutable call, unlike the read-only `mir_parser`/`mir_codegen`/`soul_tester` crates.
+    - Two comptime `TypeId` constants got real use here for the first time: `literal_type`'s
+        `Literal::Str` arm and a `RawPtr<int>`/`Res<int, str>` parser test both build a `SoulType`
+        value using `TypeId::STRING`/`TypeId::PRIM_INT` directly instead of interning a fresh
+        `SoulType::String`/`SoulType::Primitive(Int)` — the exact use case the constants exist for.
+    - Proven by the same full `cargo test --workspace` (all crates, all green, including the 7
+      lambda-message tests once the `print_ty` sweep was complete) + 30-exe-test bar as every
+      preceding entry in this series.
   - [ ] Wire `any`'s runtime representation (`{ptr, TypeId}`) into `mir_parser`/`mir_codegen` (today
         `require_lowerable` rejects `SoulType::Any` outright).
   - [ ] `.typeof`/`==` comparison lowering. No syntax exists yet for "a type name used as a value"

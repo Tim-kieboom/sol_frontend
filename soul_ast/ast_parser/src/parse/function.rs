@@ -2,7 +2,7 @@ use ast_model::{
     Argument, ArrayKind, ArrayType, Block, Constructor, Expression, ExpressionKind, ExternLanguage,
     Function, FunctionCall, FunctionCallee, FunctionKind, FunctionModifier, FunctionSignature,
     FunctionSignatureHelper, FunctionThisKind, Generic, InnerFunctionSignature, Parameter,
-    SoulType, Statement,
+    SoulType, Statement, TypeId,
 };
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
@@ -146,7 +146,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         &mut self,
         start_span: Span,
         callee: Option<FunctionCallee>,
-        generics: Arr<SoulType>,
+        generics: Arr<TypeId>,
         ident: &Ident,
     ) -> AstTryResult<Spanned<FunctionCall>, AstFault> {
         let start_position = self.tokens.current_position();
@@ -401,10 +401,11 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.bump();
 
         let name = Ident::new(ARRAY_CONTRUCTOR_STR, start_span);
-        let mut array_type = self.try_parse_type().merge_to_result()?;
+        let array_type = self.try_parse_type().merge_to_result()?;
+        let array_type_id = self.intern_type(array_type);
 
-        array_type = SoulType::Array(ArrayType {
-            of_type: Box::new(array_type),
+        let array_type = SoulType::Array(ArrayType {
+            of_type: array_type_id,
             kind: ArrayKind::StackArrayWildcard,
         });
 

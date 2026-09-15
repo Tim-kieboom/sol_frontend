@@ -31,7 +31,11 @@ mod function;
 
 pub struct MirLowerer<'a> {
     store: &'a AstStore,
-    declares: &'a DeclareStore,
+    // Owned solely by `function_lowerer` (which needs it mutable, to intern
+    // fresh synthetic types built during body lowering — a receiver's
+    // reference type, a checked-arithmetic op's result tuple, ...) — see
+    // `FunctionLowerer::declares_mut`, used by `lower_extern_signature` below,
+    // which only ever reads.
     function_lowerer: FunctionLowerer<'a>,
     functions: VecMap<FunctionId, mir::Function>,
     externs: VecMap<FunctionId, mir::ExternFunction>,
@@ -39,12 +43,11 @@ pub struct MirLowerer<'a> {
 impl<'a> MirLowerer<'a> {
     pub fn new(
         store: &'a AstStore,
-        declares: &'a DeclareStore,
+        declares: &'a mut DeclareStore,
         options: &'a CompilerOptions,
     ) -> Self {
         Self {
             store,
-            declares,
             functions: VecMap::new(),
             externs: VecMap::new(),
             function_lowerer: FunctionLowerer::new(store, declares, options),
@@ -79,7 +82,10 @@ impl<'a> MirLowerer<'a> {
                         Some(signature.span),
                     ));
                 }
-                let extern_fn = lower_extern_signature(&signature.value, self.declares);
+                let extern_fn = lower_extern_signature(
+                    &signature.value,
+                    &*self.function_lowerer.declares_mut(),
+                );
                 self.externs.insert(signature.value.id, extern_fn);
                 Ok(())
             }

@@ -15,8 +15,8 @@ use ast_model::{
     ExpressionKind, ExternalCrateData, ForCondition, FunctionCalleeKind, FunctionKind,
     FunctionModifier, FunctionThisKind, Generic, IfBranch, IfCondition, ImplBlock, Import,
     ImportItem, ImportKind, Lambda, MatchPattern, NodeId, Parameter, SoulType, Statement,
-    StatementId, StatementKind, Struct, Trait, TupleKind, TypeDef, TypeofKind, UnionKind, UseBlock,
-    VarPattern, Variable,
+    StatementId, StatementKind, Struct, Trait, TupleKind, TypeDef, TypeId, TypeofKind, UnionKind,
+    UseBlock, VarPattern, Variable,
 };
 use soul_tokenizer::model::{
     keyword::KeyWord::{self},
@@ -899,7 +899,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
             ExpressionKind::FunctionCall(function_call) => {
                 if let Some(callee) = &function_call.callee {
                     match &callee.kind {
-                        FunctionCalleeKind::Type(soul_type) => self.write_type(soul_type)?,
+                        FunctionCalleeKind::Type(id) => self.write_type_id(*id)?,
                         FunctionCalleeKind::Expression(expression_id) => {
                             self.write_expression(*expression_id)?
                         }
@@ -1303,6 +1303,19 @@ impl<'a, W: Writer> Displayer<'a, W> {
         Ok(())
     }
 
+    /// Resolves `id` through the interner and writes it — every `SoulType`
+    /// internal field is a `TypeId` now, so this is what `write_type`'s own
+    /// recursive calls go through instead of matching straight into a nested
+    /// `SoulType`/`Box<SoulType>`.
+    fn write_type_id(&mut self, id: TypeId) -> Result<()> {
+        let ty = self
+            .ast
+            .declares
+            .get_type(id)
+            .expect("SoulType's internal TypeId fields are always interned");
+        self.write_type(ty)
+    }
+
     fn write_type(&mut self, ty: &SoulType) -> Result<()> {
         match ty {
             SoulType::TupleKind(kind) => {
@@ -1310,17 +1323,17 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 let last_index = kind.len().saturating_sub(1);
                 match kind {
                     TupleKind::Tuple(types) => {
-                        for (i, ty) in types.iter().enumerate() {
-                            self.write_type(ty)?;
+                        for (i, id) in types.iter().enumerate() {
+                            self.write_type_id(*id)?;
                             if i != last_index {
                                 self.push_str(", ")?;
                             }
                         }
                     }
                     TupleKind::NamedTuple(items) => {
-                        for (i, (name, ty)) in items.iter().enumerate() {
+                        for (i, (name, id)) in items.iter().enumerate() {
                             push_fmt!(self, "{}: ", name.as_str())?;
-                            self.write_type(ty)?;
+                            self.write_type_id(*id)?;
                             if i != last_index {
                                 self.push_str(", ")?;
                             }
@@ -1340,7 +1353,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                     ArrayKind::MutSlice => self.push_str("[&mut]")?,
                     ArrayKind::ConstSlice => self.push_str("[&]")?,
                 }
-                self.write_type(&array.of_type)
+                self.write_type_id(array.of_type)
             }
             SoulType::Reference(reference) | SoulType::Pointer(reference) => {
                 if matches!(ty, SoulType::Pointer(_)) {
@@ -1355,13 +1368,13 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 if reference.mutable.is_mut() {
                     self.push_str("mut ")?;
                 }
-                self.write_type(&reference.inner)
+                self.write_type_id(reference.inner)
             }
             SoulType::RawPtr(inner) => {
                 self.push_str("RawPtr")?;
                 if let Some(inner) = inner {
                     self.push_char('<')?;
-                    self.write_type(inner)?;
+                    self.write_type_id(*inner)?;
                     self.push_char('>')?;
                 }
                 Ok(())
@@ -1371,27 +1384,27 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 match (ok, err) {
                     (Some(ok), Some(err)) => {
                         self.push_char('<')?;
-                        self.write_type(ok)?;
+                        self.write_type_id(*ok)?;
                         self.push_str(", ")?;
-                        self.write_type(err)?;
+                        self.write_type_id(*err)?;
                         self.push_char('>')?;
                     }
                     (Some(ok), None) => {
                         self.push_char('<')?;
-                        self.write_type(ok)?;
+                        self.write_type_id(*ok)?;
                         self.push_char('>')?;
                     }
                     _ => {}
                 }
                 Ok(())
             }
-            SoulType::Optional(soul_type) => {
+            SoulType::Optional(inner) => {
                 self.push_char('?')?;
-                self.write_type(soul_type)
+                self.write_type_id(*inner)
             }
             SoulType::ImplTrait(inner) => {
                 self.push_str("impl ")?;
-                self.write_type(inner)
+                self.write_type_id(*inner)
             }
             SoulType::Stub(stub) => {
                 self.push_str(&stub.name)?;
@@ -1399,7 +1412,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 Ok(())
             }
             SoulType::NamedVariant { base, variant } => {
-                self.write_type(base)?;
+                self.write_type_id(*base)?;
                 push_fmt!(self, ".{}", variant.as_str())
             }
             SoulType::String => self.push_str(Types::String.as_str()),
@@ -1408,7 +1421,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
             SoulType::Error => self.push_str(Types::Error.as_str()),
             SoulType::Function { arity, return_type } => {
                 push_fmt!(self, "fn({arity} args) -> ")?;
-                self.write_type(return_type)
+                self.write_type_id(*return_type)
             }
             SoulType::Type => self.push_str("type"),
         }
@@ -1478,15 +1491,15 @@ impl<'a, W: Writer> Displayer<'a, W> {
         self.push_char('>')
     }
 
-    fn write_generic_types(&mut self, generics: &[SoulType]) -> Result<()> {
+    fn write_generic_types(&mut self, generics: &[TypeId]) -> Result<()> {
         if generics.is_empty() {
             return Ok(());
         }
 
         self.push_char('<')?;
         let last_index = generics.len().saturating_sub(1);
-        for (i, generic) in generics.iter().enumerate() {
-            self.write_type(generic)?;
+        for (i, id) in generics.iter().enumerate() {
+            self.write_type_id(*id)?;
             if i != last_index {
                 self.push_str(", ")?;
             }

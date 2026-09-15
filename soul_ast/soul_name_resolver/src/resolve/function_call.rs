@@ -74,7 +74,9 @@ impl<'a> NameResolver<'a> {
         else {
             return false;
         };
-        let return_type = (**return_type).clone();
+        let Some(return_type) = self.declares.get_type(*return_type).cloned() else {
+            return false;
+        };
 
         self.declares
             .insert_expression_type(expression_id, return_type);
@@ -271,7 +273,7 @@ impl<'a> NameResolver<'a> {
     }
 
     fn get_owner_kind(
-        &self,
+        &mut self,
         type_qualifier: Option<&SoulType>,
         call: &FunctionCall,
     ) -> Option<SoulType> {
@@ -281,7 +283,7 @@ impl<'a> NameResolver<'a> {
 
         let callee = call.callee.as_ref()?;
         match &callee.kind {
-            FunctionCalleeKind::Type(soul_type) => Some(soul_type.clone()),
+            FunctionCalleeKind::Type(id) => self.declares.get_type(*id).cloned(),
             FunctionCalleeKind::Expression(id) => self.expression_type(*id),
         }
     }
@@ -292,7 +294,7 @@ impl<'a> NameResolver<'a> {
                 ExpressionKind::Variable(VariableExpression { name, .. }) => name.as_str(),
                 _ => return None,
             },
-            FunctionCalleeKind::Type(soul_type) => match soul_type {
+            FunctionCalleeKind::Type(id) => match self.declares.get_type(*id)? {
                 SoulType::Stub(stub) => &stub.name,
                 SoulType::Res { .. } => return Some(true),
                 _ => return None,

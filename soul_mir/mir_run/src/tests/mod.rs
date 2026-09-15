@@ -13,13 +13,13 @@ use soul_utils::{
 
 use crate::MirProgram;
 
-fn create_mir(ast: &AstTree) -> (MirProgram, CrateContext<MirErrorKind>) {
+fn create_mir(ast: &mut AstTree) -> (MirProgram, CrateContext<MirErrorKind>) {
     let mut benchmark = Benchmark::new();
     create_mir_with_benchmark(ast, &mut benchmark)
 }
 
 fn create_mir_with_benchmark(
-    ast: &AstTree,
+    ast: &mut AstTree,
     benchmark: &mut Benchmark,
 ) -> (MirProgram, CrateContext<MirErrorKind>) {
     let mut context = CrateContext::default();
@@ -71,10 +71,10 @@ fn build_ast(source: &str) -> AstTree {
 
 #[test]
 fn lowers_every_lowerable_function_with_no_errors() {
-    let ast = build_ast("add(a: int, b: int): int {\n    c := a + b\n    return c\n}\n");
+    let mut ast = build_ast("add(a: int, b: int): int {\n    c := a + b\n    return c\n}\n");
     let mut benchmark = Benchmark::new();
 
-    let (program, context) = create_mir_with_benchmark(&ast, &mut benchmark);
+    let (program, context) = create_mir_with_benchmark(&mut ast, &mut benchmark);
 
     assert_eq!(program.functions.entries().count(), 1);
     assert_eq!(
@@ -95,9 +95,9 @@ fn out_of_scope_function_pushes_a_fault_into_the_context_not_a_panic() {
     // supported now (see `mir_parser`'s own struct and array tests) — a
     // heap-array type isolates a genuine non-primitive type this lowering
     // slice still doesn't support.
-    let ast = build_ast("f(a: []int): []int {\n    return a\n}\n");
+    let mut ast = build_ast("f(a: []int): []int {\n    return a\n}\n");
 
-    let (program, context) = create_mir(&ast);
+    let (program, context) = create_mir(&mut ast);
 
     assert_eq!(program.functions.entries().count(), 0);
     assert_eq!(
@@ -118,9 +118,9 @@ fn out_of_scope_function_pushes_a_fault_into_the_context_not_a_panic() {
 
 #[test]
 fn extern_c_function_lowers_into_externs_not_functions() {
-    let ast = build_ast(r#"extern "C" printf(fmt: &char): int"#);
+    let mut ast = build_ast(r#"extern "C" printf(fmt: &char): int"#);
 
-    let (program, context) = create_mir(&ast);
+    let (program, context) = create_mir(&mut ast);
 
     assert_eq!(
         program.functions.entries().count(),
@@ -142,11 +142,11 @@ fn extern_c_function_lowers_into_externs_not_functions() {
 
 #[test]
 fn mixed_program_lowers_what_it_can_and_faults_on_the_rest() {
-    let ast = build_ast(
+    let mut ast = build_ast(
         "okFn(a: int, b: int): int {\n    return a + b\n}\nbadFn(a: []int): []int {\n    return a\n}\n",
     );
 
-    let (program, context) = create_mir(&ast);
+    let (program, context) = create_mir(&mut ast);
 
     assert_eq!(program.functions.entries().count(), 1);
     assert_eq!(

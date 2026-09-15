@@ -39,8 +39,8 @@ impl<'a> NameResolver<'a> {
         let span = self.get_expression(value).map(|expr| expr.span);
         self.log_error(
             AstErrorKind::AssignmentTypeMismatch {
-                expected: format!("{declared_ty:?}").into(),
-                got: format!("{value_ty:?}").into(),
+                expected: self.print_ty(declared_ty).into(),
+                got: self.print_ty(&value_ty).into(),
             },
             span,
         );
@@ -81,8 +81,8 @@ impl<'a> NameResolver<'a> {
         let span = self.get_expression(assignment.right).map(|expr| expr.span);
         self.log_error(
             AstErrorKind::AssignmentTypeMismatch {
-                expected: format!("{left_ty:?}").into(),
-                got: format!("{right_ty:?}").into(),
+                expected: self.print_ty(&left_ty).into(),
+                got: self.print_ty(&right_ty).into(),
             },
             span,
         );

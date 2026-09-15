@@ -8,8 +8,7 @@ use ast_model::{
 };
 use mir_model as mir;
 use soul_utils::{
-    TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction,
-    soul_names::PrimitiveTypes, span::Span,
+    TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction, soul_error_internal, soul_names::PrimitiveTypes, span::Span,
 };
 
 impl<'a> FunctionLowerer<'a> {
@@ -41,7 +40,7 @@ impl<'a> FunctionLowerer<'a> {
                         )
                     })?;
 
-                require_primitive(&ty, span)?;
+                require_primitive(self.declares, &ty, span)?;
 
                 let rvalue = self.lower_rvalue(expr_id)?;
                 let temp = self.alloc_local(ty, TypeModifier::Immut, span);
@@ -190,13 +189,15 @@ impl<'a> FunctionLowerer<'a> {
         let struct_type = self
             .declares
             .get_type(ctor.struct_type)
-            .expect("StructConstructor.struct_type is always an interned TypeId");
+            .ok_or(soul_error_internal!("StructConstructor.struct_type is always an interned TypeId", Some(span)).into_kind())?;
+
         // Cloned so the field list doesn't keep borrowing `self.declares`
         // across the `&mut self` calls to `lower_operand` below.
+        let struct_ty_msg = self.print_ty(struct_type);
         let struct_ = self.resolve_struct(struct_type).cloned().ok_or_else(|| {
             Fault::error_with_kind(
                 MirErrorKind::NonPrimitiveType {
-                    ty: format!("{struct_type:?}").into(),
+                    ty: struct_ty_msg.into(),
                 },
                 Some(span),
             )

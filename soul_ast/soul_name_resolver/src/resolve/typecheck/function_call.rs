@@ -62,8 +62,8 @@ impl<'a> NameResolver<'a> {
                                 self.log_error(
                                     AstErrorKind::GenericParameterConflict {
                                         generic_name: generic_name.into(),
-                                        first: format!("{bound_ty:?}").into(),
-                                        second: format!("{arg_ty:?}").into(),
+                                        first: self.print_ty(bound_ty).into(),
+                                        second: self.print_ty(&arg_ty).into(),
                                     },
                                     Some(span),
                                 );
@@ -80,8 +80,8 @@ impl<'a> NameResolver<'a> {
 
                 self.log_error(
                     AstErrorKind::ArgumentTypeMismatch {
-                        expected: format!("{:?}", parameter_ty).into(),
-                        got: format!("{arg_ty:?}").into(),
+                        expected: self.print_ty(&parameter_ty).into(),
+                        got: self.print_ty(&arg_ty).into(),
                     },
                     Some(span),
                 );
@@ -145,12 +145,14 @@ impl<'a> NameResolver<'a> {
             }
 
             let span = self.store.expressions.get(argument.value).map(|e| e.span);
+            let expected = self.print_ty(&param_ty).into();
+            let got = self.print_ty(&arg_ty).into();
             self.log_error(
                 EnumVariantArgumentTypeMismatch {
                     enum_name: stub.name.as_str().into(),
                     variant_name: variant_name.into(),
-                    expected: param_ty,
-                    got: arg_ty.clone(),
+                    expected,
+                    got,
                 }
                 .into(),
                 span,

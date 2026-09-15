@@ -91,15 +91,13 @@ impl<'a> FunctionLowerer<'a> {
         let ast::ArrayKind::StackArray(len) = array.kind else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::ArrayReferenceUnsupported {
-                    ty: format!("{value_ty:?}").into(),
+                    ty: self.print_ty(&value_ty).into(),
                 },
                 Some(span),
             ));
         };
-        let element_ty = (*array.of_type).clone();
-
         let ptr_ty = SoulType::Reference(ast::ReferenceType {
-            inner: Box::new(element_ty),
+            inner: array.of_type,
             lifetime: None,
             mutable: if mutable {
                 soul_utils::Mutable::Mut
@@ -133,8 +131,9 @@ impl<'a> FunctionLowerer<'a> {
         span: Span,
     ) -> MirResult<mir::Operand> {
         let (place, value_ty) = self.resolve_place_expression(expr_id, span)?;
+        let inner = self.declares.intern_type(value_ty);
         let ref_ty = SoulType::Reference(ast::ReferenceType {
-            inner: Box::new(value_ty),
+            inner,
             lifetime: None,
             mutable: if mutable {
                 soul_utils::Mutable::Mut
@@ -165,14 +164,19 @@ impl<'a> FunctionLowerer<'a> {
         let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = value_ty else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::DerefTargetNotAReference {
-                    ty: format!("{value_ty:?}").into(),
+                    ty: self.print_ty(&value_ty).into(),
                 },
                 Some(span),
             ));
         };
 
         place.projection.push(mir::PlaceElem::Deref);
-        Ok((place, *reference.inner))
+        let inner = self
+            .declares
+            .get_type(reference.inner)
+            .cloned()
+            .expect("ReferenceType.inner is always an interned TypeId");
+        Ok((place, inner))
     }
 
     /// Lowers `object.field` into a `Place` with a `Field` projection
@@ -189,12 +193,12 @@ impl<'a> FunctionLowerer<'a> {
         let object_span = self.store.expressions[field_access.object].span;
         let (mut place, object_ty) =
             self.resolve_place_expression(field_access.object, object_span)?;
-        let object_ty = auto_deref(&mut place, object_ty);
+        let object_ty = auto_deref(self.declares, &mut place, object_ty);
 
         let struct_ = self.resolve_struct(&object_ty).ok_or_else(|| {
             Fault::error_with_kind(
                 MirErrorKind::NonPrimitiveType {
-                    ty: format!("{object_ty:?}").into(),
+                    ty: self.print_ty(&object_ty).into(),
                 },
                 Some(span),
             )
@@ -242,12 +246,12 @@ impl<'a> FunctionLowerer<'a> {
         let collection_span = self.store.expressions[index.collection].span;
         let (mut place, collection_ty) =
             self.resolve_place_expression(index.collection, collection_span)?;
-        let collection_ty = auto_deref(&mut place, collection_ty);
+        let collection_ty = auto_deref(self.declares, &mut place, collection_ty);
 
         let SoulType::Array(array) = &collection_ty else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::IndexTargetNotASlice {
-                    ty: format!("{collection_ty:?}").into(),
+                    ty: self.print_ty(&collection_ty).into(),
                 },
                 Some(span),
             ));
@@ -258,12 +262,16 @@ impl<'a> FunctionLowerer<'a> {
         ) {
             return Err(Fault::error_with_kind(
                 MirErrorKind::IndexTargetNotASlice {
-                    ty: format!("{collection_ty:?}").into(),
+                    ty: self.print_ty(&collection_ty).into(),
                 },
                 Some(span),
             ));
         }
-        let element_ty = (*array.of_type).clone();
+        let element_ty = self
+            .declares
+            .get_type(array.of_type)
+            .cloned()
+            .expect("ArrayType.of_type is always an interned TypeId");
 
         // Indices are always non-negative offsets in this slice — always
         // materialize into a `uint` temp rather than trying to preserve
@@ -381,11 +389,18 @@ impl<'a> FunctionLowerer<'a> {
 /// a reference to one — this is what keeps `this.field` working once a
 /// `&this`/`&mut this` receiver becomes a real reference-typed place instead
 /// of today's by-value copy.
-fn auto_deref(place: &mut mir::Place, ty: SoulType) -> SoulType {
+fn auto_deref(
+    declares: &ast_model::declare_store::DeclareStore,
+    place: &mut mir::Place,
+    ty: SoulType,
+) -> SoulType {
     match ty {
         SoulType::Reference(reference) | SoulType::Pointer(reference) => {
             place.projection.push(mir::PlaceElem::Deref);
-            *reference.inner
+            declares
+                .get_type(reference.inner)
+                .cloned()
+                .expect("ReferenceType.inner is always an interned TypeId")
         }
         other => other,
     }

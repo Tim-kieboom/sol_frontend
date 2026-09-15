@@ -15,15 +15,17 @@ fn interning_the_same_type_twice_returns_the_same_id() {
 #[test]
 fn structurally_equal_nested_types_built_separately_canonicalize_to_the_same_id() {
     let mut declares = DeclareStore::new();
-    let build_array_of_int = || {
+    let build_array_of_int = |declares: &mut DeclareStore| {
         SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::HeapArray,
         })
     };
 
-    let first = declares.intern_type(build_array_of_int());
-    let second = declares.intern_type(build_array_of_int());
+    let first_ty = build_array_of_int(&mut declares);
+    let second_ty = build_array_of_int(&mut declares);
+    let first = declares.intern_type(first_ty);
+    let second = declares.intern_type(second_ty);
 
     assert_eq!(first, second);
 }

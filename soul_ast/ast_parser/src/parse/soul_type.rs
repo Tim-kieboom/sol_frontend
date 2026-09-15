@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use ast_model::{
-    ArrayKind, ArrayType, NamedTuple, ReferenceType, SoulType, Stub, Tuple, TupleKind,
+    ArrayKind, ArrayType, NamedTuple, ReferenceType, SoulType, Stub, Tuple, TupleKind, TypeId,
 };
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord, types::Types};
 use soul_utils::{
@@ -37,7 +37,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         result
     }
 
-    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: Arr<SoulType>) -> SoulType {
+    pub(crate) fn type_from_ident(&mut self, ident: Ident, generics: Arr<TypeId>) -> SoulType {
         if ident.as_str() == PrimitiveTypes::None.as_str() {
             self.bump();
             return SoulType::None;
@@ -102,7 +102,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ));
             };
 
-            Some(Box::new(inner))
+            Some(inner)
         } else {
             None
         };
@@ -122,12 +122,12 @@ impl<'a, 'f> Parser<'a, 'f> {
             }
 
             let err = if generics.len() == 2 {
-                Some(Box::new(generics.remove(1)))
+                Some(generics.remove(1))
             } else {
                 None
             };
             let ok = if generics.len() == 1 {
-                Some(Box::new(generics.remove(0)))
+                Some(generics.remove(0))
             } else {
                 None
             };
@@ -155,21 +155,24 @@ impl<'a, 'f> Parser<'a, 'f> {
         };
 
         for wrap in wrapper {
+            let inner = self.intern_type(ty);
             ty = match wrap {
                 ParseWrappers::ConstRef => {
-                    SoulType::Reference(ReferenceType::new(ty, Mutable::Immut))
+                    SoulType::Reference(ReferenceType::new(inner, Mutable::Immut))
                 }
-                ParseWrappers::MutRef => SoulType::Reference(ReferenceType::new(ty, Mutable::Mut)),
+                ParseWrappers::MutRef => {
+                    SoulType::Reference(ReferenceType::new(inner, Mutable::Mut))
+                }
                 ParseWrappers::ConstPointer => {
-                    SoulType::Pointer(ReferenceType::new(ty, Mutable::Immut))
+                    SoulType::Pointer(ReferenceType::new(inner, Mutable::Immut))
                 }
                 ParseWrappers::MutPointer => {
-                    SoulType::Pointer(ReferenceType::new(ty, Mutable::Mut))
+                    SoulType::Pointer(ReferenceType::new(inner, Mutable::Mut))
                 }
-                ParseWrappers::Option => SoulType::Optional(Box::new(ty)),
+                ParseWrappers::Option => SoulType::Optional(inner),
                 ParseWrappers::Array(kind) => {
                     let array = ArrayType {
-                        of_type: Box::new(ty),
+                        of_type: inner,
                         kind,
                     };
                     SoulType::Array(array)
@@ -181,10 +184,8 @@ impl<'a, 'f> Parser<'a, 'f> {
             let save = self.tokens.current_position();
             self.bump();
             if let Ok(variant) = self.try_bump_consume_ident() {
-                return TryOk(SoulType::NamedVariant {
-                    base: Box::new(ty),
-                    variant,
-                });
+                let base = self.intern_type(ty);
+                return TryOk(SoulType::NamedVariant { base, variant });
             }
             self.goto(save);
         }
@@ -202,7 +203,8 @@ impl<'a, 'f> Parser<'a, 'f> {
                 Err(TryError::IsErr(err)) => return TryErr(err),
                 Err(TryError::IsNotValue(err)) => return TryNotValue(err),
             };
-            return TryOk(SoulType::ImplTrait(Box::new(inner)));
+            let inner = self.intern_type(inner);
+            return TryOk(SoulType::ImplTrait(inner));
         }
 
         match &self.token().kind {
@@ -346,6 +348,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             let ident = self.try_bump_consume_ident()?;
             self.expect(&COLON)?;
             let ty = self.try_parse_type().merge_to_result()?;
+            let ty = self.intern_type(ty);
             values.push((ident, ty));
 
             self.skip_end_lines();
@@ -363,6 +366,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         let mut values = vec![];
         loop {
             let ty = self.try_parse_type().merge_to_result()?;
+            let ty = self.intern_type(ty);
             values.push(ty);
 
             self.skip_end_lines();

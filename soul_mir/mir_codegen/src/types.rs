@@ -163,13 +163,25 @@ pub(crate) fn llvm_type<'ctx>(
         SoulType::TupleKind(TupleKind::Tuple(types)) => {
             let field_types = types
                 .iter()
-                .map(|ty| llvm_type(context, platform, declares, module, ty, span))
+                .map(|id| {
+                    let ty = declares.get_type(*id).ok_or_else(|| {
+                        Fault::error_with_kind(
+                            CodegenErrorKind::NonPrimitiveType {
+                                ty: format!("{id:?}").into_boxed_str(),
+                            },
+                            span,
+                        )
+                    })?;
+                    llvm_type(context, platform, declares, module, ty, span)
+                })
                 .collect::<CodegenResult<Vec<_>>>()?;
             Ok(context.struct_type(&field_types, false).into())
         }
         other => Err(Fault::error_with_kind(
             CodegenErrorKind::NonPrimitiveType {
-                ty: format!("{other:?}").into_boxed_str(),
+                ty: ast_model::print_type(other, declares)
+                    .to_string()
+                    .into_boxed_str(),
             },
             span,
         )),
@@ -201,7 +213,15 @@ fn array_type<'ctx>(
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
     match array.kind {
         ArrayKind::StackArray(len) => {
-            let element_ty = llvm_type(context, platform, declares, module, &array.of_type, span)?;
+            let of_type = declares.get_type(array.of_type).ok_or_else(|| {
+                Fault::error_with_kind(
+                    CodegenErrorKind::NonPrimitiveType {
+                        ty: format!("{:?}", array.of_type).into_boxed_str(),
+                    },
+                    span,
+                )
+            })?;
+            let element_ty = llvm_type(context, platform, declares, module, of_type, span)?;
             Ok(element_ty.array_type(len as u32).into())
         }
         ArrayKind::MutSlice | ArrayKind::ConstSlice => {
@@ -213,7 +233,9 @@ fn array_type<'ctx>(
         }
         ArrayKind::StackArrayWildcard | ArrayKind::HeapArray => Err(Fault::error_with_kind(
             CodegenErrorKind::NonPrimitiveType {
-                ty: format!("{:?}", SoulType::Array(array.clone())).into_boxed_str(),
+                ty: ast_model::print_type(&SoulType::Array(array.clone()), declares)
+                    .to_string()
+                    .into_boxed_str(),
             },
             span,
         )),
@@ -231,7 +253,7 @@ fn stub_type<'ctx>(
     let struct_ = resolve_struct(declares, module, ty).ok_or_else(|| {
         Fault::error_with_kind(
             CodegenErrorKind::NonPrimitiveType {
-                ty: format!("{ty:?}").into_boxed_str(),
+                ty: ast_model::print_type(ty, declares).to_string().into_boxed_str(),
             },
             span,
         )
@@ -247,7 +269,9 @@ fn stub_type<'ctx>(
                 .ok_or_else(|| {
                     Fault::error_with_kind(
                         CodegenErrorKind::NonPrimitiveType {
-                            ty: format!("{ty:?}").into_boxed_str(),
+                            ty: ast_model::print_type(ty, declares)
+                                .to_string()
+                                .into_boxed_str(),
                         },
                         span,
                     )

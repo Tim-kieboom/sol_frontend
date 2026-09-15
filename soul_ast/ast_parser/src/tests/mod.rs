@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf, sync::LazyLock};
 use ast_model::{
     AnyArray, ArrayKind, ArrayType, Assignment, AstStore, AstTree, Constructor, ExpressionKind,
     FunctionCall, FunctionCalleeKind, Import, ImportKind, Literal, MatchMethod, Module,
-    ReferenceType, SoulType, Statement, StatementKind, StructConstructor, Stub, TypeOf, TypeofKind,
-    Variable, operators::BinaryOperatorKind,
+    ReferenceType, SoulType, Statement, StatementKind, StructConstructor, Stub, TypeId, TypeOf,
+    TypeofKind, Variable, operators::BinaryOperatorKind,
 };
 use soul_tokenizer::to_token_stream;
 use soul_utils::{
@@ -760,7 +760,7 @@ fn chained_function_calls() {
 // ----------------------------------------------------------------
 #[test]
 fn optional_type_variable() {
-    let (module, store, context, declares) = parse_with_declares("x: ?int = null");
+    let (module, store, context, mut declares) = parse_with_declares("x: ?int = null");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -773,11 +773,12 @@ fn optional_type_variable() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
+    let int_id = declares.intern_type(SoulType::Primitive(
+        soul_utils::soul_names::PrimitiveTypes::Int,
+    ));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
-        Some(SoulType::Optional(Box::new(SoulType::Primitive(
-            soul_utils::soul_names::PrimitiveTypes::Int
-        ))))
+        Some(SoulType::Optional(int_id))
     );
 }
 
@@ -786,7 +787,7 @@ fn optional_type_variable() {
 // ----------------------------------------------------------------
 #[test]
 fn reference_type_variable() {
-    let (module, store, context, declares) = parse_with_declares("x: &int = &1");
+    let (module, store, context, mut declares) = parse_with_declares("x: &int = &1");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -799,10 +800,11 @@ fn reference_type_variable() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
+    let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Reference(ReferenceType::new(
-            SoulType::Primitive(PrimitiveTypes::Int),
+            int_id,
             Mutable::Immut
         )))
     );
@@ -810,7 +812,7 @@ fn reference_type_variable() {
 
 #[test]
 fn mut_reference_type_variable() {
-    let (module, store, context, declares) = parse_with_declares("x: &mut int = &mut 1");
+    let (module, store, context, mut declares) = parse_with_declares("x: &mut int = &mut 1");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -823,10 +825,11 @@ fn mut_reference_type_variable() {
         StatementKind::Variable(v) => v,
         _ => panic!("expected Variable"),
     };
+    let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Reference(ReferenceType::new(
-            SoulType::Primitive(PrimitiveTypes::Int),
+            int_id,
             Mutable::Mut
         )))
     );
@@ -1084,7 +1087,7 @@ fn array_contructor_empty_literal() {
 
 #[test]
 fn array_contructor_generic_literal() {
-    let (module, store, context, declares) = parse_with_declares("List<int>.[1, 2, 3]");
+    let (module, store, context, mut declares) = parse_with_declares("List<int>.[1, 2, 3]");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1098,10 +1101,10 @@ fn array_contructor_generic_literal() {
             let expr = &store.expressions[*expression];
             match &expr.node {
                 ExpressionKind::Array(AnyArray::Array(arr)) => {
-                    let int = SoulType::Primitive(PrimitiveTypes::Int);
+                    let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
                     let collection = SoulType::Stub(Stub {
                         name: SharedStr::new("List"),
-                        generics: Arr::from_array([int]),
+                        generics: Arr::from_array([int_id]),
                     });
                     assert_eq!(
                         arr.collection_type.and_then(|id| declares.get_type(id)),
@@ -1352,7 +1355,7 @@ fn compound_sub_assign() {
 // ----------------------------------------------------------------
 #[test]
 fn array_type_wildcard_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: [_]int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: [_]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1368,7 +1371,7 @@ fn array_type_wildcard_variable() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::StackArrayWildcard,
         }))
     );
@@ -1376,7 +1379,7 @@ fn array_type_wildcard_variable() {
 
 #[test]
 fn array_type_const_slice_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: [&]int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: [&]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1392,7 +1395,7 @@ fn array_type_const_slice_variable() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::ConstSlice,
         }))
     );
@@ -1400,7 +1403,7 @@ fn array_type_const_slice_variable() {
 
 #[test]
 fn array_type_mut_slice_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: [&mut]int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: [&mut]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1416,7 +1419,7 @@ fn array_type_mut_slice_variable() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::MutSlice,
         }))
     );
@@ -1424,7 +1427,7 @@ fn array_type_mut_slice_variable() {
 
 #[test]
 fn array_type_heap_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: []int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: []int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1440,7 +1443,7 @@ fn array_type_heap_variable() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::HeapArray,
         }))
     );
@@ -1448,7 +1451,7 @@ fn array_type_heap_variable() {
 
 #[test]
 fn array_type_sized_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: [5]int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: [5]int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1464,7 +1467,7 @@ fn array_type_sized_variable() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Array(ArrayType {
-            of_type: Box::new(SoulType::Primitive(PrimitiveTypes::Int)),
+            of_type: declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int)),
             kind: ArrayKind::StackArray(5),
         }))
     );
@@ -1475,7 +1478,7 @@ fn array_type_sized_variable() {
 // ----------------------------------------------------------------
 #[test]
 fn pointer_type_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: *int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: *int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1489,7 +1492,7 @@ fn pointer_type_variable() {
         _ => panic!("expected Variable"),
     };
 
-    let inner = Box::new(SoulType::Primitive(PrimitiveTypes::Int));
+    let inner = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Pointer(ReferenceType {
@@ -1502,7 +1505,7 @@ fn pointer_type_variable() {
 
 #[test]
 fn pointer_mut_type_variable() {
-    let (module, store, context, declares) = parse_with_declares("mut x: *mut int");
+    let (module, store, context, mut declares) = parse_with_declares("mut x: *mut int");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -1516,7 +1519,7 @@ fn pointer_mut_type_variable() {
         _ => panic!("expected Variable"),
     };
 
-    let inner = Box::new(SoulType::Primitive(PrimitiveTypes::Int));
+    let inner = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Pointer(ReferenceType {
@@ -1571,9 +1574,7 @@ fn raw_ptr_type_with_generic() {
     };
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
-        Some(SoulType::RawPtr(Some(Box::new(SoulType::Primitive(
-            PrimitiveTypes::Int
-        )))))
+        Some(SoulType::RawPtr(Some(TypeId::PRIM_INT)))
     );
 }
 
@@ -1594,7 +1595,7 @@ fn raw_ptr_type_explicit_none() {
     };
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
-        Some(SoulType::RawPtr(Some(Box::new(SoulType::None))))
+        Some(SoulType::RawPtr(Some(TypeId::NONE)))
     );
 }
 
@@ -1643,7 +1644,7 @@ fn res_type_one_generic() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Res {
-            ok: Some(Box::new(SoulType::Primitive(PrimitiveTypes::Int))),
+            ok: Some(TypeId::PRIM_INT),
             err: None,
         })
     );
@@ -1667,8 +1668,8 @@ fn res_type_two_generics() {
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
         Some(SoulType::Res {
-            ok: Some(Box::new(SoulType::Primitive(PrimitiveTypes::Int))),
-            err: Some(Box::new(SoulType::String)),
+            ok: Some(TypeId::PRIM_INT),
+            err: Some(TypeId::STRING),
         })
     );
 }
@@ -1714,11 +1715,11 @@ fn named_variant_type_variable() {
         Some(SoulType::NamedVariant { base, variant }) => {
             assert_eq!(variant.as_str(), "Bar");
             assert_eq!(
-                **base,
-                SoulType::Stub(Stub {
+                declares.get_type(*base),
+                Some(&SoulType::Stub(Stub {
                     name: "Foo".into(),
                     generics: Arr::new()
-                })
+                }))
             );
         }
         other => panic!("expected NamedVariant, got {:?}", other),

@@ -1,4 +1,4 @@
-use ast_model::{Expression, ExpressionId, SoulType};
+use ast_model::{Expression, ExpressionId, TypeId};
 use soul_tokenizer::model::TokenKind;
 use soul_utils::{
     collections::try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
@@ -18,9 +18,13 @@ pub mod soul_type;
 pub mod statements;
 
 impl<'a, 'f> Parser<'a, 'f> {
+    /// Parses a `<T, U, ..>` generic argument list, interning each argument
+    /// as it's parsed — every caller only ever embeds these into another
+    /// interned type (a `Stub`, `RawPtr`, `Res`) or an AST node's own
+    /// `generics` field, never inspects the parsed `SoulType` structurally.
     pub(crate) fn parse_generic_define(
         &mut self,
-    ) -> AstTryResult<Vec<SoulType>, crate::fault::AstFault> {
+    ) -> AstTryResult<Vec<TypeId>, crate::fault::AstFault> {
         let start_position = self.tokens.current_position();
 
         self.expect(&ARROW_LEFT).try_err()?;
@@ -38,7 +42,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                         return TryNotValue(err);
                     }
                 };
-                types.push(value);
+                types.push(self.intern_type(value));
                 if self.current_is(&ARROW_RIGHT) {
                     self.bump();
                     break;
@@ -58,7 +62,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                     return TryNotValue(err);
                 }
             };
-            types.push(ty);
+            types.push(self.intern_type(ty));
 
             if self.current_is(&ARROW_RIGHT) {
                 self.bump();

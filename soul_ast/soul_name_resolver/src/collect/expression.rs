@@ -122,13 +122,19 @@ impl<'a> NameResolver<'a> {
     }
 
     fn collect_function_call(&mut self, call: &FunctionCall) {
-        for ty in &call.generics {
-            self.collect_type(ty);
+        for id in &call.generics {
+            if let Some(ty) = self.declares.get_type(*id).cloned() {
+                self.collect_type(&ty);
+            }
         }
 
         if let Some(callee) = &call.callee {
             match &callee.kind {
-                FunctionCalleeKind::Type(soul_type) => self.collect_type(soul_type),
+                FunctionCalleeKind::Type(id) => {
+                    if let Some(ty) = self.declares.get_type(*id).cloned() {
+                        self.collect_type(&ty);
+                    }
+                }
                 FunctionCalleeKind::Expression(expression_id) => {
                     self.collect_expression(*expression_id)
                 }

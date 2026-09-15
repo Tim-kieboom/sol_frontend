@@ -2,7 +2,7 @@ use crate::{
     fault::{MirErrorKind, MirResult},
     function::FunctionLowerer,
 };
-use ast_model::{self as ast, SoulType, operators::UnaryOperatorKind};
+use ast_model::{self as ast, SoulType, declare_store::DeclareStore, operators::UnaryOperatorKind};
 use mir_model as mir;
 use soul_utils::{fault::Fault, soul_names::PrimitiveTypes, span::Span};
 
@@ -20,7 +20,8 @@ impl<'a> FunctionLowerer<'a> {
             ty = match elem {
                 mir::PlaceElem::Field(index) => {
                     if let SoulType::TupleKind(ast::TupleKind::Tuple(types)) = &ty {
-                        types.get(*index)?.clone()
+                        let id = *types.get(*index)?;
+                        self.declares.get_type(id)?.clone()
                     } else {
                         let struct_ = self.resolve_struct(&ty)?;
                         let field_ty_id = struct_.fields.get(*index)?.value.ty?;
@@ -31,11 +32,11 @@ impl<'a> FunctionLowerer<'a> {
                     let SoulType::Array(array) = &ty else {
                         return None;
                     };
-                    (*array.of_type).clone()
+                    self.declares.get_type(array.of_type)?.clone()
                 }
                 mir::PlaceElem::Deref => match ty {
                     SoulType::Reference(reference) | SoulType::Pointer(reference) => {
-                        *reference.inner
+                        self.declares.get_type(reference.inner)?.clone()
                     }
                     _ => return None,
                 },
@@ -117,13 +118,17 @@ impl<'a> FunctionLowerer<'a> {
     }
 }
 
-pub(super) fn require_primitive(ty: &SoulType, span: Span) -> MirResult<()> {
+pub(super) fn require_primitive(
+    declares: &DeclareStore,
+    ty: &SoulType,
+    span: Span,
+) -> MirResult<()> {
     if matches!(ty, SoulType::Primitive(_)) {
         Ok(())
     } else {
         Err(Fault::error_with_kind(
             MirErrorKind::NonPrimitiveType {
-                ty: format!("{ty:?}").into(),
+                ty: ast::print_type(ty, declares).to_string().into(),
             },
             Some(span),
         ))

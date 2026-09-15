@@ -1,4 +1,6 @@
-use ast_model::{AnyArray, Array, ArrayFiller, Binding, Expression, SoulType, StructConstructor};
+use ast_model::{
+    AnyArray, Array, ArrayFiller, Binding, Expression, SoulType, StructConstructor, TypeId,
+};
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
@@ -59,7 +61,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     pub(super) fn parse_struct_contructor(
         &mut self,
         ident: Ident,
-        generics: Arr<SoulType>,
+        generics: Arr<TypeId>,
         start_span: Span,
     ) -> Result<Spanned<StructConstructor>, crate::fault::AstFault> {
         self.expect(&CURLY_OPEN)?;

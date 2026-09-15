@@ -58,7 +58,7 @@ impl<'a> NameResolver<'a> {
                 if !matches!(return_type, SoulType::None) {
                     self.log_error(
                         AstErrorKind::ReturnTypeMismatchMissing {
-                            expected: format!("{return_type:?}").into(),
+                            expected: self.print_ty(return_type).into(),
                         },
                         Some(span),
                     );
@@ -115,8 +115,8 @@ impl<'a> NameResolver<'a> {
 
                 self.log_error(
                     AstErrorKind::ReturnTypeMismatch {
-                        expected: format!("{return_type:?}").into(),
-                        got: format!("{tail_ty:?}").into(),
+                        expected: self.print_ty(return_type).into(),
+                        got: self.print_ty(&tail_ty).into(),
                     },
                     Some(expression.span),
                 );
@@ -146,7 +146,7 @@ impl<'a> NameResolver<'a> {
         }
     }
 
-    pub(crate) fn first_lambda_return_type(&self, body: BlockId) -> Option<SoulType> {
+    pub(crate) fn first_lambda_return_type(&mut self, body: BlockId) -> Option<SoulType> {
         let value = self.first_return_value(body)?;
         self.expression_type(value).map(default_concrete_type)
     }

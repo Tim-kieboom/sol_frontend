@@ -448,7 +448,7 @@ pub struct FunctionCall {
 
     /// The name of the function being called.
     pub name: Ident,
-    pub generics: Arr<SoulType>,
+    pub generics: Arr<TypeId>,
     /// Optional callee expression (for method calls).
     pub callee: Option<FunctionCallee>,
     /// Function arguments.
@@ -463,7 +463,7 @@ pub struct FunctionCallee {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FunctionCalleeKind {
-    Type(SoulType),
+    Type(TypeId),
     Expression(ExpressionId),
 }
 

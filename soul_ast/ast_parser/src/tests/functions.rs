@@ -549,7 +549,7 @@ fn function_with_multi_where_clause() {
 // ----------------------------------------------------------------
 #[test]
 fn param_impl_trait() {
-    let (module, store, context, declares) =
+    let (module, store, context, mut declares) =
         parse_with_declares("describeImpl(value: impl Display): str {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
@@ -569,11 +569,10 @@ fn param_impl_trait() {
         _ => panic!("expected Normal function"),
     };
     assert_eq!(signature.value.parameters.len(), 1);
+    let stub_id = declares.intern_type(SoulType::Stub(Stub::new("Display")));
     assert_eq!(
         declares.get_type(signature.value.parameters[0].ty),
-        Some(&SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new(
-            "Display"
-        )))))
+        Some(&SoulType::ImplTrait(stub_id))
     );
 }
 
@@ -663,7 +662,8 @@ fn extern_function_missing_language_string_is_rejected() {
 
 #[test]
 fn return_impl_trait() {
-    let (module, store, context, declares) = parse_with_declares("makeDefault(): impl Display {}");
+    let (module, store, context, mut declares) =
+        parse_with_declares("makeDefault(): impl Display {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -681,10 +681,9 @@ fn return_impl_trait() {
         ast_model::FunctionKind::Normal(f) => f,
         _ => panic!("expected Normal function"),
     };
+    let stub_id = declares.intern_type(SoulType::Stub(Stub::new("Display")));
     assert_eq!(
         declares.get_type(signature.value.return_type),
-        Some(&SoulType::ImplTrait(Box::new(SoulType::Stub(Stub::new(
-            "Display"
-        )))))
+        Some(&SoulType::ImplTrait(stub_id))
     );
 }

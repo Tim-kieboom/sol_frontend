@@ -3,7 +3,7 @@ use crate::{
     function::{FunctionLowerer, r#type::require_primitive},
 };
 use ast_model as ast;
-use ast_model::{SoulType, operators::BinaryOperatorKind};
+use ast_model::{SoulType, TypeId, operators::BinaryOperatorKind};
 use mir_model as mir;
 use soul_utils::{
     TypeModifier, collections::array::Arr, compiler_options::PlatformInfo, fault::Fault,
@@ -43,11 +43,12 @@ impl<'a> FunctionLowerer<'a> {
                 Fault::error_with_kind(MirErrorKind::NestedExpressionHasNoResolvedType, Some(span))
             })?;
 
-        require_primitive(&result_ty, span)?;
+        require_primitive(self.declares, &result_ty, span)?;
 
+        let result_ty = self.declares.intern_type(result_ty);
         let tuple_ty = SoulType::TupleKind(ast::TupleKind::Tuple(Arr::from_array([
             result_ty,
-            SoulType::Primitive(PrimitiveTypes::Boolean),
+            TypeId::PRIM_BOOLEAN,
         ])));
         let tuple_local = self.alloc_local(tuple_ty, TypeModifier::Immut, span);
         let tuple_place = mir::Place::local(tuple_local);
@@ -108,7 +109,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 Fault::error_with_kind(MirErrorKind::NestedExpressionHasNoResolvedType, Some(span))
             })?;
-        require_primitive(&operand_ty, span)?;
+        require_primitive(self.declares, &operand_ty, span)?;
 
         let zero_msg = match op {
             BinaryOperatorKind::Div => "attempt to divide by zero",

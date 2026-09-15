@@ -1,6 +1,8 @@
 use ast_model::{
     AnyArray, ArrayKind, ArrayType, Binary, CustomType, ExpressionId, ExpressionKind, Field,
-    Literal, ReferenceType, SoulType, Struct, StructConstructor, Stub, TypeofKind, VarPattern,
+    Literal, ReferenceType, SoulType, Struct, StructConstructor, Stub, TypeId, TypeofKind,
+    VarPattern,
+    declare_store::DeclareStore,
     operators::{BinaryOperatorKind, UnaryOperatorKind},
 };
 use ast_parser::fault::{AstErrorKind, AstFault};
@@ -17,6 +19,11 @@ impl<'a> NameResolver<'a> {
         else {
             return;
         };
+        // Cloned so these don't keep borrowing `self.declares` (an `&'a mut
+        // DeclareStore`, unlike `mir_parser`'s own `&'a DeclareStore` — a
+        // reborrow through it can't outlive a later `&mut self` call) across
+        // `check_struct_fields`'s own interning below.
+        let stub = stub.clone();
 
         let Some(entry) = self.lookup_type(&stub.name, self.current.module) else {
             return;
@@ -26,15 +33,16 @@ impl<'a> NameResolver<'a> {
         let Some((CustomType::Struct(struct_), _)) = custom_type else {
             return;
         };
+        let struct_ = struct_.clone();
 
-        let faults = self.check_struct_fields(struct_, stub, struct_constructor);
+        let faults = self.check_struct_fields(&struct_, &stub, struct_constructor);
         for fault in faults {
             self.context.faults.push(fault);
         }
     }
 
     fn check_struct_fields(
-        &self,
+        &mut self,
         struct_: &Struct,
         stub: &Stub,
         struct_constructor: &StructConstructor,
@@ -87,8 +95,8 @@ impl<'a> NameResolver<'a> {
                             faults.push(Fault::error_with_kind(
                                 AstErrorKind::GenericParameterConflict {
                                     generic_name: generic_name.into(),
-                                    first: format!("{bound_ty:?}").into(),
-                                    second: format!("{value_ty:?}").into(),
+                                    first: self.print_ty(bound_ty).into(),
+                                    second: self.print_ty(&value_ty).into(),
                                 },
                                 span,
                             ));
@@ -114,8 +122,8 @@ impl<'a> NameResolver<'a> {
             faults.push(Fault::error_with_kind(
                 AstErrorKind::FieldTypeMismatch {
                     field_name: field_name.as_shared_str(),
-                    expected: format!("{field_ty:?}").into(),
-                    got: format!("{value_ty:?}").into(),
+                    expected: self.print_ty(field_ty).into(),
+                    got: self.print_ty(&value_ty).into(),
                 },
                 span,
             ));
@@ -140,8 +148,8 @@ impl<'a> NameResolver<'a> {
         let Some(combined) = self.combine_operand_types(&left_ty, &right_ty) else {
             self.log_error(
                 AstErrorKind::BinaryExpressionTypeMismatch {
-                    left: format!("{left_ty:?}").into(),
-                    right: format!("{right_ty:?}").into(),
+                    left: self.print_ty(&left_ty).into(),
+                    right: self.print_ty(&right_ty).into(),
                 },
                 Some(span),
             );
@@ -157,7 +165,7 @@ impl<'a> NameResolver<'a> {
             .insert_expression_type(expression_id, result_ty);
     }
 
-    pub(crate) fn expression_type(&self, expression_id: ExpressionId) -> Option<SoulType> {
+    pub(crate) fn expression_type(&mut self, expression_id: ExpressionId) -> Option<SoulType> {
         if let Some(ty) = self.declares.get_expression_type(expression_id) {
             return Some(ty.clone());
         }
@@ -174,9 +182,10 @@ impl<'a> NameResolver<'a> {
                 let return_type = self
                     .first_lambda_return_type(lambda.body)
                     .unwrap_or(SoulType::None);
+                let return_type = self.declares.intern_type(return_type);
                 Some(SoulType::Function {
                     arity: lambda.parameters.len(),
-                    return_type: Box::new(return_type),
+                    return_type,
                 })
             }
             ExpressionKind::FieldAccess(field_access) => {
@@ -190,7 +199,7 @@ impl<'a> NameResolver<'a> {
                 self.declares.get_type(ctor.struct_type).cloned()
             }
             ExpressionKind::Index(index) => match self.expression_type(index.collection)? {
-                SoulType::Array(array_ty) => Some(*array_ty.of_type),
+                SoulType::Array(array_ty) => self.declares.get_type(array_ty.of_type).cloned(),
                 _ => None,
             },
             // Only `!` is typed — `-` (`Neg`) isn't lowered by `mir_parser`
@@ -222,11 +231,14 @@ impl<'a> NameResolver<'a> {
                             kind,
                         }))
                     }
-                    other => Some(SoulType::Reference(ReferenceType {
-                        inner: Box::new(other),
-                        lifetime: None,
-                        mutable,
-                    })),
+                    other => {
+                        let inner = self.declares.intern_type(other);
+                        Some(SoulType::Reference(ReferenceType {
+                            inner,
+                            lifetime: None,
+                            mutable,
+                        }))
+                    }
                 }
             }
             // `NewArray`/`ArrayFiller` are heap arrays — not lowered by
@@ -243,12 +255,16 @@ impl<'a> NameResolver<'a> {
                     // needs the raw, still-untyped element type to coerce
                     // `[1, 2]` against a declared `[2]i32` the same way a bare
                     // untyped literal already coerces against `i32`.
-                    let of_type = match array.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
+                    let of_type = match array
+                        .element_type
+                        .and_then(|id| self.declares.get_type(id).cloned())
+                    {
                         Some(ty) => ty,
                         None => self.expression_type(*array.values.first()?)?,
                     };
+                    let of_type = self.declares.intern_type(of_type);
                     Some(SoulType::Array(ArrayType {
-                        of_type: Box::new(of_type),
+                        of_type,
                         kind: ArrayKind::StackArray(array.values.len() as u64),
                     }))
                 }
@@ -292,7 +308,7 @@ impl<'a> NameResolver<'a> {
             // one layer up.
             ExpressionKind::Deref(deref) => match self.expression_type(deref.value)? {
                 SoulType::Reference(reference) | SoulType::Pointer(reference) => {
-                    Some(*reference.inner)
+                    self.declares.get_type(reference.inner).cloned()
                 }
                 _ => None,
             },
@@ -309,7 +325,7 @@ impl<'a> NameResolver<'a> {
     }
 
     pub(crate) fn foreach_collection_element_type(
-        &self,
+        &mut self,
         collection: ExpressionId,
     ) -> Option<SoulType> {
         let expression = self.store.expressions.get(collection)?;
@@ -318,13 +334,13 @@ impl<'a> NameResolver<'a> {
                 self.array_literal_element_type(any_array)
             }
             _ => match self.expression_type(collection)? {
-                SoulType::Array(array_ty) => Some(*array_ty.of_type),
+                SoulType::Array(array_ty) => self.declares.get_type(array_ty.of_type).cloned(),
                 _ => None,
             },
         }
     }
 
-    fn array_literal_element_type(&self, any_array: &AnyArray) -> Option<SoulType> {
+    fn array_literal_element_type(&mut self, any_array: &AnyArray) -> Option<SoulType> {
         match any_array {
             AnyArray::Array(array) => {
                 match array.element_type.and_then(|id| self.declares.get_type(id).cloned()) {
@@ -347,9 +363,11 @@ impl<'a> NameResolver<'a> {
         // Auto-deref: `object`'s type can be `&Struct`/`&mut Struct` (e.g. a
         // `&this`/`&mut this` receiver) as readily as a bare `Struct` value —
         // mirrors `mir_parser::function::place::auto_deref` one layer up.
+        let resolved;
         let ty = match ty {
             SoulType::Reference(reference) | SoulType::Pointer(reference) => {
-                reference.inner.as_ref()
+                resolved = self.declares.get_type(reference.inner)?;
+                resolved
             }
             other => other,
         };
@@ -388,14 +406,22 @@ impl<'a> NameResolver<'a> {
         Some((*modifier, ty.clone()?))
     }
 
+    /// Pretty-prints `ty` for an error message — `SoulType`'s own `Debug` is
+    /// the plain derived one now (its internal fields are bare `TypeId`s, and
+    /// `Debug::fmt` has no way to resolve those), so every fault-message site
+    /// that used to do `format!("{ty:?}")` goes through here instead.
+    pub(crate) fn print_ty(&self, ty: &SoulType) -> String {
+        ast_model::print_type(ty, self.declares).to_string()
+    }
+
     pub(crate) fn combine_operand_types(
-        &self,
+        &mut self,
         left: &SoulType,
         right: &SoulType,
     ) -> Option<SoulType> {
         let left = self.resolve_type_alias(left);
         let right = self.resolve_type_alias(right);
-        combine_resolved_operand_types(&left, &right)
+        combine_resolved_operand_types(self.declares, &left, &right)
     }
 
     fn resolve_type_alias(&self, ty: &SoulType) -> SoulType {
@@ -422,7 +448,7 @@ fn literal_type(literal: &Literal) -> SoulType {
         Literal::Char(_) => SoulType::Primitive(PrimitiveTypes::Char),
         Literal::Cstr(_) => SoulType::Primitive(PrimitiveTypes::CStr),
         Literal::Str(_) => SoulType::Reference(ReferenceType::with_lifetime(
-            SoulType::String,
+            TypeId::STRING,
             Ident::new("static", Span::error()),
             Mutable::Immut,
         )),
@@ -513,9 +539,13 @@ pub(crate) fn default_concrete_type(ty: SoulType) -> SoulType {
     }
 }
 
-fn combine_resolved_operand_types(left: &SoulType, right: &SoulType) -> Option<SoulType> {
+fn combine_resolved_operand_types(
+    declares: &mut DeclareStore,
+    left: &SoulType,
+    right: &SoulType,
+) -> Option<SoulType> {
     if let (SoulType::Array(left_array), SoulType::Array(right_array)) = (left, right) {
-        return combine_array_types(left_array, right_array);
+        return combine_array_types(declares, left_array, right_array);
     }
 
     match (untyped_kind_of(left), untyped_kind_of(right)) {
@@ -540,8 +570,14 @@ fn combine_resolved_operand_types(left: &SoulType, right: &SoulType) -> Option<S
 /// type-check the same way it already codegens. Any other `ArrayKind`
 /// pairing (`[N]T` vs `[&]T`, mismatched fixed sizes, ...) still needs exact
 /// equality.
-fn combine_array_types(left: &ArrayType, right: &ArrayType) -> Option<SoulType> {
-    let of_type = combine_resolved_operand_types(&left.of_type, &right.of_type)?;
+fn combine_array_types(
+    declares: &mut DeclareStore,
+    left: &ArrayType,
+    right: &ArrayType,
+) -> Option<SoulType> {
+    let left_of_type = declares.get_type(left.of_type).cloned()?;
+    let right_of_type = declares.get_type(right.of_type).cloned()?;
+    let of_type = combine_resolved_operand_types(declares, &left_of_type, &right_of_type)?;
 
     let is_slice = |kind: &ArrayKind| matches!(kind, ArrayKind::MutSlice | ArrayKind::ConstSlice);
     let both_slice = is_slice(&left.kind) && is_slice(&right.kind);
@@ -552,10 +588,8 @@ fn combine_array_types(left: &ArrayType, right: &ArrayType) -> Option<SoulType> 
         return None;
     };
 
-    Some(SoulType::Array(ArrayType {
-        of_type: Box::new(of_type),
-        kind,
-    }))
+    let of_type = declares.intern_type(of_type);
+    Some(SoulType::Array(ArrayType { of_type, kind }))
 }
 
 fn coerce_untyped_to_concrete(kind: PrimitiveTypes, concrete: &SoulType) -> Option<SoulType> {

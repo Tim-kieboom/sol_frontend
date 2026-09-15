@@ -27,7 +27,7 @@ use soul_utils::{
 };
 
 pub fn to_mir(
-    ast: &AstTree,
+    ast: &mut AstTree,
     benchmark: &mut Benchmark,
     context: &mut CrateContext<MirErrorKind>,
     options: &CompilerOptions,
@@ -37,7 +37,7 @@ pub fn to_mir(
     // No pre-filter by `FunctionKind` here: `lower_function` itself already
     // handles every case (a normal body, an `extern "C"` declaration, or a
     // non-extern signature-only stub it correctly faults on).
-    let mut lowerer = MirLowerer::new(&ast.crates.store, &ast.declares, options);
+    let mut lowerer = MirLowerer::new(&ast.crates.store, &mut ast.declares, options);
     for (id, _) in ast.crates.store.functions.entries() {
         if let Err(fault) = lowerer.lower_function(id) {
             context.faults.push(fault);

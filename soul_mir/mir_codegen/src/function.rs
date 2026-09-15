@@ -224,7 +224,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         let field_ty = if let SoulType::TupleKind(TupleKind::Tuple(types)) = soul_ty {
             types
                 .get(index)
-                .cloned()
+                .and_then(|id| self.ctx.declares.get_type(*id).cloned())
                 .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?
         } else {
             let struct_ = resolve_struct(self.ctx.declares, self.soul_module, soul_ty)
@@ -264,7 +264,12 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = soul_ty else {
             return Err(err(CodegenErrorKind::PlaceProjectionUnsupported));
         };
-        let inner_ty = (*reference.inner).clone();
+        let inner_ty = self
+            .ctx
+            .declares
+            .get_type(reference.inner)
+            .cloned()
+            .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
 
         let opaque_ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
         let pointee = self
@@ -298,7 +303,12 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         if !matches!(array.kind, ArrayKind::MutSlice | ArrayKind::ConstSlice) {
             return Err(err(CodegenErrorKind::PlaceProjectionUnsupported));
         }
-        let element_ty = (*array.of_type).clone();
+        let element_ty = self
+            .ctx
+            .declares
+            .get_type(array.of_type)
+            .cloned()
+            .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
 
         let data_ptr = self.slice_data_ptr(*ptr, soul_ty)?;
 

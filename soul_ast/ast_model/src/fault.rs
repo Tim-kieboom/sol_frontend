@@ -1,6 +1,6 @@
 use std::{fmt::Display, path::PathBuf};
 
-use crate::{AssignType, SoulType};
+use crate::AssignType;
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     SharedStr,
@@ -344,13 +344,17 @@ pub enum AstErrorKind {
 pub struct EnumVariantArgumentTypeMismatch {
     pub enum_name: SharedStr,
     pub variant_name: SharedStr,
-    pub expected: SoulType,
-    pub got: SoulType,
+    /// Pre-rendered (via `print_type`) at the construction site, not a raw
+    /// `SoulType` — unlike a boundary/leaf `TypeId`, `SoulType`'s own
+    /// internal fields are interned now, so there's no interner reachable
+    /// from `Display::fmt` to resolve them at format time.
+    pub expected: Box<str>,
+    pub got: Box<str>,
 }
 impl Display for EnumVariantArgumentTypeMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_args!(
-            "variant `{}.{}` argument type mismatch: expected `{:?}`, got `{:?}`",
+            "variant `{}.{}` argument type mismatch: expected `{}`, got `{}`",
             self.enum_name, self.variant_name, self.expected, self.got,
         )
         .fmt(f)

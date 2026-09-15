@@ -4,6 +4,8 @@ use soul_utils::{
     Ident, Mutable, SharedStr, collections::array::Arr, impl_soul_ids, soul_names::PrimitiveTypes,
 };
 
+use crate::declare_store::DeclareStore;
+
 // TypeId: uniquely identifies a canonical, interned SoulType — see
 // DeclareStore::intern_type.
 impl_soul_ids!(TypeId);
@@ -58,7 +60,7 @@ impl TypeId {
     pub const PRIM_FLOAT64: TypeId = TypeId(35);
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SoulType {
     /// empty type
     None,
@@ -83,33 +85,33 @@ pub enum SoulType {
     Pointer(ReferenceType),
     /// Raw pointer type: `RawPtr` or `RawPtr<int>`. Nullable by default.
     /// When no generic is specified, it's a void pointer (`RawPtr<none>`).
-    RawPtr(Option<Box<SoulType>>),
+    RawPtr(Option<TypeId>),
     /// result type: `Res` or `Res<int>` or Res<int, str>.
     /// When no generic is specified, it's a void pointer with Error (`Res<none, Error>`).
     Res {
-        ok: Option<Box<SoulType>>,
-        err: Option<Box<SoulType>>,
+        ok: Option<TypeId>,
+        err: Option<TypeId>,
     },
     /// Built-in error wrapper type (like Rust's `anyhow::Error`).
     /// Can wrap any error value — used as the default `E` in `Res<V>`.
     Error,
     /// Optional type: `?int`
-    Optional(Box<SoulType>),
+    Optional(TypeId),
     /// Anonymous `impl Trait` type: `impl Display`.
-    ImplTrait(Box<SoulType>),
+    ImplTrait(TypeId),
     /// unknown type
     Stub(Stub),
     /// A specific variant of an enum type: `base::variant`.
     NamedVariant {
         /// The enum type the variant belongs to.
-        base: Box<SoulType>,
+        base: TypeId,
         /// The variant's name.
         variant: Ident,
     },
     /// A lambda/closure value's type.
     Function {
         arity: usize,
-        return_type: Box<SoulType>,
+        return_type: TypeId,
     },
 }
 impl SoulType {
@@ -117,17 +119,83 @@ impl SoulType {
         matches!(self, SoulType::Primitive(actual) if *actual == kind)
     }
 }
-impl fmt::Debug for SoulType {
+
+/// Prints a `SoulType`, resolving any nested `TypeId` through `declares` —
+/// `SoulType`'s own internal fields are interned (see `DeclareStore::
+/// intern_type`), so unlike a boundary/leaf `TypeId` (a `Parameter.ty`, say),
+/// there's no way to recover a human-readable type name from a bare
+/// `SoulType` value alone anymore. Use this everywhere a `SoulType` used to
+/// be formatted with `{:?}` (error messages, the AST/MIR dumps, ...).
+pub struct PrintType<'a> {
+    ty: &'a SoulType,
+    declares: &'a DeclareStore,
+}
+
+/// Builds a [`PrintType`] for `ty` — see its docs.
+pub fn print_type<'a>(ty: &'a SoulType, declares: &'a DeclareStore) -> PrintType<'a> {
+    PrintType { ty, declares }
+}
+
+impl<'a> PrintType<'a> {
+    fn with(&self, ty: &'a SoulType) -> Self {
+        Self {
+            ty,
+            declares: self.declares,
+        }
+    }
+
+    /// Resolves `id` and prints it, or `<unknown TypeId>` if it was never
+    /// interned — never panics, since this is used from `Display`/`Debug`.
+    fn write_id(&self, f: &mut fmt::Formatter<'_>, id: TypeId) -> fmt::Result {
+        match self.declares.get_type(id) {
+            Some(ty) => write!(f, "{}", self.with(ty)),
+            None => write!(f, "<unknown TypeId {id:?}>"),
+        }
+    }
+}
+
+impl<'a> fmt::Display for PrintType<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.ty {
             SoulType::None => write!(f, "none"),
             SoulType::Never => write!(f, "!"),
             SoulType::String => write!(f, "str"),
             SoulType::FormatString => write!(f, "fstr"),
             SoulType::Any => write!(f, "any"),
-            SoulType::TupleKind(kind) => write!(f, "{:?}", kind),
+            SoulType::TupleKind(kind) => match kind {
+                TupleKind::Tuple(types) => {
+                    write!(f, "(")?;
+                    for (i, id) in types.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        self.write_id(f, *id)?;
+                    }
+                    write!(f, ")")
+                }
+                TupleKind::NamedTuple(items) => {
+                    write!(f, "(")?;
+                    for (i, (name, id)) in items.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{name}: ")?;
+                        self.write_id(f, *id)?;
+                    }
+                    write!(f, ")")
+                }
+            },
             SoulType::Primitive(primitive) => write!(f, "{}", primitive),
-            SoulType::Array(array) => write!(f, "{:?}", array),
+            SoulType::Array(array) => {
+                match array.kind {
+                    ArrayKind::StackArrayWildcard => write!(f, "[_]")?,
+                    ArrayKind::StackArray(size) => write!(f, "[{}]", size)?,
+                    ArrayKind::HeapArray => write!(f, "[]")?,
+                    ArrayKind::MutSlice => write!(f, "[&]")?,
+                    ArrayKind::ConstSlice => write!(f, "[&mut]")?,
+                }
+                self.write_id(f, array.of_type)
+            }
             SoulType::Reference(reference) => {
                 write!(f, "&")?;
                 if let Some(lifetime) = &reference.lifetime {
@@ -136,7 +204,7 @@ impl fmt::Debug for SoulType {
                 if reference.mutable.is_mut() {
                     write!(f, "mut ")?;
                 }
-                write!(f, "{:?}", reference.inner)
+                self.write_id(f, reference.inner)
             }
             SoulType::Pointer(pointer) => {
                 write!(f, "*")?;
@@ -146,25 +214,66 @@ impl fmt::Debug for SoulType {
                 if pointer.mutable.is_mut() {
                     write!(f, "mut ")?;
                 }
-                write!(f, "{:?}", pointer.inner)
+                self.write_id(f, pointer.inner)
             }
             SoulType::RawPtr(generic) => match generic {
-                Some(ty) => write!(f, "RawPtr<{:?}>", ty),
+                Some(id) => {
+                    write!(f, "RawPtr<")?;
+                    self.write_id(f, *id)?;
+                    write!(f, ">")
+                }
                 None => write!(f, "RawPtr"),
             },
             SoulType::Res { ok, err } => match (ok, err) {
                 (None, None) => write!(f, "Res"),
-                (Some(ok), None) => write!(f, "Res<{:?}>", ok),
-                (None, Some(err)) => write!(f, "Res<none, {:?}>", err),
-                (Some(ok), Some(err)) => write!(f, "Res<{:?}, {:?}>", ok, err),
+                (Some(ok), None) => {
+                    write!(f, "Res<")?;
+                    self.write_id(f, *ok)?;
+                    write!(f, ">")
+                }
+                (None, Some(err)) => {
+                    write!(f, "Res<none, ")?;
+                    self.write_id(f, *err)?;
+                    write!(f, ">")
+                }
+                (Some(ok), Some(err)) => {
+                    write!(f, "Res<")?;
+                    self.write_id(f, *ok)?;
+                    write!(f, ", ")?;
+                    self.write_id(f, *err)?;
+                    write!(f, ">")
+                }
             },
             SoulType::Error => write!(f, "Error"),
-            SoulType::Optional(inner) => write!(f, "?{:?}", inner),
-            SoulType::ImplTrait(inner) => write!(f, "impl {:?}", inner),
-            SoulType::Stub(stub) => write!(f, "{:?}", stub),
-            SoulType::NamedVariant { base, variant } => write!(f, "{:?}::{}", base, variant),
+            SoulType::Optional(inner) => {
+                write!(f, "?")?;
+                self.write_id(f, *inner)
+            }
+            SoulType::ImplTrait(inner) => {
+                write!(f, "impl ")?;
+                self.write_id(f, *inner)
+            }
+            SoulType::Stub(stub) => {
+                write!(f, "{}", stub.name)?;
+                if !stub.generics.is_empty() {
+                    write!(f, "<")?;
+                    for (i, id) in stub.generics.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        self.write_id(f, *id)?;
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
+            SoulType::NamedVariant { base, variant } => {
+                self.write_id(f, *base)?;
+                write!(f, "::{}", variant)
+            }
             SoulType::Function { arity, return_type } => {
-                write!(f, "fn({arity} args) -> {return_type:?}")
+                write!(f, "fn({arity} args) -> ")?;
+                self.write_id(f, *return_type)
             }
             SoulType::Type => write!(f, "type"),
         }
@@ -173,39 +282,12 @@ impl fmt::Debug for SoulType {
 
 /// A tuple type, either positional (`(int, str)`) or with named fields
 /// (`(number: int, text: str)`).
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TupleKind {
     /// A positional tuple: `(int, str)`.
     Tuple(Tuple),
     /// A tuple with named fields: `(number: int, text: str)`.
     NamedTuple(NamedTuple),
-}
-
-impl fmt::Debug for TupleKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TupleKind::Tuple(types) => {
-                write!(f, "(")?;
-                for (i, ty) in types.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{:?}", ty)?;
-                }
-                write!(f, ")")
-            }
-            TupleKind::NamedTuple(items) => {
-                write!(f, "(")?;
-                for (i, (name, ty)) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {:?}", name, ty)?;
-                }
-                write!(f, ")")
-            }
-        }
-    }
 }
 
 impl TupleKind {
@@ -224,31 +306,19 @@ impl TupleKind {
 }
 
 /// The element types of a positional tuple.
-pub type Tuple = Arr<SoulType>;
+pub type Tuple = Arr<TypeId>;
 /// The name/type pairs of a named tuple.
-pub type NamedTuple = Arr<(Ident, SoulType)>;
+pub type NamedTuple = Arr<(Ident, TypeId)>;
 
 /// Array type
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ArrayType {
     /// The element type of the array.
-    pub of_type: Box<SoulType>,
+    pub of_type: TypeId,
     /// Compile-time size, or `None` for dynamic arrays.
     pub kind: ArrayKind,
 }
 
-impl fmt::Debug for ArrayType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
-            ArrayKind::StackArrayWildcard => write!(f, "[_]")?,
-            ArrayKind::StackArray(size) => write!(f, "[{}]", size)?,
-            ArrayKind::HeapArray => write!(f, "[]")?,
-            ArrayKind::MutSlice => write!(f, "[&]")?,
-            ArrayKind::ConstSlice => write!(f, "[&mut]")?,
-        }
-        write!(f, "{:?}", self.of_type)
-    }
-}
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArrayKind {
     /// StackArrayWildcard `[_]int` set infered size same as C stackArray
@@ -266,7 +336,7 @@ pub enum ArrayKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceType {
     /// The inner type being referenced.
-    pub inner: Box<SoulType>,
+    pub inner: TypeId,
     /// The lifetime identifier.
     pub lifetime: Option<Ident>,
     /// Whether the reference is mutable.
@@ -275,29 +345,12 @@ pub struct ReferenceType {
 
 /// An as-yet-unresolved named type reference (e.g. a struct/enum/trait name
 /// before it has been linked to its declaration), with any generic arguments.
-#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Stub {
     /// The referenced type's name.
     pub name: SharedStr,
     /// The generic type arguments applied to the reference, if any.
-    pub generics: Arr<SoulType>,
-}
-
-impl fmt::Debug for Stub {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)?;
-        if !self.generics.is_empty() {
-            write!(f, "<")?;
-            for (i, generic) in self.generics.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{:?}", generic)?;
-            }
-            write!(f, ">")?;
-        }
-        Ok(())
-    }
+    pub generics: Arr<TypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -319,20 +372,20 @@ impl Stub {
 }
 
 impl ReferenceType {
-    /// Creates a reference type wrapping `ty`, without a lifetime annotation.
-    pub fn new(ty: SoulType, mutable: Mutable) -> Self {
+    /// Creates a reference type wrapping `inner`, without a lifetime annotation.
+    pub fn new(inner: TypeId, mutable: Mutable) -> Self {
         Self {
-            inner: Box::new(ty),
+            inner,
             lifetime: None,
             mutable,
         }
     }
 
-    /// Creates a reference type wrapping `ty`, with a lifetime annotation.
-    pub fn with_lifetime(ty: SoulType, lifetime: Ident, mutable: Mutable) -> Self {
+    /// Creates a reference type wrapping `inner`, with a lifetime annotation.
+    pub fn with_lifetime(inner: TypeId, lifetime: Ident, mutable: Mutable) -> Self {
         Self {
             mutable,
-            inner: Box::new(ty),
+            inner,
             lifetime: Some(lifetime),
         }
     }

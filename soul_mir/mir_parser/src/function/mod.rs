@@ -28,7 +28,7 @@ struct LoopTargets {
 
 pub struct FunctionLowerer<'a> {
     store: &'a ast::AstStore,
-    declares: &'a DeclareStore,
+    declares: &'a mut DeclareStore,
     module: Option<ModuleId>,
     local_alloc: IdGenerator<mir::LocalId>,
     node_to_local: VecMap<ast::NodeId, mir::LocalId>,
@@ -63,7 +63,7 @@ pub struct FunctionLowerer<'a> {
 impl<'a> FunctionLowerer<'a> {
     pub(crate) fn new(
         store: &'a ast::AstStore,
-        declares: &'a DeclareStore,
+        declares: &'a mut DeclareStore,
         options: &'a CompilerOptions,
     ) -> Self {
         Self {
@@ -125,16 +125,22 @@ impl<'a> FunctionLowerer<'a> {
                 .expect("InnerFunctionSignature.method_type is always an interned TypeId");
             self.require_lowerable(&method_type, span)?;
             let receiver_ty = match signature.function_kind {
-                ast::FunctionThisKind::MutRef => SoulType::Reference(ast::ReferenceType {
-                    inner: Box::new(method_type),
-                    lifetime: None,
-                    mutable: soul_utils::Mutable::Mut,
-                }),
-                ast::FunctionThisKind::ConstRef => SoulType::Reference(ast::ReferenceType {
-                    inner: Box::new(method_type),
-                    lifetime: None,
-                    mutable: soul_utils::Mutable::Immut,
-                }),
+                ast::FunctionThisKind::MutRef => {
+                    let inner = self.declares.intern_type(method_type);
+                    SoulType::Reference(ast::ReferenceType {
+                        inner,
+                        lifetime: None,
+                        mutable: soul_utils::Mutable::Mut,
+                    })
+                }
+                ast::FunctionThisKind::ConstRef => {
+                    let inner = self.declares.intern_type(method_type);
+                    SoulType::Reference(ast::ReferenceType {
+                        inner,
+                        lifetime: None,
+                        mutable: soul_utils::Mutable::Immut,
+                    })
+                }
                 _ => method_type,
             };
             let local = self.alloc_local(receiver_ty, TypeModifier::Mut, span);
@@ -273,6 +279,20 @@ impl<'a> FunctionLowerer<'a> {
         self.seal(mir::Terminator::Return, None);
     }
 
+    /// Exposes the interner to `MirLowerer`, which has no `DeclareStore`
+    /// access of its own — see the comment on `MirLowerer`'s own fields.
+    /// Pretty-prints `ty` for a fault message — `SoulType`'s own `Debug` is
+    /// the plain derived one (its internal fields are bare `TypeId`s), so
+    /// every fault-message site that used to do `format!("{ty:?}")` goes
+    /// through here instead.
+    fn print_ty(&self, ty: &SoulType) -> String {
+        ast::print_type(ty, self.declares).to_string()
+    }
+
+    pub(crate) fn declares_mut(&mut self) -> &mut DeclareStore {
+        self.declares
+    }
+
     fn alloc_local(&mut self, ty: mir::Type, mutability: TypeModifier, span: Span) -> mir::LocalId {
         let id = self.local_alloc.alloc();
         self.locals.insert(
@@ -314,7 +334,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         Err(Fault::error_with_kind(
             MirErrorKind::NonPrimitiveType {
-                ty: format!("{ty:?}").into(),
+                ty: self.print_ty(ty).into(),
             },
             Some(span),
         ))

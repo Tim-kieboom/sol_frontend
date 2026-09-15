@@ -71,10 +71,12 @@ impl<'a> NameResolver<'a> {
     fn check_impl_conformance(&mut self, impl_block: &ImplBlock, span: Span) {
         let impl_trait = self.declares.get_type(impl_block.impl_trait);
         let Some(SoulType::Stub(stub)) = impl_trait else {
+            let name = match impl_trait {
+                Some(ty) => self.print_ty(ty),
+                None => "<unknown type>".to_string(),
+            };
             self.log_error(
-                AstErrorKind::ImplTargetIsNotATrait {
-                    name: format!("{impl_trait:?}").into(),
-                },
+                AstErrorKind::ImplTargetIsNotATrait { name: name.into() },
                 Some(span),
             );
             return;

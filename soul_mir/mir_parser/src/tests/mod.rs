@@ -24,8 +24,8 @@ const OPTIONS: CompilerOptions = CompilerOptions {
     mir: MirOptions::all(),
     ..CompilerOptions::const_default()
 };
-fn create_lowerer<'a>(ast: &'a AstTree) -> MirLowerer<'a> {
-    MirLowerer::new(&ast.crates.store, &ast.declares, &OPTIONS)
+fn create_lowerer(ast: &mut AstTree) -> MirLowerer<'_> {
+    MirLowerer::new(&ast.crates.store, &mut ast.declares, &OPTIONS)
 }
 
 fn resolve_source(source: &str) -> AstTree {
@@ -75,7 +75,7 @@ fn find_function(store: &AstStore, name: &str) -> FunctionId {
 
 fn lower_function(
     store: &AstStore,
-    declares: &DeclareStore,
+    declares: &mut DeclareStore,
     id: FunctionId,
 ) -> MirResult<mir_model::Function> {
     let mut lowerer = MirLowerer::new(store, declares, &OPTIONS);
@@ -84,9 +84,9 @@ fn lower_function(
 }
 
 fn lower_source(source: &str, function_name: &str) -> MirResult<mir_model::Function> {
-    let ast = resolve_source(source);
+    let mut ast = resolve_source(source);
     let function_id = find_function(&ast.crates.store, function_name);
-    lower_function(&ast.crates.store, &ast.declares, function_id)
+    lower_function(&ast.crates.store, &mut ast.declares, function_id)
 }
 
 fn assert_rejected_matching(
@@ -616,11 +616,11 @@ fn const_this_receiver_is_passed_as_an_immutable_reference() {
 
 #[test]
 fn mut_this_body_accesses_fields_through_a_deref_projection() {
-    let ast = resolve_source(
+    let mut ast = resolve_source(
         "struct Counter {\n    n: int\n    increment(&mut this) {\n        this.n = this.n + 1\n    }\n}\nf(): int {\n    mut c: Counter = Counter{n: 0}\n    c.increment()\n    return c.n\n}\n",
     );
     let method_id = find_function(&ast.crates.store, "increment");
-    let mir = lower_function(&ast.crates.store, &ast.declares, method_id)
+    let mir = lower_function(&ast.crates.store, &mut ast.declares, method_id)
         .expect("expected successful lowering");
 
     // `this` itself is argument 0 and is `Reference`-typed now, so
@@ -1044,7 +1044,7 @@ fn non_extern_signature_only_function_is_rejected() {
     // target to lower it to, so it's correctly still rejected (see
     // `extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction`
     // for the case that *is* now supported).
-    let ast = resolve_source("trait Greeter {\n    greet(): none\n}\n");
+    let mut ast = resolve_source("trait Greeter {\n    greet(): none\n}\n");
     let function_id = ast
         .crates
         .store
@@ -1054,7 +1054,7 @@ fn non_extern_signature_only_function_is_rejected() {
         .map(|(id, _)| id)
         .expect("expected one function entry");
 
-    let result = lower_function(&ast.crates.store, &ast.declares, function_id);
+    let result = lower_function(&ast.crates.store, &mut ast.declares, function_id);
     assert_rejected_with(&result, MirErrorKind::SignatureOnlyFunctionHasNoBody);
 }
 
@@ -1591,7 +1591,7 @@ fn unsupported_intrinsic_is_rejected_with_a_clear_fault() {
 
 #[test]
 fn extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction() {
-    let ast = resolve_source(r#"extern "C" printCStr(message: cstr): none"#);
+    let mut ast = resolve_source(r#"extern "C" printCStr(message: cstr): none"#);
     let (id, _) = ast
         .crates
         .store
@@ -1600,7 +1600,7 @@ fn extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction() 
         .find(|(_, kind)| matches!(kind, FunctionKind::Signature(_)))
         .expect("expected one signature-only function");
 
-    let mut lowerer = create_lowerer(&ast);
+    let mut lowerer = create_lowerer(&mut ast);
     lowerer
         .lower_function(id)
         .expect("expected extern lowering to succeed");
