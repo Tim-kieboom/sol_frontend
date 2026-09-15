@@ -358,11 +358,6 @@ impl<'a> FunctionLowerer<'a> {
     /// reaches this point (only those two `SoulType::Array` kinds remain
     /// possible once `require_lowerable` has already accepted `ty`) falls
     /// through to that move-only default.
-    ///
-    /// No call site yet — wiring `Operand::Copy`/`Move` selection through
-    /// this is the next M2 slice (Move/MarkMoved lowering, see TODO.md);
-    /// for now this is verified directly by its own unit tests only.
-    #[allow(dead_code)]
     pub(crate) fn is_auto_copy(&self, ty: &SoulType, span: Span) -> MirResult<bool> {
         self.require_lowerable(ty, span)?;
         Ok(match ty {

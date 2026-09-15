@@ -579,12 +579,41 @@ that landing first, in order.
       governed by one accept list, not two independent matches that could drift apart as
       `SoulType` grows new variants. Fallible (returns the same `NonPrimitiveType` error
       `require_lowerable` would), not a panic.
-    - Scope deliberately stopped at the classification itself, per the interview: no call site
-      yet (marked `#[allow(dead_code)]`, pointing at this bullet) — wiring `Copy`/`Move` selection
-      through it is this same bullet's own remaining (unchecked) work above.
     - Proven via unit tests driving a `FunctionLowerer` directly (no indirect call path exists
-      yet): primitives/references/pointers/slices → `true`; a `StackArray` and a resolved struct
-      (`Stub`) → `false`; a non-`require_lowerable` type → the same rejection.
+      yet at the time): primitives/references/pointers/slices → `true`; a `StackArray` and a
+      resolved struct (`Stub`) → `false`; a non-`require_lowerable` type → the same rejection.
+  - [x] Function-call arguments (`/grill-me`'d separately, once `is_auto_copy` existed to wire
+        up). New `lower_call_operand` (`statement.rs`, next to `lower_call`) — deliberately *not*
+        added to `lower_operand` itself, which is shared by every other operand site (binary-op
+        flattening, `return`, variable-declaration initializers, ...) and would have silently
+        turned "function-call arguments first" into "every operand everywhere" in one shot.
+        `lower_call.arguments`'s loop and the consuming-`this` receiver branch (`obj.consume()`
+        reads `obj` exactly like `consume(obj)` would — same treatment) now call it instead of
+        `lower_operand` directly.
+    - Scoped to a bare `Variable` argument only — anything else (a literal, a nested computation,
+      a struct-constructor literal passed inline, or a move-only value reached through a
+      field/index/deref projection like `consume(container.item)`) falls through to the ordinary
+      `lower_operand`/`Copy` path unchanged. The projection case specifically isn't a shortcut:
+      `SetDropFlag` is per-`LocalId`, not per-place, so a field-projection move has no sound way
+      to express "only this one field moved" — that needs partial-move tracking, which doesn't
+      exist. Emits `MarkMoved(local)` + `SetDropFlag(local, false)` ahead of the `Call` terminator
+      when `is_auto_copy` says the argument's own local type is move-only; a plain `Copy` matching
+      today's behavior otherwise.
+    - Move-eligibility is per-local (via `self.locals[local].ty`), not gated on `body_locals`
+      (Drop-chain scope tracking is a separate concern) — a parameter or `this` qualifies exactly
+      the same as a body-declared variable.
+    - `mir_codegen` already treats `Operand::Copy`/`Move` identically and already no-ops
+      `MarkMoved`/`SetDropFlag` (from the Drop/SetDropFlag pass) — confirmed *before* implementing,
+      unlike `Drop` which briefly hard-errored the first time it was constructed. Zero codegen risk,
+      so the full 30-test exe suite re-passing unchanged is the actual proof nothing broke.
+    - Proven via 4 new `mir_parser` unit tests (`a_move_only_struct_argument_is_moved_not_copied`,
+      `an_autocopy_primitive_argument_is_still_copied`,
+      `a_move_only_argument_reached_through_a_field_projection_is_still_copied`,
+      `a_move_only_parameter_argument_is_moved_the_same_as_a_body_local`) plus updating
+      `consuming_this_receiver_is_still_passed_by_value` (renamed
+      `..._is_still_passed_directly_with_no_ref_rvalue`), whose premise — a consuming receiver is
+      always `Copy` — stopped holding the moment its `Number` struct became correctly move-only.
+  - [ ] Struct-constructor fields, array-literal elements, plain reassignment — not started.
 - [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
       "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
       (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested

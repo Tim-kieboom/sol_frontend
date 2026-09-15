@@ -651,7 +651,7 @@ fn mut_this_body_accesses_fields_through_a_deref_projection() {
 }
 
 #[test]
-fn consuming_this_receiver_is_still_passed_by_value() {
+fn consuming_this_receiver_is_still_passed_directly_with_no_ref_rvalue() {
     let mir = lower_source(
         "struct Number {\n    n: int\n    intoN(this): int {\n        return this.n\n    }\n}\nf(): int {\n    c: Number = Number{n: 5}\n    return c.intoN()\n}\n",
         "f",
@@ -666,9 +666,10 @@ fn consuming_this_receiver_is_still_passed_by_value() {
             _ => None,
         })
         .expect("expected a Call terminator");
-    // A plain `this` receiver is still a direct Copy of the caller's own
-    // local (no Ref rvalue involved) — unlike `&this`/`&mut this` above.
-    assert!(matches!(&arguments[0], Operand::Copy(place) if place.projection.is_empty()));
+    // `Number` is a struct — move-only per `is_auto_copy` — so a consuming
+    // `this` receiver now moves the caller's own local directly (no `Ref`
+    // rvalue/temp involved, unlike `&this`/`&mut this` above).
+    assert!(matches!(&arguments[0], Operand::Move(place) if place.projection.is_empty()));
 }
 
 #[test]
@@ -2058,4 +2059,132 @@ fn is_auto_copy_rejects_a_type_require_lowerable_would_also_reject() {
         fault.kind(),
         MirErrorKind::NonPrimitiveType { .. }
     ));
+}
+
+#[test]
+fn a_move_only_struct_argument_is_moved_not_copied() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    let Operand::Move(place) = &arguments[0] else {
+        panic!(
+            "expected the Session argument to be Moved, got {:#?}",
+            arguments[0]
+        );
+    };
+    assert!(place.projection.is_empty());
+
+    // `MarkMoved(s)` + `SetDropFlag(s, false)` must land in the same block,
+    // ahead of the `Call` terminator that actually consumes `s`.
+    let entry_block = mir
+        .blocks
+        .entries()
+        .find(|(_, block)| matches!(block.terminator, mir_model::Terminator::Call { .. }))
+        .map(|(_, block)| block)
+        .expect("expected the entry block to end in the Call");
+    assert!(
+        entry_block
+            .statements
+            .iter()
+            .any(|s| matches!(s, mir_model::Statement::MarkMoved(local) if *local == place.local)),
+        "expected a MarkMoved(s), got {:#?}",
+        entry_block.statements
+    );
+    assert!(
+        entry_block.statements.iter().any(|s| matches!(
+            s,
+            mir_model::Statement::SetDropFlag(local, false) if *local == place.local
+        )),
+        "expected a SetDropFlag(s, false), got {:#?}",
+        entry_block.statements
+    );
+}
+
+#[test]
+fn an_autocopy_primitive_argument_is_still_copied() {
+    let mir = lower_source(
+        "consume(n: int) {}\nf() {\n    n := 1\n    consume(n)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    assert!(matches!(&arguments[0], Operand::Copy(place) if place.projection.is_empty()));
+
+    let has_mark_moved = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|s| matches!(s, mir_model::Statement::MarkMoved(_)));
+    assert!(
+        !has_mark_moved,
+        "an AutoCopy primitive should never be MarkMoved"
+    );
+}
+
+#[test]
+fn a_move_only_argument_reached_through_a_field_projection_is_still_copied() {
+    // Scoped deliberately: `SetDropFlag` is per-`LocalId`, not per-place, so
+    // a field-projection move (`consume(container.item)`) has no sound way
+    // to express "only this one field moved" yet — see `lower_call_operand`'s
+    // docs. Falls through to a plain `Copy`, same as before Move existed.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nstruct Container {\n    item: Session\n}\nconsume(s: Session) {}\nf(c: Container) {\n    consume(c.item)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    assert!(matches!(
+        &arguments[0],
+        Operand::Copy(place) if matches!(place.projection.as_slice(), [mir_model::PlaceElem::Field(0)])
+    ));
+}
+
+#[test]
+fn a_move_only_parameter_argument_is_moved_the_same_as_a_body_local() {
+    // Move-eligibility is per-local (via its own type), not gated on
+    // `body_locals` (which only tracks Drop-chain scope, a separate
+    // concern) — a parameter qualifies exactly the same as a body-declared
+    // variable.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(s: Session) {\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let arguments = mir
+        .blocks
+        .entries()
+        .find_map(|(_, block)| match &block.terminator {
+            mir_model::Terminator::Call { arguments, .. } => Some(arguments.clone()),
+            _ => None,
+        })
+        .expect("expected a Call terminator");
+    assert!(matches!(&arguments[0], Operand::Move(place) if place.projection.is_empty()));
 }

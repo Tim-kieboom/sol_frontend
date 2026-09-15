@@ -238,7 +238,11 @@ impl<'a> FunctionLowerer<'a> {
                 ast::FunctionThisKind::ConstRef => {
                     self.lower_receiver_ref(receiver_expr, false, span)?
                 }
-                _ => self.lower_operand(receiver_expr)?,
+                // A consuming `this` receiver is structurally the same bare-
+                // variable operand as an ordinary argument below (`obj.consume()`
+                // reads `obj` exactly like `consume(obj)` would) — same
+                // Move-eligibility treatment.
+                _ => self.lower_call_operand(receiver_expr)?,
             };
             args.push(receiver_operand);
         }
@@ -249,7 +253,7 @@ impl<'a> FunctionLowerer<'a> {
                     Some(span),
                 ));
             }
-            args.push(self.lower_operand(argument.value)?);
+            args.push(self.lower_call_operand(argument.value)?);
         }
 
         let is_none_return = return_type_id == TypeId::NONE;
@@ -278,6 +282,37 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         Ok(destination_local.map(|local| mir::Operand::Copy(mir::Place::local(local))))
+    }
+
+    /// Lowers a call argument (or a consuming-`this` receiver, which reads
+    /// exactly the same way — see `lower_call`) to an `Operand`, choosing
+    /// `Move` over `Copy` when it's a bare `Variable` of a move-only type
+    /// (per `is_auto_copy`) — `docs/mir-design.md`'s move/drop mechanics,
+    /// deliberately scoped for now to exactly this bare-variable case:
+    /// `SetDropFlag` is per-`LocalId`, not per-place, so a field/index/deref
+    /// projection (`consume(container.item)`) has no sound way to express
+    /// "only this one field moved" yet — that stays a plain `Copy` (falls
+    /// through to `lower_operand`, same as before this existed) until
+    /// partial-move tracking lands (see M2's TODO.md entry). Anything that
+    /// isn't a bare variable at all (a literal, a nested computation, a
+    /// struct-constructor literal passed inline, ...) has no existing place
+    /// to move from in the first place, so it falls through the same way.
+    fn lower_call_operand(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Operand> {
+        let expr = &self.store.expressions[expr_id];
+        let ast::ExpressionKind::Variable(var) = &expr.node else {
+            return self.lower_operand(expr_id);
+        };
+        let span = expr.span;
+        let local = self.resolve_local(var, span)?;
+        let ty = self.locals[local].ty.clone();
+        let place = mir::Place::local(local);
+        if self.is_auto_copy(&ty, span)? {
+            return Ok(mir::Operand::Copy(place));
+        }
+        self.statements.push(mir::Statement::MarkMoved(local));
+        self.statements
+            .push(mir::Statement::SetDropFlag(local, false));
+        Ok(mir::Operand::Move(place))
     }
 
     /// Lowers `assert(cond)`: continues normally if `cond` is `true`,
