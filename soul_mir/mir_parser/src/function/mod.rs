@@ -118,28 +118,22 @@ impl<'a> FunctionLowerer<'a> {
             && let Some(this_node) = self.declares.get_receiver_binding(signature.id)
         {
             let span = signature.name.span();
-            let method_type = self
-                .declares
-                .get_type(signature.method_type)
-                .cloned()
-                .expect("InnerFunctionSignature.method_type is always an interned TypeId");
-            self.require_lowerable(&method_type, span)?;
+            let method_type = signature.method_type;
+            self.require_lowerable(method_type, span)?;
             let receiver_ty = match signature.function_kind {
                 ast::FunctionThisKind::MutRef => {
-                    let inner = self.declares.intern_type(method_type);
-                    SoulType::Reference(ast::ReferenceType {
-                        inner,
+                    self.declares.intern_type(SoulType::Reference(ast::ReferenceType {
+                        inner: method_type,
                         lifetime: None,
                         mutable: soul_utils::Mutable::Mut,
-                    })
+                    }))
                 }
                 ast::FunctionThisKind::ConstRef => {
-                    let inner = self.declares.intern_type(method_type);
-                    SoulType::Reference(ast::ReferenceType {
-                        inner,
+                    self.declares.intern_type(SoulType::Reference(ast::ReferenceType {
+                        inner: method_type,
                         lifetime: None,
                         mutable: soul_utils::Mutable::Immut,
-                    })
+                    }))
                 }
                 _ => method_type,
             };
@@ -150,12 +144,8 @@ impl<'a> FunctionLowerer<'a> {
 
         for parameter in &signature.parameters {
             let span = parameter.name.span();
-            let ty = self
-                .declares
-                .get_type(parameter.ty)
-                .cloned()
-                .expect("Parameter.ty is always an interned TypeId, set at parse time");
-            self.require_lowerable(&ty, span)?;
+            let ty = parameter.ty;
+            self.require_lowerable(ty, span)?;
             let modifier = parameter.mutable.to_type_modifier();
             let local = self.alloc_local(ty, modifier, span);
             self.node_to_local.insert(parameter.id, local);
@@ -171,12 +161,8 @@ impl<'a> FunctionLowerer<'a> {
         let return_local = if is_none_return {
             None
         } else {
-            let return_type = self
-                .declares
-                .get_type(signature.return_type)
-                .cloned()
-                .expect("InnerFunctionSignature.return_type is always an interned TypeId");
-            self.require_lowerable(&return_type, signature.name.span())?;
+            let return_type = signature.return_type;
+            self.require_lowerable(return_type, signature.name.span())?;
             Some(self.alloc_local(return_type, TypeModifier::Mut, signature.name.span()))
         };
 
@@ -279,18 +265,12 @@ impl<'a> FunctionLowerer<'a> {
         self.seal(mir::Terminator::Return, None);
     }
 
-    /// Exposes the interner to `MirLowerer`, which has no `DeclareStore`
-    /// access of its own — see the comment on `MirLowerer`'s own fields.
     /// Pretty-prints `ty` for a fault message — `SoulType`'s own `Debug` is
     /// the plain derived one (its internal fields are bare `TypeId`s), so
     /// every fault-message site that used to do `format!("{ty:?}")` goes
     /// through here instead.
     fn print_ty(&self, ty: &SoulType) -> String {
         ast::print_type(ty, self.declares).to_string()
-    }
-
-    pub(crate) fn declares_mut(&mut self) -> &mut DeclareStore {
-        self.declares
     }
 
     fn alloc_local(&mut self, ty: mir::Type, mutability: TypeModifier, span: Span) -> mir::LocalId {
@@ -316,25 +296,29 @@ impl<'a> FunctionLowerer<'a> {
     /// way a struct field's type already is). Everything else
     /// (wildcard/heap arrays, generics, an undeclared/unresolvable name)
     /// still faults, same as before struct support existed.
-    fn require_lowerable(&self, ty: &SoulType, span: Span) -> MirResult<()> {
+    fn require_lowerable(&self, ty: mir::Type, span: Span) -> MirResult<()> {
+        let resolved = self
+            .declares
+            .get_type(ty)
+            .expect("mir::Type is always an interned TypeId");
         let is_lowerable_array = matches!(
-            ty,
+            resolved,
             SoulType::Array(array) if matches!(
                 array.kind,
                 ast::ArrayKind::StackArray(_) | ast::ArrayKind::MutSlice | ast::ArrayKind::ConstSlice
             )
         );
         if matches!(
-            ty,
+            resolved,
             SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_)
-        ) || self.resolve_struct(ty).is_some()
+        ) || self.resolve_struct(resolved).is_some()
             || is_lowerable_array
         {
             return Ok(());
         }
         Err(Fault::error_with_kind(
             MirErrorKind::NonPrimitiveType {
-                ty: self.print_ty(ty).into(),
+                ty: self.print_ty(resolved).into(),
             },
             Some(span),
         ))
@@ -358,9 +342,13 @@ impl<'a> FunctionLowerer<'a> {
     /// reaches this point (only those two `SoulType::Array` kinds remain
     /// possible once `require_lowerable` has already accepted `ty`) falls
     /// through to that move-only default.
-    pub(crate) fn is_auto_copy(&self, ty: &SoulType, span: Span) -> MirResult<bool> {
+    pub(crate) fn is_auto_copy(&self, ty: mir::Type, span: Span) -> MirResult<bool> {
         self.require_lowerable(ty, span)?;
-        Ok(match ty {
+        let resolved = self
+            .declares
+            .get_type(ty)
+            .expect("mir::Type is always an interned TypeId");
+        Ok(match resolved {
             SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_) => true,
             SoulType::Array(array) => {
                 matches!(

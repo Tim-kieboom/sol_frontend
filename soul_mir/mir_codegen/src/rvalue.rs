@@ -444,7 +444,10 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
     fn operand_is_signed(&self, operand: &Operand) -> bool {
         match operand {
             Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
-                matches!(&self.function.locals[place.local].ty, SoulType::Primitive(p) if is_signed(*p))
+                matches!(
+                    self.ctx.resolve_type(self.function.locals[place.local].ty),
+                    SoulType::Primitive(p) if is_signed(*p)
+                )
             }
             Operand::Constant(ConstValue::Int(_)) => true,
             _ => false,

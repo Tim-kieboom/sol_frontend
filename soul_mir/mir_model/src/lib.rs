@@ -7,7 +7,7 @@
 //! calls, structs, borrow checking) are new passes over an already-complete shape
 //! rather than a shape migration.
 
-use ast_model::{Literal, SoulType, operators::BinaryOperatorKind};
+use ast_model::{Literal, TypeId, operators::BinaryOperatorKind};
 use soul_utils::{
     FunctionId, TypeModifier,
     collections::{array::Arr, vec_map::VecMap},
@@ -17,11 +17,13 @@ use soul_utils::{
 
 impl_soul_ids!(LocalId, BlockId);
 
-/// The type of a MIR local. A plain alias onto the frontend's resolved type for
-/// now: M1/M2 only ever see concrete types. Once generics (M3) land this needs to
-/// grow a `Param(String)` placeholder variant (see `docs/mir-design.md`'s Generics
-/// section) — deliberately not added yet since nothing constructs it today.
-pub type Type = SoulType;
+/// The type of a MIR local. An interned handle onto the frontend's resolved
+/// type — resolve back to `&SoulType` via `DeclareStore::get_type` wherever
+/// the shape (not just the identity) is needed. M1/M2 only ever see concrete
+/// types. Once generics (M3) land this needs to grow a `Param(String)`
+/// placeholder variant (see `docs/mir-design.md`'s Generics section) —
+/// deliberately not added yet since nothing constructs it today.
+pub type Type = TypeId;
 
 /// A constant value baked into MIR. A plain alias onto the frontend's literal
 /// representation; revisit if MIR ever needs a constant shape the AST doesn't
@@ -48,7 +50,7 @@ impl MirProgram {
 
 /// An `extern "C"` function declaration: just enough to declare it to LLVM
 /// and lower calls to it — no body, no locals, no blocks. Every param/return
-/// type is passed through as whatever `SoulType` the signature declared;
+/// type is passed through as whatever `TypeId` the signature declared;
 /// unlike `Function`'s body-lowering, there's no lowering logic here that
 /// could break on a type it doesn't understand, so nothing is rejected at
 /// this stage — codegen is the sole judge of which types it can actually

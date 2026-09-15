@@ -69,7 +69,9 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
 
         let mut locals: VecMap<LocalId, PointerValue<'ctx>> = VecMap::new();
         for (local_id, decl) in function.locals.entries() {
-            let ty = self.ctx.llvm_type(module, &decl.ty, Some(decl.span))?;
+            let ty = self
+                .ctx
+                .llvm_type(module, self.ctx.resolve_type(decl.ty), Some(decl.span))?;
             let slot = builder
                 .build_alloca(ty, &format!("_{}", local_id.index()))
                 .map_err(llvm_err)?;
@@ -173,8 +175,11 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
 
     pub(crate) fn local_type(&self, local: LocalId) -> CodegenResult<BasicTypeEnum<'ctx>> {
         let decl = &self.function.locals[local];
-        self.ctx
-            .llvm_type(self.soul_module, &decl.ty, Some(decl.span))
+        self.ctx.llvm_type(
+            self.soul_module,
+            self.ctx.resolve_type(decl.ty),
+            Some(decl.span),
+        )
     }
 
     /// Resolves a `Place` to the pointer it reads/writes through and the
@@ -193,7 +198,10 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         place: &Place,
     ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
         let mut ptr = self.locals[place.local];
-        let mut soul_ty = self.function.locals[place.local].ty.clone();
+        let mut soul_ty = self
+            .ctx
+            .resolve_type(self.function.locals[place.local].ty)
+            .clone();
 
         for elem in &place.projection {
             soul_ty = match elem {

@@ -46,9 +46,11 @@ impl<'a> FunctionLowerer<'a> {
         require_primitive(self.declares, &result_ty, span)?;
 
         let result_ty = self.declares.intern_type(result_ty);
-        let tuple_ty = SoulType::TupleKind(ast::TupleKind::Tuple(
-            vec![result_ty, TypeId::PRIM_BOOLEAN].into(),
-        ));
+        let tuple_ty = self
+            .declares
+            .intern_type(SoulType::TupleKind(ast::TupleKind::Tuple(
+                vec![result_ty, TypeId::PRIM_BOOLEAN].into(),
+            )));
         let tuple_local = self.alloc_local(tuple_ty, TypeModifier::Immut, span);
         let tuple_place = mir::Place::local(tuple_local);
         self.push_assign(
@@ -168,11 +170,10 @@ impl<'a> FunctionLowerer<'a> {
     /// the small building block `lower_checked_div`'s guard conditions
     /// (`== 0`, `== MIN`, `&&`, ...) are built from.
     pub(super) fn bool_temp(&mut self, rvalue: mir::Rvalue, span: Span) -> mir::Place {
-        let temp = self.alloc_local(
-            SoulType::Primitive(PrimitiveTypes::Boolean),
-            TypeModifier::Immut,
-            span,
-        );
+        let bool_id = self
+            .declares
+            .intern_type(SoulType::Primitive(PrimitiveTypes::Boolean));
+        let temp = self.alloc_local(bool_id, TypeModifier::Immut, span);
         self.push_assign(mir::Place::local(temp), rvalue);
         mir::Place::local(temp)
     }

@@ -68,7 +68,8 @@ impl<'a> FunctionLowerer<'a> {
                 )
             })?;
 
-        self.require_lowerable(&ty, binding.ident.span())?;
+        let ty = self.declares.intern_type(ty);
+        self.require_lowerable(ty, binding.ident.span())?;
         let rvalue = self.lower_movable_rvalue(init)?;
         let local = self.alloc_local(ty, *modifier, binding.ident.span());
         self.node_to_local.insert(binding.id, local);
@@ -258,13 +259,8 @@ impl<'a> FunctionLowerer<'a> {
 
         let is_none_return = return_type_id == TypeId::NONE;
         let destination_local = if want_result && !is_none_return {
-            let return_type = self
-                .declares
-                .get_type(return_type_id)
-                .cloned()
-                .expect("InnerFunctionSignature.return_type is always an interned TypeId");
-            self.require_lowerable(&return_type, span)?;
-            Some(self.alloc_local(return_type, TypeModifier::Immut, span))
+            self.require_lowerable(return_type_id, span)?;
+            Some(self.alloc_local(return_type_id, TypeModifier::Immut, span))
         } else {
             None
         };
@@ -352,9 +348,9 @@ impl<'a> FunctionLowerer<'a> {
         span: Span,
     ) -> MirResult<mir::Operand> {
         let local = self.resolve_local(var, span)?;
-        let ty = self.locals[local].ty.clone();
+        let ty = self.locals[local].ty;
         let place = mir::Place::local(local);
-        if self.is_auto_copy(&ty, span)? {
+        if self.is_auto_copy(ty, span)? {
             return Ok(mir::Operand::Copy(place));
         }
         self.statements.push(mir::Statement::MarkMoved(local));

@@ -6,7 +6,7 @@ use crate::{
     push_fmt,
 };
 use anyhow::Result;
-use ast_model::AstStore;
+use ast_model::{AstStore, declare_store::DeclareStore};
 use mir_model::MirProgram;
 use mir_model::{
     AggregateKind, Function, LocalDecl, LocalId, Operand, Place, PlaceElem, Rvalue, Statement,
@@ -17,12 +17,16 @@ use soul_utils::{
     collections::vec_map::{VecMap, VecMapIndex},
 };
 
-pub(crate) fn display_mir(program: &MirProgram, ast: &AstStore) -> Result<()> {
+pub(crate) fn display_mir(
+    program: &MirProgram,
+    ast: &AstStore,
+    declares: &DeclareStore,
+) -> Result<()> {
     let mut output_path = config::CONFIG.output_path().join("mir");
     output_path.push("tree.soulc");
 
     let mut writer = write_create_file(&output_path)?;
-    let mut dispayer = Displayer::new(&mut writer, ast);
+    let mut dispayer = Displayer::new(&mut writer, ast, declares);
     for (_, function) in program.functions.entries() {
         dispayer.write_function(function)?;
         dispayer.push_char('\n')?;
@@ -50,10 +54,15 @@ where
 struct Displayer<'a, W: Writer> {
     writer: &'a mut W,
     ast: &'a AstStore,
+    declares: &'a DeclareStore,
 }
 impl<'a, W: Writer> Displayer<'a, W> {
-    pub fn new(writer: &'a mut W, ast: &'a AstStore) -> Self {
-        Self { ast, writer }
+    pub fn new(writer: &'a mut W, ast: &'a AstStore, declares: &'a DeclareStore) -> Self {
+        Self {
+            ast,
+            writer,
+            declares,
+        }
     }
 
     fn write_function(&mut self, function: &Function) -> Result<()> {
@@ -164,13 +173,18 @@ impl<'a, W: Writer> Displayer<'a, W> {
     fn write_local(&mut self, local: (LocalId, &LocalDecl)) -> Result<()> {
         let (id, decl) = local;
         let name = local_str(id);
-        let ty = &decl.ty;
+        let ty = ast_model::print_type(
+            self.declares
+                .get_type(decl.ty)
+                .expect("mir::Type is always an interned TypeId"),
+            self.declares,
+        );
         match decl.mutability {
             TypeModifier::Mut => self.push_str("mut ")?,
             TypeModifier::Comptime => self.push_str("const ")?,
             TypeModifier::Immut => (),
         }
-        push_fmt!(self, "{name}: {ty:?}")?;
+        push_fmt!(self, "{name}: {ty}")?;
         Ok(())
     }
 
@@ -254,7 +268,13 @@ impl<'a, W: Writer> Displayer<'a, W> {
             }
             Rvalue::Cast(operand, ty) => {
                 self.write_operand(operand)?;
-                push_fmt!(self, " as {ty:?}")?;
+                let ty = ast_model::print_type(
+                    self.declares
+                        .get_type(*ty)
+                        .expect("mir::Type is always an interned TypeId"),
+                    self.declares,
+                );
+                push_fmt!(self, " as {ty}")?;
             }
             Rvalue::Len(place) => {
                 self.push_str("len(")?;

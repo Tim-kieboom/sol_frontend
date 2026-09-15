@@ -44,6 +44,7 @@ impl<'a> FunctionLowerer<'a> {
                 require_primitive(self.declares, &ty, span)?;
 
                 let rvalue = self.lower_rvalue(expr_id)?;
+                let ty = self.declares.intern_type(ty);
                 let temp = self.alloc_local(ty, TypeModifier::Immut, span);
                 self.push_assign(mir::Place::local(temp), rvalue);
                 Ok(mir::Operand::Copy(mir::Place::local(temp)))
@@ -54,11 +55,10 @@ impl<'a> FunctionLowerer<'a> {
             ast::ExpressionKind::Unary(_) => {
                 let span = expr.span;
                 let rvalue = self.lower_rvalue(expr_id)?;
-                let temp = self.alloc_local(
-                    SoulType::Primitive(PrimitiveTypes::Boolean),
-                    TypeModifier::Immut,
-                    span,
-                );
+                let bool_id = self
+                    .declares
+                    .intern_type(SoulType::Primitive(PrimitiveTypes::Boolean));
+                let temp = self.alloc_local(bool_id, TypeModifier::Immut, span);
                 self.push_assign(mir::Place::local(temp), rvalue);
                 Ok(mir::Operand::Copy(mir::Place::local(temp)))
             }

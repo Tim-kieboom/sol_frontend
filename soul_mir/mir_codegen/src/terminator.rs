@@ -209,14 +209,21 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 .iter()
                 .map(|&local| {
                     let decl = &callee_mir.locals[local];
-                    self.ctx.llvm_type(callee_module, &decl.ty, Some(decl.span))
+                    self.ctx.llvm_type(
+                        callee_module,
+                        self.ctx.resolve_type(decl.ty),
+                        Some(decl.span),
+                    )
                 })
                 .collect::<CodegenResult<Vec<_>>>()?
         } else if let Some(extern_fn) = self.externs.get(id) {
             extern_fn
                 .parameters
                 .iter()
-                .map(|ty| self.ctx.llvm_type(callee_module, ty, None))
+                .map(|&ty| {
+                    self.ctx
+                        .llvm_type(callee_module, self.ctx.resolve_type(ty), None)
+                })
                 .collect::<CodegenResult<Vec<_>>>()?
         } else {
             return Err(err(CodegenErrorKind::CallHasNoMirBody { id }));

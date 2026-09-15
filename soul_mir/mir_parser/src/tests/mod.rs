@@ -1624,8 +1624,10 @@ fn extern_c_signature_lowers_into_an_extern_function_with_no_type_restriction() 
     assert_eq!(extern_fn.parameters.len(), 1);
     assert!(
         matches!(
-            &extern_fn.parameters[0],
-            ast_model::SoulType::Primitive(soul_utils::soul_names::PrimitiveTypes::CStr)
+            ast.declares.get_type(extern_fn.parameters[0]),
+            Some(ast_model::SoulType::Primitive(
+                soul_utils::soul_names::PrimitiveTypes::CStr
+            ))
         ),
         "{:?}",
         extern_fn.parameters[0]
@@ -1959,61 +1961,57 @@ fn function_span(ast: &AstTree, name: &str) -> soul_utils::span::Span {
 fn is_auto_copy_treats_primitives_references_and_pointers_as_autocopy() {
     let mut ast = resolve_source("f(): none {}\n");
     let span = function_span(&ast, "f");
-    let lowerer = lowerer_for_is_auto_copy(&mut ast);
-
-    let int_ty = SoulType::Primitive(PrimitiveTypes::Int);
-    assert!(lowerer.is_auto_copy(&int_ty, span).expect("lowerable"));
-
-    let ref_ty = SoulType::Reference(ReferenceType {
+    let int_ty = ast
+        .declares
+        .intern_type(SoulType::Primitive(PrimitiveTypes::Int));
+    let ref_ty = ast.declares.intern_type(SoulType::Reference(ReferenceType {
         inner: TypeId::NONE,
         lifetime: None,
         mutable: Mutable::Immut,
-    });
-    assert!(lowerer.is_auto_copy(&ref_ty, span).expect("lowerable"));
-
-    let ptr_ty = SoulType::Pointer(ReferenceType {
+    }));
+    let ptr_ty = ast.declares.intern_type(SoulType::Pointer(ReferenceType {
         inner: TypeId::NONE,
         lifetime: None,
         mutable: Mutable::Mut,
-    });
-    assert!(lowerer.is_auto_copy(&ptr_ty, span).expect("lowerable"));
+    }));
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    assert!(lowerer.is_auto_copy(int_ty, span).expect("lowerable"));
+    assert!(lowerer.is_auto_copy(ref_ty, span).expect("lowerable"));
+    assert!(lowerer.is_auto_copy(ptr_ty, span).expect("lowerable"));
 }
 
 #[test]
 fn is_auto_copy_treats_a_slice_as_autocopy_but_an_owning_array_as_move_only() {
     let mut ast = resolve_source("f(): none {}\n");
     let span = function_span(&ast, "f");
-    let lowerer = lowerer_for_is_auto_copy(&mut ast);
-
-    let mut_slice_ty = SoulType::Array(ArrayType {
+    let mut_slice_ty = ast.declares.intern_type(SoulType::Array(ArrayType {
         of_type: TypeId::NONE,
         kind: ArrayKind::MutSlice,
-    });
-    assert!(
-        lowerer
-            .is_auto_copy(&mut_slice_ty, span)
-            .expect("lowerable"),
-        "a slice is a non-owning fat pointer, so it should be AutoCopy"
-    );
-
-    let const_slice_ty = SoulType::Array(ArrayType {
+    }));
+    let const_slice_ty = ast.declares.intern_type(SoulType::Array(ArrayType {
         of_type: TypeId::NONE,
         kind: ArrayKind::ConstSlice,
-    });
+    }));
+    let stack_array_ty = ast.declares.intern_type(SoulType::Array(ArrayType {
+        of_type: TypeId::NONE,
+        kind: ArrayKind::StackArray(4),
+    }));
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    assert!(
+        lowerer.is_auto_copy(mut_slice_ty, span).expect("lowerable"),
+        "a slice is a non-owning fat pointer, so it should be AutoCopy"
+    );
     assert!(
         lowerer
-            .is_auto_copy(&const_slice_ty, span)
+            .is_auto_copy(const_slice_ty, span)
             .expect("lowerable"),
         "a slice is a non-owning fat pointer, so it should be AutoCopy"
     );
-
-    let stack_array_ty = SoulType::Array(ArrayType {
-        of_type: TypeId::NONE,
-        kind: ArrayKind::StackArray(4),
-    });
     assert!(
         !lowerer
-            .is_auto_copy(&stack_array_ty, span)
+            .is_auto_copy(stack_array_ty, span)
             .expect("lowerable"),
         "an owning fixed-size array should be move-only"
     );
@@ -2030,17 +2028,15 @@ fn is_auto_copy_treats_a_resolved_struct_as_move_only() {
         let FunctionKind::Normal(function) = &ast.crates.store.functions[function_id] else {
             panic!("expected a normal function");
         };
-        let param_ty = ast
-            .declares
-            .get_type(function.signature.value.parameters[0].ty)
-            .cloned()
-            .expect("parameter type should be interned");
-        (param_ty, function.signature.span)
+        (
+            function.signature.value.parameters[0].ty,
+            function.signature.span,
+        )
     };
     let lowerer = lowerer_for_is_auto_copy(&mut ast);
 
     assert!(
-        !lowerer.is_auto_copy(&param_ty, span).expect("lowerable"),
+        !lowerer.is_auto_copy(param_ty, span).expect("lowerable"),
         "a resolved struct should be move-only"
     );
 }
@@ -2049,9 +2045,10 @@ fn is_auto_copy_treats_a_resolved_struct_as_move_only() {
 fn is_auto_copy_rejects_a_type_require_lowerable_would_also_reject() {
     let mut ast = resolve_source("f(): none {}\n");
     let span = function_span(&ast, "f");
+    let any_ty = ast.declares.intern_type(SoulType::Any);
     let lowerer = lowerer_for_is_auto_copy(&mut ast);
 
-    let result = lowerer.is_auto_copy(&SoulType::Any, span);
+    let result = lowerer.is_auto_copy(any_ty, span);
     let Err(fault) = result else {
         panic!("expected is_auto_copy to reject a non-lowerable type, got {result:#?}");
     };

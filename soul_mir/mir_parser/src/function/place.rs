@@ -57,7 +57,12 @@ impl<'a> FunctionLowerer<'a> {
         match &expr.node {
             ast::ExpressionKind::Variable(var) => {
                 let local = self.resolve_local(var, expr.span)?;
-                Ok((mir::Place::local(local), self.locals[local].ty.clone()))
+                let ty = self
+                    .declares
+                    .get_type(self.locals[local].ty)
+                    .cloned()
+                    .expect("mir::Type is always an interned TypeId");
+                Ok((mir::Place::local(local), ty))
             }
             ast::ExpressionKind::FieldAccess(field_access) => {
                 self.resolve_field_place(field_access, expr.span)
@@ -96,15 +101,17 @@ impl<'a> FunctionLowerer<'a> {
                 Some(span),
             ));
         };
-        let ptr_ty = SoulType::Reference(ast::ReferenceType {
-            inner: array.of_type,
-            lifetime: None,
-            mutable: if mutable {
-                soul_utils::Mutable::Mut
-            } else {
-                soul_utils::Mutable::Immut
-            },
-        });
+        let ptr_ty = self
+            .declares
+            .intern_type(SoulType::Reference(ast::ReferenceType {
+                inner: array.of_type,
+                lifetime: None,
+                mutable: if mutable {
+                    soul_utils::Mutable::Mut
+                } else {
+                    soul_utils::Mutable::Immut
+                },
+            }));
         let ptr_temp = self.alloc_local(ptr_ty, TypeModifier::Immut, span);
         self.push_assign(
             mir::Place::local(ptr_temp),
@@ -132,15 +139,17 @@ impl<'a> FunctionLowerer<'a> {
     ) -> MirResult<mir::Operand> {
         let (place, value_ty) = self.resolve_place_expression(expr_id, span)?;
         let inner = self.declares.intern_type(value_ty);
-        let ref_ty = SoulType::Reference(ast::ReferenceType {
-            inner,
-            lifetime: None,
-            mutable: if mutable {
-                soul_utils::Mutable::Mut
-            } else {
-                soul_utils::Mutable::Immut
-            },
-        });
+        let ref_ty = self
+            .declares
+            .intern_type(SoulType::Reference(ast::ReferenceType {
+                inner,
+                lifetime: None,
+                mutable: if mutable {
+                    soul_utils::Mutable::Mut
+                } else {
+                    soul_utils::Mutable::Immut
+                },
+            }));
         let ref_temp = self.alloc_local(ref_ty, TypeModifier::Immut, span);
         self.push_assign(
             mir::Place::local(ref_temp),
@@ -309,32 +318,33 @@ impl<'a> FunctionLowerer<'a> {
         span: Span,
     ) {
         const UINT: SoulType = SoulType::Primitive(PrimitiveTypes::Uint);
+        let uint_id = self.declares.intern_type(UINT);
 
-        let len_local = self.alloc_local(UINT, TypeModifier::Immut, span);
+        let len_local = self.alloc_local(uint_id, TypeModifier::Immut, span);
         self.push_assign(
             mir::Place::local(len_local),
             mir::Rvalue::Len(collection.clone()),
         );
 
-        let index_local = if self.locals[index_local]
-            .ty
-            .is_primitive_kind(PrimitiveTypes::Uint)
-        {
+        let is_uint = self
+            .declares
+            .get_type(self.locals[index_local].ty)
+            .is_some_and(|ty| ty.is_primitive_kind(PrimitiveTypes::Uint));
+        let index_local = if is_uint {
             index_local
         } else {
-            let cast = self.alloc_local(UINT, TypeModifier::Immut, span);
+            let cast = self.alloc_local(uint_id, TypeModifier::Immut, span);
             self.push_assign(
                 mir::Place::local(cast),
-                mir::Rvalue::Cast(mir::Operand::Copy(mir::Place::local(index_local)), UINT),
+                mir::Rvalue::Cast(mir::Operand::Copy(mir::Place::local(index_local)), uint_id),
             );
             cast
         };
 
-        let cond_local = self.alloc_local(
-            SoulType::Primitive(PrimitiveTypes::Boolean),
-            TypeModifier::Immut,
-            span,
-        );
+        let bool_id = self
+            .declares
+            .intern_type(SoulType::Primitive(PrimitiveTypes::Boolean));
+        let cond_local = self.alloc_local(bool_id, TypeModifier::Immut, span);
         self.push_assign(
             mir::Place::local(cond_local),
             mir::Rvalue::BinaryOp(
@@ -376,6 +386,7 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let rvalue = self.lower_rvalue(expr_id)?;
+        let ty = self.declares.intern_type(ty);
         let temp = self.alloc_local(ty, TypeModifier::Immut, span);
         self.push_assign(mir::Place::local(temp), rvalue);
         Ok(temp)

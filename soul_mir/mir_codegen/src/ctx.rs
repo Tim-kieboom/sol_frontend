@@ -7,7 +7,7 @@
 //! do field-by-field, and what motivated giving both structs a matching
 //! `llvm_type` wrapper method in the first place).
 
-use ast_model::{SoulType, declare_store::DeclareStore};
+use ast_model::{SoulType, TypeId, declare_store::DeclareStore};
 use inkwell::{context::Context, module::Module, types::BasicTypeEnum};
 use soul_utils::{
     collections::module_store::ModuleStore,
@@ -30,6 +30,16 @@ pub(crate) struct CodegenCtx<'ctx, 'a> {
 }
 
 impl<'ctx, 'a> CodegenCtx<'ctx, 'a> {
+    /// Resolves a `mir_model::Type` (an interned `TypeId`) back to the
+    /// `SoulType` it names. Every `TypeId` reaching codegen off a MIR
+    /// structure (`LocalDecl.ty`, `ExternFunction`'s param/return types) was
+    /// interned by `mir_parser`'s lowering — this can't fail on real input.
+    pub(crate) fn resolve_type(&self, ty: TypeId) -> &'a SoulType {
+        self.declares
+            .get_type(ty)
+            .expect("mir::Type is always an interned TypeId")
+    }
+
     pub(crate) fn llvm_type(
         &self,
         module: Option<ModuleId>,

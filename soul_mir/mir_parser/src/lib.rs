@@ -31,11 +31,9 @@ mod function;
 
 pub struct MirLowerer<'a> {
     store: &'a AstStore,
-    // Owned solely by `function_lowerer` (which needs it mutable, to intern
+    // Owned solely by `function_lowerer`, which needs it mutable to intern
     // fresh synthetic types built during body lowering — a receiver's
-    // reference type, a checked-arithmetic op's result tuple, ...) — see
-    // `FunctionLowerer::declares_mut`, used by `lower_extern_signature` below,
-    // which only ever reads.
+    // reference type, a checked-arithmetic op's result tuple, ...
     function_lowerer: FunctionLowerer<'a>,
     functions: VecMap<FunctionId, mir::Function>,
     externs: VecMap<FunctionId, mir::ExternFunction>,
@@ -82,10 +80,7 @@ impl<'a> MirLowerer<'a> {
                         Some(signature.span),
                     ));
                 }
-                let extern_fn = lower_extern_signature(
-                    &signature.value,
-                    &*self.function_lowerer.declares_mut(),
-                );
+                let extern_fn = lower_extern_signature(&signature.value);
                 self.externs.insert(signature.value.id, extern_fn);
                 Ok(())
             }
@@ -93,28 +88,11 @@ impl<'a> MirLowerer<'a> {
     }
 }
 
-fn lower_extern_signature(
-    signature: &ast::InnerFunctionSignature,
-    declares: &DeclareStore,
-) -> mir::ExternFunction {
-    let return_type = (signature.return_type != ast::TypeId::NONE).then(|| {
-        declares
-            .get_type(signature.return_type)
-            .cloned()
-            .expect("InnerFunctionSignature.return_type is always an interned TypeId")
-    });
+fn lower_extern_signature(signature: &ast::InnerFunctionSignature) -> mir::ExternFunction {
+    let return_type = (signature.return_type != ast::TypeId::NONE).then_some(signature.return_type);
     mir::ExternFunction {
         id: signature.id,
-        parameters: signature
-            .parameters
-            .iter()
-            .map(|p| {
-                declares
-                    .get_type(p.ty)
-                    .cloned()
-                    .expect("Parameter.ty is always an interned TypeId, set at parse time")
-            })
-            .collect(),
+        parameters: signature.parameters.iter().map(|p| p.ty).collect(),
         return_type,
     }
 }

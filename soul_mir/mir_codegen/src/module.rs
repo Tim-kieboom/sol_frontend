@@ -93,14 +93,18 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
                 .locals
                 .entries()
                 .take(function.arg_count)
-                .map(|(_, decl)| self.ctx.llvm_type(module, &decl.ty, Some(decl.span)))
+                .map(|(_, decl)| {
+                    self.ctx
+                        .llvm_type(module, self.ctx.resolve_type(decl.ty), Some(decl.span))
+                })
                 .collect::<CodegenResult<Vec<_>>>()?;
 
             let return_type = function
                 .return_local
                 .map(|local| {
                     let decl = &function.locals[local];
-                    self.ctx.llvm_type(module, &decl.ty, Some(decl.span))
+                    self.ctx
+                        .llvm_type(module, self.ctx.resolve_type(decl.ty), Some(decl.span))
                 })
                 .transpose()?;
 
@@ -122,13 +126,12 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
             let param_types = extern_fn
                 .parameters
                 .iter()
-                .map(|ty| self.ctx.llvm_type(module, ty, None))
+                .map(|&ty| self.ctx.llvm_type(module, self.ctx.resolve_type(ty), None))
                 .collect::<CodegenResult<Vec<_>>>()?;
 
             let return_type = extern_fn
                 .return_type
-                .as_ref()
-                .map(|ty| self.ctx.llvm_type(module, ty, None))
+                .map(|ty| self.ctx.llvm_type(module, self.ctx.resolve_type(ty), None))
                 .transpose()?;
 
             let fn_type = self.build_fn_type(&param_types, return_type, false);

@@ -65,7 +65,7 @@ fn frontend(benchmark: &mut Benchmark) -> Result<bool> {
     } else {
         mir(&mut ast, benchmark, &mut all_faults)
     };
-    display_mir(&mir, &ast.crates.store)?;
+    display_mir(&mir, &ast.crates.store, &ast.declares)?;
 
     if !ast_failed {
         codegen(&mir, &ast, benchmark, &module_store)?;

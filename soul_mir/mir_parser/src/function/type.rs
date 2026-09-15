@@ -15,7 +15,10 @@ impl<'a> FunctionLowerer<'a> {
     /// it. `None` for anything this walk can't resolve (an unresolvable
     /// struct/field, or a `Deref` of something that isn't a reference).
     pub(super) fn place_type(&self, place: &mir::Place) -> Option<SoulType> {
-        let mut ty = self.locals.get(place.local)?.ty.clone();
+        let mut ty = self
+            .declares
+            .get_type(self.locals.get(place.local)?.ty)?
+            .clone();
         for elem in &place.projection {
             ty = match elem {
                 mir::PlaceElem::Field(index) => {
