@@ -30,7 +30,7 @@ impl<T> Arr<T> {
 
     /// Converts a `Vec<T>` into an `Arr<T>`, dropping the unused capacity.
     pub fn from_vec(v: Vec<T>) -> Self {
-        Self(v.into_boxed_slice().into())
+        Self(v.into_boxed_slice())
     }
 
     /// Creates an `Arr` from a fixed-size array, with no intermediate `Vec`.
@@ -43,7 +43,7 @@ impl<T> Arr<T> {
     where
         T: Clone,
     {
-        Self(slice.to_vec().into_boxed_slice().into())
+        Self(slice.to_vec().into_boxed_slice())
     }
 
     /// Returns the number of elements in the array.

@@ -141,6 +141,54 @@ fn extern_c_function_lowers_into_externs_not_functions() {
 }
 
 #[test]
+fn use_after_move_in_straight_line_code_faults_through_the_full_pipeline() {
+    // Proves the wiring in `crate::to_mir` itself — not just
+    // `mir_parser::move_check::check_moves` in isolation — actually turns a
+    // real use-after-move `.soul` program into a hard error.
+    let mut ast = build_ast(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n    consume(s)\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::UseAfterMove)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_branching_function_with_a_move_violation_is_not_yet_flagged() {
+    // Straight-line only for now (see `move_check`'s own docs) — a
+    // use-after-move reachable only through an `if`/`for` isn't analyzed
+    // yet, so this must NOT fault, even though the underlying pattern (using
+    // `s` again after moving it) is exactly as wrong as the straight-line
+    // case above.
+    let mut ast = build_ast(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n        consume(s)\n    }\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.iter().count(),
+        0,
+        "a branching function shouldn't be move-checked yet: {:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn mixed_program_lowers_what_it_can_and_faults_on_the_rest() {
     let mut ast = build_ast(
         "okFn(a: int, b: int): int {\n    return a + b\n}\nbadFn(a: []int): []int {\n    return a\n}\n",

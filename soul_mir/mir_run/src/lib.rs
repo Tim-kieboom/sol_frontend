@@ -46,5 +46,18 @@ pub fn to_mir(
 
     benchmark.add_benchmark("mir", time.elapsed());
     let (functions, externs) = lowerer.into_functions_and_externs();
+
+    // Move checking (see `mir_parser::move_check`) is its own pass over
+    // already-lowered MIR, not part of lowering itself — a function that
+    // fails to lower never reaches here at all, so this only ever runs on
+    // functions that already lowered successfully. Straight-line only for
+    // now: a function containing any `if`/`for` is silently skipped
+    // (`check_moves` itself decides that), not rejected or force-analyzed.
+    for function in functions.values() {
+        for fault in mir_parser::move_check::check_moves(function) {
+            context.faults.push(fault);
+        }
+    }
+
     MirProgram { functions, externs }
 }

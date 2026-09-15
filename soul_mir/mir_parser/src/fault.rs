@@ -143,6 +143,16 @@ pub enum MirErrorKind {
 
     #[error("`*` can only dereference a reference/pointer type, not `{ty}`")]
     DerefTargetNotAReference { ty: Box<str> },
+
+    /// The move checker's own violation (see `mir_parser::move_check`).
+    /// Points at the moved-out local's own declaration span — MIR statements
+    /// don't carry their own per-statement spans yet, so the *exact* source
+    /// location of the violating read can't be reported, only where the
+    /// value in question was introduced. Straight-line functions only for
+    /// now (anything containing a branch is skipped, unchecked, until the
+    /// checker gains real CFG join support — see `move_check`'s own docs).
+    #[error("value may have already been moved out of")]
+    UseAfterMove,
 }
 
 impl From<UnclassifiedKind> for MirErrorKind {

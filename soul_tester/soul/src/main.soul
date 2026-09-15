@@ -1,10 +1,10 @@
-
-drop(number: Number) {}
+consume(v: int) {}
 
 struct Number {inner: i32}
 main(): i32 {
+    num := 1
     value := Number{inner: 1}
-    drop(value)
-    num := value.inner
+    consume(num)
+    consume(num)
     return 0
 }

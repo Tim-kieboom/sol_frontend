@@ -711,7 +711,46 @@ that landing first, in order.
     "a return through an enclosing for gets zero drops" — stopped holding the moment `for` got
     real scope tracking (`a_return_through_an_enclosing_for_now_drops_it_too`, replacing
     `for_loop_is_a_hard_stop_for_return_unwinding`). All 30 exe tests still pass unchanged.
-- [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset
+- [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset. `/grill-me`'d "what's
+      next"; settled scope before writing anything:
+  - **Move-checking only** — real borrow/lifetime-conflict analysis (do two live `&`/`&mut`
+    borrows of the same place overlap) is a fundamentally different, much bigger algorithm
+    (needs actual liveness tracking; nothing in the MIR records borrow lifetimes at all) and is
+    explicitly deferred to a later M2 slice.
+  - Confirmed the user wants to genuinely **mirror rustc's own approach**: a real flow-sensitive
+    dataflow analysis over the CFG, not a flow-insensitive "moved anywhere ⇒ reject" scan (which
+    would wrongly reject valid branch-exclusive-move code, e.g. moving the same local in each arm
+    of an `if`/`else`).
+  - That, in turn, means fixed-point iteration is eventually required — a `for` loop's back-edge
+    makes the CFG cyclic, and a single forward pass can't correctly answer "is this moved" for
+    code whose answer depends on a previous iteration. **First slice deliberately narrowed to
+    straight-line functions only** (no `if`/`for` at all) to avoid needing that machinery (or even
+    CFG-join/predecessor computation) on day one — any function containing a `SwitchInt` (both
+    `if` and `for` lower to one) is skipped entirely, unanalyzed, rather than crashed on or
+    incorrectly analyzed. `if`/`else` join-merging and `for`'s fixed point are explicit, separate
+    follow-ups.
+  - **Wired into the real pipeline now** (`mir_run::to_mir`, right after lowering) as a **hard
+    error** (`Fault::error_with_kind`, not a warning) — this is genuinely new territory: every
+    prior M2 slice only ever *constructed* MIR shapes, nothing ever rejected a program before this.
+    Verified zero regression risk *before* wiring it in: manually audited (and cross-checked with
+    an independent background scan) all 8 struct-using `.soul` exe tests for a bare-variable
+    struct/array local used twice with the first use in a move position — none exist; every
+    existing move in the suite is either a single use or a method call through `&this`/`&mut this`
+    (a borrow, not a move).
+  - New `mir_parser::move_check::check_moves(&Function) -> Vec<Fault<MirErrorKind>>`, new
+    `MirErrorKind::UseAfterMove`. State is derived entirely from where `Operand::Move`/`Copy`
+    actually appear and `Assign`'s own whole-place reinitializing writes — **deliberately not**
+    from the `MarkMoved`/`SetDropFlag` statements the lowerer also emits: those are pushed
+    immediately *before* the very terminator that embeds the `Operand::Move` they correspond to,
+    so treating `MarkMoved` itself as "moved from here on" flagged a value's own first, legitimate
+    move against itself (a real bug caught by the checker's own unit tests, then fixed by deriving
+    state from the operands directly instead).
+  - Proven via 5 new `mir_parser` unit tests (double-move, reassign-then-reuse, branch-skipping,
+    `AutoCopy` exemption, borrowing an already-moved value) plus 2 new `mir_run` integration tests
+    exercising the real `to_mir` wiring end-to-end (a genuine violation faults; the same pattern
+    reached only through a branch doesn't, yet). All 30 exe tests still pass unchanged — the actual
+    proof this shipped with zero regressions, since the exe-test harness has no mechanism for an
+    expected-to-fail-to-compile program (a separate, bigger tooling gap, not addressed here).
 
 ### M3 — unions, generics, full traits (not started)
 

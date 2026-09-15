@@ -13,6 +13,7 @@
 //! slice yet," not "the input program is invalid."
 
 pub mod fault;
+pub mod move_check;
 #[cfg(test)]
 mod tests;
 

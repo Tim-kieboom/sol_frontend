@@ -2732,3 +2732,91 @@ fn break_inside_a_nested_if_drops_the_ifs_and_loops_frames_but_not_an_outer_one(
     // outside the loop) is dropped separately, at the function's own final
     // `return`, not as part of this chain.
 }
+
+#[test]
+fn check_moves_flags_a_use_after_move_in_straight_line_code() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly one use-after-move fault, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn check_moves_allows_a_reassigned_local_to_be_used_again() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    mut s := Session{n: 1}\n    consume(s)\n    s = Session{n: 2}\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert!(
+        faults.is_empty(),
+        "expected no faults — s was reassigned before its second use, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_moves_skips_functions_containing_a_branch() {
+    // Straight-line only for now — a branching function isn't analyzed at
+    // all yet (see `move_check`'s own docs), so even a pattern that would be
+    // a real violation on some individual path is silently unchecked here,
+    // rather than incorrectly flagged or crashed on.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n    } else {\n        consume(s)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert!(
+        faults.is_empty(),
+        "expected a branching function to be skipped entirely, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_moves_allows_autocopy_values_to_be_used_repeatedly() {
+    let mir = lower_source(
+        "consume(n: int) {}\nf() {\n    n := 1\n    consume(n)\n    consume(n)\n    consume(n)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert!(
+        faults.is_empty(),
+        "an AutoCopy primitive should never be flagged as moved, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_moves_flags_a_borrow_of_an_already_moved_value() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n    r := &s\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected borrowing an already-moved value to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}

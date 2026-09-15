@@ -4,20 +4,20 @@ use crate::display::{
 };
 use anyhow::Result;
 use ast_model::AstTree;
-use ast_run::{AstRequest, to_ast};
+use ast_run::{to_ast, AstRequest};
 use inkwell::context::Context;
 use mir_codegen::to_llvm;
 use mir_model::MirProgram;
-use soul_tokenizer::{TokenStream, to_token_stream};
+use soul_tokenizer::{to_token_stream, TokenStream};
 use soul_utils::{
-    CrateContext,
     char_colors::{DEFAULT, GREEN, RED},
     collections::{
         benchmark::Benchmark,
-        crate_store::{CrateEntry, CrateStore, Manifest, resolve_source_root},
+        crate_store::{resolve_source_root, CrateEntry, CrateStore, Manifest},
         module_store::ModuleStore,
     },
     fault::FaultCollector,
+    CrateContext,
 };
 
 use std::{
@@ -67,7 +67,8 @@ fn frontend(benchmark: &mut Benchmark) -> Result<bool> {
     };
     display_mir(&mir, &ast.crates.store, &ast.declares)?;
 
-    if !ast_failed {
+    let mir_failed = failed(&all_faults);
+    if !mir_failed {
         codegen(&mir, &ast, benchmark, &module_store)?;
     }
 
@@ -148,7 +149,11 @@ fn ast<'a>(tokens: TokenStream<'a>, request: AstRequest<'a>) -> Result<AstTree> 
     Ok(ast)
 }
 
-fn mir(ast: &mut AstTree, benchmark: &mut Benchmark, all_faults: &mut FaultCollector) -> MirProgram {
+fn mir(
+    ast: &mut AstTree,
+    benchmark: &mut Benchmark,
+    all_faults: &mut FaultCollector,
+) -> MirProgram {
     let mut mir_context = CrateContext::default();
     let mir_program = mir_run::to_mir(ast, benchmark, &mut mir_context, &config::COMPILER_OPTIONS);
     all_faults.extend_into(mir_context.faults);
