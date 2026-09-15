@@ -720,6 +720,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                         self.push_char('(')?;
                         let last_index = parameters.len().saturating_sub(1);
                         for (i, ty) in parameters.iter().enumerate() {
+                            let ty = self
+                                .ast
+                                .declares
+                                .get_type(*ty)
+                                .ok_or(anyhow::anyhow!("UnionKind::Tuple's parameters are always interned TypeIds"))?;
+
                             self.write_type(ty)?;
                             if i != last_index {
                                 self.push_str(", ")?;
@@ -733,6 +739,9 @@ impl<'a, W: Writer> Displayer<'a, W> {
                         let last_index = parameters.len().saturating_sub(1);
                         for (i, (ident, ty)) in parameters.iter().enumerate() {
                             push_fmt!(self, "{ident}: ")?;
+                            let ty = self.ast.declares.get_type(*ty).ok_or(anyhow::anyhow!(
+                                "UnionKind::NamedTuple's parameters are always interned TypeIds",
+                            ))?;
                             self.write_type(ty)?;
                             if i != last_index {
                                 self.push_str(", ")?;
@@ -758,6 +767,11 @@ impl<'a, W: Writer> Displayer<'a, W> {
         for ty in &trait_.typedefs {
             self.write_depth()?;
             push_fmt!(self, "{} ", KeyWord::Type.as_str())?;
+            let ty = self
+                .ast
+                .declares
+                .get_type(*ty)
+                .expect("Trait.typedefs entries are always interned TypeIds");
             self.write_type(ty)?;
             self.write_endln()?;
         }

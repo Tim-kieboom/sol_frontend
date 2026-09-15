@@ -175,7 +175,8 @@ fn enum_named_union_variants() {
 
 #[test]
 fn enum_tuple_union_variants() {
-    let (module, store, context) = parse("enum Foo { Bar(int), Baz(int, bool) }");
+    let (module, store, context, declares) =
+        parse_with_declares("enum Foo { Bar(int), Baz(int, bool) }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -193,7 +194,10 @@ fn enum_tuple_union_variants() {
         EnumVariant::Union(UnionKind::Tuple { name, parameters }) => {
             assert_eq!(name.as_str(), "Bar");
             assert_eq!(parameters.len(), 1);
-            assert_eq!(parameters[0], SoulType::Primitive(PrimitiveTypes::Int));
+            assert_eq!(
+                declares.get_type(parameters[0]),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
         }
         _ => panic!("expected Union variant"),
     }
@@ -201,8 +205,14 @@ fn enum_tuple_union_variants() {
         EnumVariant::Union(UnionKind::Tuple { name, parameters }) => {
             assert_eq!(name.as_str(), "Baz");
             assert_eq!(parameters.len(), 2);
-            assert_eq!(parameters[0], SoulType::Primitive(PrimitiveTypes::Int));
-            assert_eq!(parameters[1], SoulType::Primitive(PrimitiveTypes::Boolean));
+            assert_eq!(
+                declares.get_type(parameters[0]),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
+            assert_eq!(
+                declares.get_type(parameters[1]),
+                Some(&SoulType::Primitive(PrimitiveTypes::Boolean))
+            );
         }
         _ => panic!("expected Union variant"),
     }
@@ -312,7 +322,8 @@ fn enum_named_union_unclosed_outer_brace_is_rejected() {
 
 #[test]
 fn enum_named_union_variant_field_types() {
-    let (module, store, context) = parse("enum Foo { Bar{x: int, y: bool} }");
+    let (module, store, context, declares) =
+        parse_with_declares("enum Foo { Bar{x: int, y: bool} }");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -330,9 +341,12 @@ fn enum_named_union_variant_field_types() {
     };
     assert_eq!(name.as_str(), "Bar");
     assert_eq!(parameters.len(), 2);
-    assert_eq!(parameters[0].1, SoulType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
-        parameters[1].1,
-        SoulType::Primitive(PrimitiveTypes::Boolean)
+        declares.get_type(parameters[0].1),
+        Some(&SoulType::Primitive(PrimitiveTypes::Int))
+    );
+    assert_eq!(
+        declares.get_type(parameters[1].1),
+        Some(&SoulType::Primitive(PrimitiveTypes::Boolean))
     );
 }

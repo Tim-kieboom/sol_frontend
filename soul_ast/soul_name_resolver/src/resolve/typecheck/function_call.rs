@@ -134,10 +134,13 @@ impl<'a> NameResolver<'a> {
         }
 
         for (argument, param_ty) in call.arguments.iter().zip(&parameters) {
+            let Some(param_ty) = self.declares.get_type(*param_ty).cloned() else {
+                continue;
+            };
             let Some(arg_ty) = self.expression_type(argument.value) else {
                 continue;
             };
-            if self.combine_operand_types(&arg_ty, param_ty).is_some() {
+            if self.combine_operand_types(&arg_ty, &param_ty).is_some() {
                 continue;
             }
 
@@ -146,7 +149,7 @@ impl<'a> NameResolver<'a> {
                 EnumVariantArgumentTypeMismatch {
                     enum_name: stub.name.as_str().into(),
                     variant_name: variant_name.into(),
-                    expected: param_ty.clone(),
+                    expected: param_ty,
                     got: arg_ty.clone(),
                 }
                 .into(),

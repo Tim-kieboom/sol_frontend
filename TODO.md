@@ -691,10 +691,19 @@ that landing first, in order.
         changes. Proven by the same full `cargo test --workspace` + 30-exe-test bar as the fields
         above (none of the 30 exe tests use an enum backing type — this field genuinely isn't
         exercised by codegen yet, only by the parser test that round-trips it).
+  - [x] `Trait.typedefs` (`Vec<SoulType>` -> `Vec<TypeId>`, `trait Foo { type Bar; .. }`'s associated
+        type declarations) and `UnionKind::{Tuple, NamedTuple}`'s `parameters` (`Vec<SoulType>`/
+        `Vec<(Ident, SoulType)>` -> `Vec<TypeId>`/`Vec<(Ident, TypeId)>`, a union/enum variant's
+        payload types). `Trait.typedefs` has no resolver/mir consumer at all (parsed and displayed
+        only, like `Enum.impl_type`); `UnionKind`'s parameters are read by
+        `check_enum_variant_construction`/`enum_variant_name` in `resolve/typecheck/function_call.rs`
+        (argument-type checking against a tuple-style variant's declared parameter types) and by
+        `soul_tester`'s enum-variant display. `ast_parser`'s 3 interning sites: `parse_trait`'s
+        `type Bar;` loop, `parse_enum_tuple_union`, `parse_enum_named_union`. Proven by the same full
+        `cargo test --workspace` + 30-exe-test bar as the fields above.
   - [ ] Remaining AST-node-attached-type fields to convert the same way (each needs its own
         consumer audit, same as the fields above):
-        `Trait.typedefs`, `UnionKind::{Tuple, NamedTuple}`
-        parameters, `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
+        `StructConstructor.struct_type`, `Ref`/`NewArray`'s `element_type`/
         `collection_type`. `SoulType`'s own internal recursive fields are explicitly excluded (see
         above) — only fields directly on an AST node.
   - [ ] Wire `any`'s runtime representation (`{ptr, TypeId}`) into `mir_parser`/`mir_codegen` (today

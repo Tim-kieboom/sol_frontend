@@ -1,11 +1,11 @@
 use ast_model::{EnumVariant, SoulType, StatementKind, UnionKind};
 use soul_utils::{fault::Severity, soul_names::PrimitiveTypes};
 
-use crate::tests::{get_statement, parse};
+use crate::tests::{get_statement, parse, parse_with_declares};
 
 #[test]
 fn union_mixed_variants() {
-    let (module, store, context) = parse(
+    let (module, store, context, declares) = parse_with_declares(
         r#"
 union Literal {
     None,
@@ -39,7 +39,10 @@ union Literal {
         EnumVariant::Union(UnionKind::Tuple { name, parameters }) => {
             assert_eq!(name.as_str(), "Int");
             assert_eq!(parameters.len(), 1);
-            assert_eq!(parameters[0], SoulType::Primitive(PrimitiveTypes::Int));
+            assert_eq!(
+                declares.get_type(parameters[0]),
+                Some(&SoulType::Primitive(PrimitiveTypes::Int))
+            );
         }
         other => panic!("expected Tuple union variant for Int, got {:?}", other),
     }
@@ -49,9 +52,9 @@ union Literal {
             assert_eq!(name.as_str(), "Str");
             assert_eq!(parameters.len(), 2);
             assert_eq!(parameters[0].0.as_str(), "tag");
-            assert_eq!(parameters[0].1, SoulType::String);
+            assert_eq!(declares.get_type(parameters[0].1), Some(&SoulType::String));
             assert_eq!(parameters[1].0.as_str(), "value");
-            assert_eq!(parameters[1].1, SoulType::String);
+            assert_eq!(declares.get_type(parameters[1].1), Some(&SoulType::String));
         }
         other => panic!("expected NamedTuple union variant for Str, got {:?}", other),
     }

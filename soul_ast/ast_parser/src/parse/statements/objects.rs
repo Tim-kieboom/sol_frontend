@@ -174,7 +174,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             }
 
             let ty = self.try_parse_type().merge_to_result()?;
-            parameters.push(ty);
+            parameters.push(self.intern_type(ty));
 
             self.skip_end_lines();
             if !self.current_is(&COMMA) {
@@ -204,7 +204,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             self.expect(&COLON)?;
             let ty = self.try_parse_type().merge_to_result()?;
-            parameters.push((name, ty));
+            parameters.push((name, self.intern_type(ty)));
 
             self.skip_end_lines();
             if !self.current_is(&COMMA) {

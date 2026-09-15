@@ -168,7 +168,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             if self.current_is(&TokenKind::Keyword(KeyWord::Type)) {
                 self.bump();
                 let ty = self.try_parse_type().merge_to_result()?;
-                typedefs.push(ty);
+                typedefs.push(self.intern_type(ty));
                 continue;
             }
 

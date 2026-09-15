@@ -1,6 +1,6 @@
 use crate::{
     AstStore, Binding, BlockId, Expression, ExpressionId, ExpressionKind, FunctionCall, Generic,
-    NodeId, SoulType, TypeId,
+    NodeId, TypeId,
 };
 use soul_utils::{
     FunctionId, Ident, Mutable, TypeModifier, bitflags,
@@ -72,7 +72,7 @@ pub struct Trait {
     pub name: Ident,
     pub generics: Vec<Generic>,
     pub trait_impls: Vec<Ident>,
-    pub typedefs: Vec<SoulType>,
+    pub typedefs: Vec<TypeId>,
     pub methods: Vec<FunctionId>,
 }
 
@@ -96,11 +96,11 @@ pub enum EnumVariant {
 pub enum UnionKind {
     Tuple {
         name: Ident,
-        parameters: Vec<SoulType>,
+        parameters: Vec<TypeId>,
     },
     NamedTuple {
         name: Ident,
-        parameters: Vec<(Ident, SoulType)>,
+        parameters: Vec<(Ident, TypeId)>,
     },
 }
 
