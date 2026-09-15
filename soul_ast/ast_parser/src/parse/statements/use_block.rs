@@ -16,13 +16,13 @@ impl<'a, 'f> Parser<'a, 'f> {
     pub(super) fn parse_use_block(&mut self) -> AstResult<Statement> {
         let start_span = self.token().span;
         self.expect(&TokenKind::Keyword(KeyWord::Use))?;
-        let use_generics = self.parse_generic_declare()?.unwrap_or(vec![]);
+        let use_generics = self.parse_generic_declare()?.unwrap_or(vec![]).into();
 
         let method_type = self.try_parse_type().merge_to_result()?;
         let prev = self.current.this_type.take();
 
         let mut impls = vec![];
-        let mut methodes = vec![];
+        let mut methods = vec![];
         let mut statements = vec![];
         self.current.this_type = Some(method_type.clone());
         match &self.token().kind {
@@ -33,18 +33,18 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             &PUB | &MUT | &CONST | TokenKind::Ident(_) => {
                 let methode = self.parse_use_method(&method_type, self.token().span)?;
-                methodes.push(methode);
+                methods.push(methode);
             }
             _ => (),
         }
 
-        if !impls.is_empty() || !methodes.is_empty() {
+        if !impls.is_empty() || !methods.is_empty() {
             self.current.this_type = prev;
             let use_block = UseBlock {
                 ty: self.intern_type(method_type),
-                impls,
-                methods: methodes,
-                statements,
+                impls: impls.into(),
+                methods: methods.into(),
+                statements: statements.into(),
                 use_generics,
             };
 
@@ -91,7 +91,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 }
 
                 StatementKind::Function(function) => {
-                    methodes.push(Methode::new(function, is_public));
+                    methods.push(Methode::new(function, is_public));
                 }
 
                 StatementKind::UseBlock(_)
@@ -112,9 +112,9 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.current.this_type = prev;
         let use_block = UseBlock {
             ty: self.intern_type(method_type),
-            impls,
-            methods: methodes,
-            statements,
+            impls: impls.into(),
+            methods: methods.into(),
+            statements: statements.into(),
             use_generics,
         };
 
@@ -152,7 +152,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             );
             return Ok(ImplBlock {
                 impl_trait,
-                methods,
+                methods: methods.into(),
             });
         }
 
@@ -183,20 +183,20 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         Ok(ImplBlock {
             impl_trait,
-            methods,
+            methods: methods.into(),
         })
     }
 
     pub(crate) fn parse_impl_statement(&mut self, start_span: Span) -> AstResult<Statement> {
         let method_type = self.current.this_type.clone().unwrap_or(SoulType::None);
-        let impls = vec![self.parse_impl_block(&method_type, start_span)?];
+        let impls = vec![self.parse_impl_block(&method_type, start_span)?].into();
 
         let use_block = UseBlock {
             ty: self.intern_type(method_type),
             impls,
-            methods: vec![],
-            statements: vec![],
-            use_generics: vec![],
+            methods: vec![].into(),
+            statements: vec![].into(),
+            use_generics: vec![].into(),
         };
 
         Ok(Statement::new(

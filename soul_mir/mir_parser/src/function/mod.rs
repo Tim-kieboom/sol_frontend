@@ -183,7 +183,7 @@ impl<'a> FunctionLowerer<'a> {
         // `return`, same as an `=>` single-expression body (which the parser
         // desugars into a one-statement block with no trailing `;`).
         const IN_TAIL_POSITION: bool = true;
-        self.lower_body(return_local, statement_ids.as_slice(), IN_TAIL_POSITION)?;
+        self.lower_body(return_local, &statement_ids, IN_TAIL_POSITION)?;
 
         if self.current.is_some() {
             if is_none_return {

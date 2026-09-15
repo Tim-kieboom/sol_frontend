@@ -1,5 +1,8 @@
 use core::slice;
-use std::{ops::Index, rc::Rc};
+use std::{
+    ops::{Deref, Index},
+    rc::Rc,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Arr<T>(Rc<[T]>);
@@ -58,6 +61,20 @@ impl<T> Arr<T> {
         self.0.iter()
     }
 }
+impl<T> Deref for Arr<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<T> AsRef<[T]> for Arr<T> {
+    fn as_ref(&self) -> &[T] {
+        self.deref()
+    }
+}
+
 impl<T> Default for Arr<T> {
     fn default() -> Self {
         Self::new()
@@ -68,12 +85,6 @@ impl<T> Index<usize> for Arr<T> {
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.0[index]
-    }
-}
-
-impl<T> AsRef<[T]> for Arr<T> {
-    fn as_ref(&self) -> &[T] {
-        self.as_slice()
     }
 }
 

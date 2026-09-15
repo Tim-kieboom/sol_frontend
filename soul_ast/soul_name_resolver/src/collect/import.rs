@@ -30,7 +30,7 @@ impl<'a> NameResolver<'a> {
 
         let imported_items = match &path.kind {
             ImportKind::Items { items, .. } => items,
-            _ => &vec![],
+            _ => &vec![].into(),
         };
 
         let module_id = if path.module.is_external() {

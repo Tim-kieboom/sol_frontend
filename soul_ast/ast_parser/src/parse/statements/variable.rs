@@ -180,7 +180,10 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&ROUND_CLOSE)?;
-        Ok(VarPattern::Tuple(TuplePattern { elements, rest }))
+        Ok(VarPattern::Tuple(TuplePattern {
+            elements: elements.into(),
+            rest,
+        }))
     }
 
     pub(crate) fn parse_named_tuple_pattern(&mut self) -> AstResult<VarPattern> {
@@ -234,7 +237,10 @@ impl<'a, 'f> Parser<'a, 'f> {
         }
 
         self.expect(&CURLY_CLOSE)?;
-        Ok(VarPattern::NamedTuple(NamedTuplePattern { fields, rest }))
+        Ok(VarPattern::NamedTuple(NamedTuplePattern {
+            fields: fields.into(),
+            rest,
+        }))
     }
 
     pub(crate) fn parse_constructor_pattern(&mut self, type_name: Ident) -> AstResult<VarPattern> {
@@ -290,7 +296,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&CURLY_CLOSE)?;
         Ok(VarPattern::Constructor(VarConstructorPattern {
             type_name,
-            fields,
+            fields: fields.into(),
             rest,
         }))
     }

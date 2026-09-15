@@ -198,10 +198,10 @@ impl<'a, 'f> Parser<'a, 'f> {
             StatementKind::Trait(Trait {
                 id: self.alloc_node(),
                 name,
-                generics,
-                methods,
-                typedefs,
-                trait_impls,
+                generics: generics.into(),
+                methods: methods.into(),
+                typedefs: typedefs.into(),
+                trait_impls: trait_impls.into(),
             }),
             self.span_combine(start_span),
         ))

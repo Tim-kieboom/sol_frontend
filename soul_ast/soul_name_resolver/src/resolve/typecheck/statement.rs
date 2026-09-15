@@ -15,7 +15,7 @@ impl<'a> NameResolver<'a> {
         declared_ty: &SoulType,
         value: ExpressionId,
     ) {
-        let empty = vec![];
+        let empty = vec![].into();
         let generics = match self.current.function {
             Some(id) => self
                 .declares
@@ -57,7 +57,7 @@ impl<'a> NameResolver<'a> {
             self.log_error(AstErrorKind::AssignToImmutableVariable, span);
         }
 
-        let empty = vec![];
+        let empty = vec![].into();
         let generics = match self.current.function {
             Some(id) => self
                 .declares

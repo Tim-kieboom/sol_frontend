@@ -167,7 +167,7 @@ impl<'a> FunctionLowerer<'a> {
         // keeps behaving exactly as before this feature existed.
         let then_statements = self.store.blocks[if_expr.block].statements.clone();
         self.nesting_depth += 1;
-        let then_result = self.lower_body(return_local, then_statements.as_slice(), branch_is_tail);
+        let then_result = self.lower_body(return_local, &then_statements, branch_is_tail);
         self.nesting_depth -= 1;
         then_result?;
         let then_reaches_join = !self.is_terminated();
@@ -183,7 +183,7 @@ impl<'a> FunctionLowerer<'a> {
                 let branch_result = match branch {
                     ast::IfBranch::Else(block_id) => {
                         let else_statements = self.store.blocks[*block_id].statements.clone();
-                        self.lower_body(return_local, else_statements.as_slice(), branch_is_tail)
+                        self.lower_body(return_local, &else_statements, branch_is_tail)
                     }
                     ast::IfBranch::If(nested_if) => {
                         self.lower_if(return_local, nested_if, span, branch_is_tail)
@@ -244,8 +244,7 @@ impl<'a> FunctionLowerer<'a> {
         // has no well-defined "trailing value" (it may run zero times).
         const IN_TAIL_POSITION: bool = false;
         self.nesting_depth += 1;
-        let body_result =
-            self.lower_body(return_local, body_statements.as_slice(), IN_TAIL_POSITION);
+        let body_result = self.lower_body(return_local, &body_statements, IN_TAIL_POSITION);
         self.nesting_depth -= 1;
         self.loops.pop();
         body_result?;

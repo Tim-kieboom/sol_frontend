@@ -32,7 +32,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 targets,
                 otherwise,
             } => {
-                self.codegen_switchint(discriminant, targets.as_slice(), otherwise)?;
+                self.codegen_switchint(discriminant, targets, otherwise)?;
             }
             Terminator::Call {
                 id,
@@ -40,7 +40,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 destination,
                 target,
             } => {
-                self.codegen_call(*id, arguments.as_slice(), destination, target)?;
+                self.codegen_call(*id, arguments, destination, target)?;
             }
             Terminator::Assert {
                 cond,

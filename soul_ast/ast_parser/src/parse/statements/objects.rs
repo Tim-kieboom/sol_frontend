@@ -70,9 +70,9 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let struct_ = Struct {
             id: self.alloc_node(),
-            fields,
-            generics,
-            statements,
+            fields: fields.into(),
+            generics: generics.into(),
+            statements: statements.into(),
             name: struct_name,
         };
 
@@ -95,7 +95,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             None
         };
 
-        let variants = self.parse_union_variants()?;
+        let variants = self.parse_union_variants()?.into();
 
         let enum_ = Enum {
             id: self.alloc_node(),
@@ -114,7 +114,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.expect(&TokenKind::Keyword(KeyWord::Union))?;
         let name = self.try_bump_consume_ident()?;
 
-        let variants = self.parse_union_variants()?;
+        let variants = self.parse_union_variants()?.into();
 
         let union_ = Enum {
             id: self.alloc_node(),
@@ -187,7 +187,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         Ok(EnumVariant::Union(UnionKind::Tuple {
             name: ident,
-            parameters,
+            parameters: parameters.into(),
         }))
     }
 
@@ -217,7 +217,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         Ok(EnumVariant::Union(UnionKind::NamedTuple {
             name: ident,
-            parameters,
+            parameters: parameters.into(),
         }))
     }
 }

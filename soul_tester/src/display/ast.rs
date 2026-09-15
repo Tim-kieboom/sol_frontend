@@ -393,7 +393,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
     fn write_use_block(&mut self, use_block: &UseBlock) -> Result<()> {
         self.push_str(USE_STR)?;
-        self.write_generic_defines(&use_block.use_generics)?;
+        self.write_generic_defines(use_block.use_generics.as_slice())?;
         self.push_char(' ')?;
         let use_block_ty = self
             .ast
@@ -607,7 +607,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
 
     fn write_struct(&mut self, struct_: &Struct) -> Result<()> {
         push_fmt!(self, "{STRUCT_STR} {}", struct_.name)?;
-        self.write_generic_defines(&struct_.generics)?;
+        self.write_generic_defines(struct_.generics.as_slice())?;
         self.push_str("{\n")?;
         self.push_depth();
 
@@ -720,11 +720,9 @@ impl<'a, W: Writer> Displayer<'a, W> {
                         self.push_char('(')?;
                         let last_index = parameters.len().saturating_sub(1);
                         for (i, ty) in parameters.iter().enumerate() {
-                            let ty = self
-                                .ast
-                                .declares
-                                .get_type(*ty)
-                                .ok_or(anyhow::anyhow!("UnionKind::Tuple's parameters are always interned TypeIds"))?;
+                            let ty = self.ast.declares.get_type(*ty).ok_or(anyhow::anyhow!(
+                                "UnionKind::Tuple's parameters are always interned TypeIds"
+                            ))?;
 
                             self.write_type(ty)?;
                             if i != last_index {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use soul_utils::{
     FunctionId, Ident, SharedStr,
-    collections::vec_map::VecMap,
+    collections::{array::Arr, vec_map::VecMap},
     ids::IdGenerator,
     impl_soul_ids,
     span::{ModuleId, Span},
@@ -271,7 +271,7 @@ pub struct ScopeModuleEntry {
     /// For external crate imports
     pub crate_name: Option<String>,
     pub import_kind: ImportKind,
-    pub imported_items: Vec<ImportItem>,
+    pub imported_items: Arr<ImportItem>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Scope {

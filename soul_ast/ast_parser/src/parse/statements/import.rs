@@ -44,7 +44,9 @@ impl<'a, 'f> Parser<'a, 'f> {
             self.parse_child_module(path, spans[i]);
         }
 
-        let import = Import { paths };
+        let import = Import {
+            paths: paths.into(),
+        };
 
         Ok(Statement::new(
             StatementKind::Import(import),
@@ -62,7 +64,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ImportKind::Items {
                     has_this: this,
                     this_alias,
-                    items,
+                    items: items.into(),
                 }
             }
             &STAR => {

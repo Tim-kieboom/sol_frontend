@@ -120,7 +120,7 @@ impl DeclareStore {
             TypeId::NEVER =>                SoulType::Never,
             TypeId::STRING =>               SoulType::String,
             TypeId::FORMAT_STRING =>        SoulType::FormatString,
-            
+
             TypeId::ANY =>                  SoulType::Any,
             TypeId::TYPE =>                 SoulType::Type,
             TypeId::ERROR_TYPE =>           SoulType::Error,
@@ -158,7 +158,6 @@ impl DeclareStore {
             TypeId::PRIM_FLOAT32 =>         SoulType::Primitive(Prim::Float32),
             TypeId::PRIM_FLOAT64 =>         SoulType::Primitive(Prim::Float64),
         );
-
     }
 
     /// Inserts a function into the store.

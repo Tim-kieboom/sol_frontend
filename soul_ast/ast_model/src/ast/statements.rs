@@ -4,7 +4,7 @@ use crate::{
 };
 use soul_utils::{
     FunctionId, Ident, Mutable, TypeModifier, bitflags,
-    collections::soul_import_path::SoulImportPath,
+    collections::{array::Arr, soul_import_path::SoulImportPath},
     define_symbols,
     error::SoulResult,
     fault::Fault,
@@ -70,10 +70,10 @@ pub struct Trait {
     pub id: NodeId,
 
     pub name: Ident,
-    pub generics: Vec<Generic>,
-    pub typedefs: Vec<TypeId>,
-    pub trait_impls: Vec<Ident>,
-    pub methods: Vec<FunctionId>,
+    pub generics: Arr<Generic>,
+    pub typedefs: Arr<TypeId>,
+    pub trait_impls: Arr<Ident>,
+    pub methods: Arr<FunctionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -81,7 +81,7 @@ pub struct Enum {
     pub id: NodeId,
 
     pub name: Ident,
-    pub variants: Vec<EnumVariant>,
+    pub variants: Arr<EnumVariant>,
     pub impl_type: Option<TypeId>,
 }
 
@@ -96,11 +96,11 @@ pub enum EnumVariant {
 pub enum UnionKind {
     Tuple {
         name: Ident,
-        parameters: Vec<TypeId>,
+        parameters: Arr<TypeId>,
     },
     NamedTuple {
         name: Ident,
-        parameters: Vec<(Ident, TypeId)>,
+        parameters: Arr<(Ident, TypeId)>,
     },
 }
 
@@ -109,9 +109,9 @@ pub struct Struct {
     pub id: NodeId,
 
     pub name: Ident,
-    pub fields: Vec<Field>,
-    pub generics: Vec<Generic>,
-    pub statements: Vec<StatementId>,
+    pub fields: Arr<Field>,
+    pub generics: Arr<Generic>,
+    pub statements: Arr<StatementId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -138,23 +138,23 @@ impl Methode {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UseBlock {
-    pub use_generics: Vec<Generic>,
+    pub use_generics: Arr<Generic>,
     pub ty: TypeId,
-    pub impls: Vec<ImplBlock>,
-    pub methods: Vec<Methode>,
-    pub statements: Vec<StatementId>,
+    pub impls: Arr<ImplBlock>,
+    pub methods: Arr<Methode>,
+    pub statements: Arr<StatementId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImplBlock {
     pub impl_trait: TypeId,
-    pub methods: Vec<FunctionId>,
+    pub methods: Arr<FunctionId>,
 }
 
 /// Imported paths
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Import {
-    pub paths: Vec<ImportPath>,
+    pub paths: Arr<ImportPath>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportPath {
@@ -186,7 +186,7 @@ pub enum ImportKind {
     Items {
         has_this: bool,
         this_alias: Option<Ident>,
-        items: Vec<ImportItem>,
+        items: Arr<ImportItem>,
     },
 }
 
@@ -216,14 +216,14 @@ pub enum VarPattern {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TuplePattern {
-    pub elements: Vec<VarPattern>,
+    pub elements: Arr<VarPattern>,
     /// Whether `..` (rest) is present at the end.
     pub rest: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NamedTuplePattern {
-    pub fields: Vec<VarNamedPattern>,
+    pub fields: Arr<VarNamedPattern>,
     pub rest: bool,
 }
 
@@ -241,7 +241,7 @@ pub struct VarNamedPattern {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VarConstructorPattern {
     pub type_name: Ident,
-    pub fields: Vec<VarNamedPattern>,
+    pub fields: Arr<VarNamedPattern>,
     pub rest: bool,
 }
 
@@ -342,8 +342,8 @@ pub struct InnerFunctionSignature {
     /// Return type, if specified.
     pub return_type: TypeId,
     /// Function parameters.
-    pub parameters: Vec<Parameter>,
-    pub generics: Vec<Generic>,
+    pub parameters: Arr<Parameter>,
+    pub generics: Arr<Generic>,
     pub function_kind: FunctionThisKind,
     pub external: Option<ExternLanguage>,
 }

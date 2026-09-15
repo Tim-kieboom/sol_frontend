@@ -15,9 +15,9 @@ impl<'a, 'f> Parser<'a, 'f> {
         if self.current_is(&LAMBDA_ARROW) {
             self.bump();
             let body_expression = self.parse_lambda_body().ok()?;
-            let params = match pattern {
+            let parameters = match pattern {
                 VarPattern::Tuple(tuple) => tuple.elements,
-                other => vec![other],
+                other => vec![other].into(),
             };
 
             let statement = self
@@ -38,7 +38,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             Some(Expression::from_lambda(
                 Lambda {
                     id: self.alloc_node(),
-                    parameters: params.into(),
+                    parameters,
                     body,
                 },
                 self.span_combine(start_span),
