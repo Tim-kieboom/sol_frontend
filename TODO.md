@@ -562,10 +562,29 @@ that landing first, in order.
     runtime effect yet; the full 30-test exe suite re-passing unchanged is what proves this feature
     didn't silently break anything it now runs through on every single function.
 - [ ] `Move`/`MarkMoved` lowering for straight-line code (function-call arguments,
-      struct-constructor fields, array-literal elements, plain reassignment) — needs an
-      `is_auto_copy(SoulType)` classification that doesn't exist anywhere yet: primitives are
-      `AutoCopy`, structs and arrays are move-only, no opt-in mechanism for a struct yet (a
-      non-generic trait can't express a marker bound).
+      struct-constructor fields, array-literal elements, plain reassignment), now that
+      `is_auto_copy` (below) exists — no opt-in mechanism for a struct to become `AutoCopy` yet (a
+      non-generic trait can't express a marker bound), so this is still the concrete (M1) subset
+      only.
+  - [x] `is_auto_copy(SoulType)` classification. `/grill-me`'d once the user's own `SoulType`
+        `TypeId`-flattening refactor landed (nested fields like `ReferenceType.inner`/
+        `ArrayType.of_type` are now interned `TypeId`s, not inline `Box<SoulType>`), to re-derive
+        the classification against the actual current shape instead of a stale assumption.
+    - Corrected the "structs and arrays are move-only" shorthand from the M2-kickoff interview:
+      slices (`MutSlice`/`ConstSlice`) are fat pointers, non-owning, so `AutoCopy` — only
+      `StackArray`/`HeapArray` (owning array storage) are move-only.
+    - `fn is_auto_copy(&self, ty: &SoulType, span: Span) -> MirResult<bool>` (`function/mod.rs`,
+      next to `require_lowerable`) only ever needs an opinion on `require_lowerable`'s own
+      accepted subset — calls it first, so "can this become a local" and "is it `AutoCopy`" are
+      governed by one accept list, not two independent matches that could drift apart as
+      `SoulType` grows new variants. Fallible (returns the same `NonPrimitiveType` error
+      `require_lowerable` would), not a panic.
+    - Scope deliberately stopped at the classification itself, per the interview: no call site
+      yet (marked `#[allow(dead_code)]`, pointing at this bullet) — wiring `Copy`/`Move` selection
+      through it is this same bullet's own remaining (unchecked) work above.
+    - Proven via unit tests driving a `FunctionLowerer` directly (no indirect call path exists
+      yet): primitives/references/pointers/slices → `true`; a `StackArray` and a resolved struct
+      (`Stub`) → `false`; a non-`require_lowerable` type → the same rejection.
 - [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
       "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
       (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested

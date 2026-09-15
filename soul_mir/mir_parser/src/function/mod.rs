@@ -340,6 +340,43 @@ impl<'a> FunctionLowerer<'a> {
         ))
     }
 
+    /// Classifies `ty` as `AutoCopy` (`Operand::Copy` is safe — reading it
+    /// doesn't invalidate the source) or move-only (`Operand::Move` needed —
+    /// see `docs/mir-design.md`'s move/drop section), for the upcoming
+    /// `Move`/`MarkMoved` lowering. Only ever needs an opinion on the subset
+    /// `require_lowerable` already accepts — calls it first, so both
+    /// "can this even become a MIR local" and "is it AutoCopy" are governed
+    /// by the exact same accept list instead of two independent matches that
+    /// could silently drift apart as `SoulType` grows new variants.
+    ///
+    /// Primitives and references/pointers are `AutoCopy` — a reference never
+    /// owns what it points at, so copying the pointer is always sound
+    /// regardless of what's on the other end. A slice (`[&]T`/`[&mut]T`) is
+    /// the same fat-pointer case: non-owning, so `AutoCopy` too, even though
+    /// it's a `SoulType::Array`. A resolved struct (`Stub`) and an *owning*
+    /// array (`StackArray`/`HeapArray`) are move-only — everything else that
+    /// reaches this point (only those two `SoulType::Array` kinds remain
+    /// possible once `require_lowerable` has already accepted `ty`) falls
+    /// through to that move-only default.
+    ///
+    /// No call site yet — wiring `Operand::Copy`/`Move` selection through
+    /// this is the next M2 slice (Move/MarkMoved lowering, see TODO.md);
+    /// for now this is verified directly by its own unit tests only.
+    #[allow(dead_code)]
+    pub(crate) fn is_auto_copy(&self, ty: &SoulType, span: Span) -> MirResult<bool> {
+        self.require_lowerable(ty, span)?;
+        Ok(match ty {
+            SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_) => true,
+            SoulType::Array(array) => {
+                matches!(
+                    array.kind,
+                    ast::ArrayKind::MutSlice | ast::ArrayKind::ConstSlice
+                )
+            }
+            _ => false,
+        })
+    }
+
     fn new_block(&mut self) -> mir::BlockId {
         self.block_alloc.alloc()
     }

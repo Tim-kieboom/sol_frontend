@@ -1,19 +1,24 @@
 use std::path::PathBuf;
 
-use ast_model::{AstStore, AstTree, FunctionKind, declare_store::DeclareStore};
+use ast_model::{
+    ArrayKind, ArrayType, AstStore, AstTree, FunctionKind, ReferenceType, SoulType, TypeId,
+    declare_store::DeclareStore,
+};
 use ast_parser::{ParseInfo, parse_module};
 use mir_model::{ConstValue, Operand, Rvalue};
 use soul_name_resolver::name_resolve;
 use soul_tokenizer::to_token_stream;
 use soul_utils::{
-    FunctionId,
+    FunctionId, Mutable,
     collections::{crate_store::CrateStore, module_store::ModuleStore},
     compiler_options::{CompilerOptions, MirOptions},
+    soul_names::PrimitiveTypes,
 };
 
 use crate::{
     MirLowerer,
     fault::{MirErrorKind, MirResult},
+    function::FunctionLowerer,
 };
 
 // Tests exercise the checked-arithmetic/bounds-check MIR shapes, so run with
@@ -1921,4 +1926,136 @@ fn a_struct_typed_body_local_is_dropped_the_same_as_a_primitive_one() {
         "expected p's declaration to set its drop flag, got {:#?}",
         mir.blocks
     );
+}
+
+/// Builds a `FunctionLowerer` and drives a real `.lower()` over `f` in
+/// `source` (populating `self.module`, needed for the struct/`Stub` case
+/// below), returning the lowerer so its `is_auto_copy` can be probed
+/// directly afterward — there's no call site yet to exercise it through
+/// (see M2's TODO.md entry), so this drives it straight, the same way
+/// `require_lowerable` itself was tested before it had callers.
+fn lowerer_for_is_auto_copy(ast: &mut AstTree) -> FunctionLowerer<'_> {
+    let function_id = find_function(&ast.crates.store, "f");
+    let FunctionKind::Normal(function) = &ast.crates.store.functions[function_id] else {
+        panic!("expected a normal function");
+    };
+    let mut lowerer = FunctionLowerer::new(&ast.crates.store, &mut ast.declares, &OPTIONS);
+    lowerer
+        .lower(function)
+        .expect("expected successful lowering");
+    lowerer
+}
+
+fn function_span(ast: &AstTree, name: &str) -> soul_utils::span::Span {
+    let function_id = find_function(&ast.crates.store, name);
+    let FunctionKind::Normal(function) = &ast.crates.store.functions[function_id] else {
+        panic!("expected a normal function");
+    };
+    function.signature.span
+}
+
+#[test]
+fn is_auto_copy_treats_primitives_references_and_pointers_as_autocopy() {
+    let mut ast = resolve_source("f(): none {}\n");
+    let span = function_span(&ast, "f");
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    let int_ty = SoulType::Primitive(PrimitiveTypes::Int);
+    assert!(lowerer.is_auto_copy(&int_ty, span).expect("lowerable"));
+
+    let ref_ty = SoulType::Reference(ReferenceType {
+        inner: TypeId::NONE,
+        lifetime: None,
+        mutable: Mutable::Immut,
+    });
+    assert!(lowerer.is_auto_copy(&ref_ty, span).expect("lowerable"));
+
+    let ptr_ty = SoulType::Pointer(ReferenceType {
+        inner: TypeId::NONE,
+        lifetime: None,
+        mutable: Mutable::Mut,
+    });
+    assert!(lowerer.is_auto_copy(&ptr_ty, span).expect("lowerable"));
+}
+
+#[test]
+fn is_auto_copy_treats_a_slice_as_autocopy_but_an_owning_array_as_move_only() {
+    let mut ast = resolve_source("f(): none {}\n");
+    let span = function_span(&ast, "f");
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    let mut_slice_ty = SoulType::Array(ArrayType {
+        of_type: TypeId::NONE,
+        kind: ArrayKind::MutSlice,
+    });
+    assert!(
+        lowerer
+            .is_auto_copy(&mut_slice_ty, span)
+            .expect("lowerable"),
+        "a slice is a non-owning fat pointer, so it should be AutoCopy"
+    );
+
+    let const_slice_ty = SoulType::Array(ArrayType {
+        of_type: TypeId::NONE,
+        kind: ArrayKind::ConstSlice,
+    });
+    assert!(
+        lowerer
+            .is_auto_copy(&const_slice_ty, span)
+            .expect("lowerable"),
+        "a slice is a non-owning fat pointer, so it should be AutoCopy"
+    );
+
+    let stack_array_ty = SoulType::Array(ArrayType {
+        of_type: TypeId::NONE,
+        kind: ArrayKind::StackArray(4),
+    });
+    assert!(
+        !lowerer
+            .is_auto_copy(&stack_array_ty, span)
+            .expect("lowerable"),
+        "an owning fixed-size array should be move-only"
+    );
+}
+
+#[test]
+fn is_auto_copy_treats_a_resolved_struct_as_move_only() {
+    let mut ast = resolve_source("struct Point { x: int }\nf(p: Point): none {}\n");
+    // Extracted *before* `lowerer_for_is_auto_copy` takes its `&mut
+    // ast.declares` borrow (held for the lowerer's whole lifetime) — a
+    // second borrow of `ast.declares` afterward wouldn't compile.
+    let (param_ty, span) = {
+        let function_id = find_function(&ast.crates.store, "f");
+        let FunctionKind::Normal(function) = &ast.crates.store.functions[function_id] else {
+            panic!("expected a normal function");
+        };
+        let param_ty = ast
+            .declares
+            .get_type(function.signature.value.parameters[0].ty)
+            .cloned()
+            .expect("parameter type should be interned");
+        (param_ty, function.signature.span)
+    };
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    assert!(
+        !lowerer.is_auto_copy(&param_ty, span).expect("lowerable"),
+        "a resolved struct should be move-only"
+    );
+}
+
+#[test]
+fn is_auto_copy_rejects_a_type_require_lowerable_would_also_reject() {
+    let mut ast = resolve_source("f(): none {}\n");
+    let span = function_span(&ast, "f");
+    let lowerer = lowerer_for_is_auto_copy(&mut ast);
+
+    let result = lowerer.is_auto_copy(&SoulType::Any, span);
+    let Err(fault) = result else {
+        panic!("expected is_auto_copy to reject a non-lowerable type, got {result:#?}");
+    };
+    assert!(matches!(
+        fault.kind(),
+        MirErrorKind::NonPrimitiveType { .. }
+    ));
 }

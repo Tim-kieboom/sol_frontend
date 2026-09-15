@@ -8,7 +8,8 @@ use ast_model::{
 };
 use mir_model as mir;
 use soul_utils::{
-    TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction, soul_error_internal, soul_names::PrimitiveTypes, span::Span,
+    TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction,
+    soul_error_internal, soul_names::PrimitiveTypes, span::Span,
 };
 
 impl<'a> FunctionLowerer<'a> {
@@ -186,10 +187,13 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
 
-        let struct_type = self
-            .declares
-            .get_type(ctor.struct_type)
-            .ok_or(soul_error_internal!("StructConstructor.struct_type is always an interned TypeId", Some(span)).into_kind())?;
+        let struct_type = self.declares.get_type(ctor.struct_type).ok_or(
+            soul_error_internal!(
+                "StructConstructor.struct_type is always an interned TypeId",
+                Some(span)
+            )
+            .into_kind(),
+        )?;
 
         // Cloned so the field list doesn't keep borrowing `self.declares`
         // across the `&mut self` calls to `lower_operand` below.
