@@ -1,7 +1,7 @@
 use ast_model::{
     CustomType, EnumVariant, ExpressionId, ExpressionKind, Function, FunctionKind,
-    FunctionSignature, FunctionThisKind, Literal, SoulType, StatementId, StatementKind, UseBlock,
-    VarPattern, Variable, declare_store::DeclareStore, scope::ScopeValue,
+    FunctionSignature, FunctionThisKind, Literal, SoulType, StatementId, StatementKind, TypeId,
+    UseBlock, VarPattern, Variable, scope::ScopeValue,
 };
 use ast_parser::fault::{AstErrorKind, AstFault};
 use soul_utils::{
@@ -206,7 +206,7 @@ impl<'a> NameResolver<'a> {
         let id = self.declare_function(&function.signature);
         self.current.function = Some(id);
 
-        if is_main(&function.signature, self.declares) {
+        if is_main(&function.signature) {
             self.declares.main_function = Some(id);
         }
 
@@ -371,12 +371,8 @@ impl<'a> NameResolver<'a> {
     }
 }
 
-fn is_main(signature: &FunctionSignature, declares: &DeclareStore) -> bool {
-    signature.value.name.as_str() == "main"
-        && matches!(
-            declares.get_type(signature.value.method_type),
-            Some(SoulType::None)
-        )
+fn is_main(signature: &FunctionSignature) -> bool {
+    signature.value.name.as_str() == "main" && signature.value.method_type == TypeId::NONE
 }
 
 fn check_function_name(name: &Ident) -> Result<(), AstFault> {

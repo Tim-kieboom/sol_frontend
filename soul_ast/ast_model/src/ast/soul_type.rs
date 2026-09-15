@@ -8,6 +8,56 @@ use soul_utils::{
 // DeclareStore::intern_type.
 impl_soul_ids!(TypeId);
 
+impl TypeId {
+    // Comptime `TypeId`s for every context-free (parameterless) `SoulType` —
+    // interned in this exact order by the first thing
+    // `DeclareStore::new`/`DeclareStore::register_well_known_types` does, so
+    // `some_id == TypeId::PRIM_INT` is a plain integer comparison instead of
+    // `declares.get_type(some_id) == Some(&SoulType::Primitive(PrimitiveTypes::Int))`.
+    // The order here must match `register_well_known_types`'s `intern_type`
+    // calls exactly — enforced there by a `debug_assert_eq!` per entry, not by
+    // construction, since these have to be literal constants to be comptime.
+    pub const NONE: TypeId = TypeId(1);
+    pub const NEVER: TypeId = TypeId(2);
+    pub const STRING: TypeId = TypeId(3);
+    pub const FORMAT_STRING: TypeId = TypeId(4);
+    pub const ANY: TypeId = TypeId(5);
+    pub const TYPE: TypeId = TypeId(6);
+    /// `SoulType::Error` — the language's built-in error-wrapper type.
+    /// Distinct from `TypeId::ERROR`, which is the generic "no such id"
+    /// sentinel every `impl_soul_ids!` type gets.
+    pub const ERROR_TYPE: TypeId = TypeId(7);
+
+    pub const PRIM_CHAR: TypeId = TypeId(8);
+    pub const PRIM_CHAR8: TypeId = TypeId(9);
+    pub const PRIM_CHAR16: TypeId = TypeId(10);
+    pub const PRIM_CHAR32: TypeId = TypeId(11);
+    pub const PRIM_CHAR64: TypeId = TypeId(12);
+    pub const PRIM_CSTR: TypeId = TypeId(13);
+    pub const PRIM_NONE: TypeId = TypeId(14);
+    pub const PRIM_BOOLEAN: TypeId = TypeId(15);
+    pub const PRIM_CINT: TypeId = TypeId(16);
+    pub const PRIM_UNTYPED_INT: TypeId = TypeId(17);
+    pub const PRIM_INT: TypeId = TypeId(18);
+    pub const PRIM_INT8: TypeId = TypeId(19);
+    pub const PRIM_INT16: TypeId = TypeId(20);
+    pub const PRIM_INT32: TypeId = TypeId(21);
+    pub const PRIM_INT64: TypeId = TypeId(22);
+    pub const PRIM_INT128: TypeId = TypeId(23);
+    pub const PRIM_CUINT: TypeId = TypeId(24);
+    pub const PRIM_UNTYPED_UINT: TypeId = TypeId(25);
+    pub const PRIM_UINT: TypeId = TypeId(26);
+    pub const PRIM_UINT8: TypeId = TypeId(27);
+    pub const PRIM_UINT16: TypeId = TypeId(28);
+    pub const PRIM_UINT32: TypeId = TypeId(29);
+    pub const PRIM_UINT64: TypeId = TypeId(30);
+    pub const PRIM_UINT128: TypeId = TypeId(31);
+    pub const PRIM_UNTYPED_FLOAT: TypeId = TypeId(32);
+    pub const PRIM_FLOAT16: TypeId = TypeId(33);
+    pub const PRIM_FLOAT32: TypeId = TypeId(34);
+    pub const PRIM_FLOAT64: TypeId = TypeId(35);
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SoulType {
     /// empty type

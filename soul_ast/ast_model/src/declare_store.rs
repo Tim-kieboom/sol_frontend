@@ -12,7 +12,7 @@ use soul_utils::{
 };
 
 /// A store of all declarations in a module.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeclareStore {
     /// The main function (entry point), if defined.
     pub main_function: Option<FunctionId>,
@@ -56,10 +56,18 @@ pub struct DeclareStore {
     type_ids: BiMap<TypeId, SoulType>,
     type_id_alloc: IdGenerator<TypeId>,
 }
+impl Default for DeclareStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl DeclareStore {
-    /// Creates a new empty declaration store.
+    /// Creates a new declaration store, pre-populated with the well-known
+    /// `TypeId`s (see `TypeId::NONE`/`TypeId::PRIM_INT`/etc.) — never construct
+    /// a `DeclareStore` any other way, or those constants stop matching what
+    /// `intern_type` actually returns for those types.
     pub fn new() -> Self {
-        Self {
+        let mut this = Self {
             main_function: None,
             variable_resolves: VecMap::new(),
             functions: VecMap::new(),
@@ -74,7 +82,83 @@ impl DeclareStore {
             receiver_bindings: VecMap::new(),
             type_ids: BiMap::new(),
             type_id_alloc: IdGenerator::new(),
+        };
+        this.register_well_known_types();
+        this
+    }
+
+    /// Interns every context-free `SoulType` in the exact order `TypeId`'s
+    /// well-known constants (`TypeId::NONE`, `TypeId::PRIM_INT`, ...) assume —
+    /// see the comment on that `impl TypeId` block. Each `debug_assert_eq!`
+    /// is the only thing standing between "the constants are right" and "the
+    /// constants silently drifted" — this function's own ordering *is* the
+    /// spec, so treat any failure here as this function being wrong, not the
+    /// constant.
+    fn register_well_known_types(&mut self) {
+        use soul_utils::soul_names::PrimitiveTypes as Prim;
+        macro_rules! register {
+            () => {};
+            ($($name:expr => $ty:expr),* $(,)?) => {
+                $(
+                    {
+                        let id = self.intern_type($ty);
+                        debug_assert_eq!(
+                            id,
+                            $name,
+                            concat!(
+                                "well-known TypeId order drifted: ",
+                                stringify!($name)
+                            )
+                        );
+                    }
+                )*
+            };
         }
+
+        register!(
+            TypeId::NONE =>                 SoulType::None,
+            TypeId::NEVER =>                SoulType::Never,
+            TypeId::STRING =>               SoulType::String,
+            TypeId::FORMAT_STRING =>        SoulType::FormatString,
+            
+            TypeId::ANY =>                  SoulType::Any,
+            TypeId::TYPE =>                 SoulType::Type,
+            TypeId::ERROR_TYPE =>           SoulType::Error,
+
+            TypeId::PRIM_CHAR =>            SoulType::Primitive(Prim::Char),
+            TypeId::PRIM_CHAR8 =>           SoulType::Primitive(Prim::Char8),
+            TypeId::PRIM_CHAR16 =>          SoulType::Primitive(Prim::Char16),
+            TypeId::PRIM_CHAR32 =>          SoulType::Primitive(Prim::Char32),
+            TypeId::PRIM_CHAR64 =>          SoulType::Primitive(Prim::Char64),
+
+            TypeId::PRIM_CSTR =>            SoulType::Primitive(Prim::CStr),
+            TypeId::PRIM_NONE =>            SoulType::Primitive(Prim::None),
+            TypeId::PRIM_BOOLEAN =>         SoulType::Primitive(Prim::Boolean),
+            TypeId::PRIM_CINT =>            SoulType::Primitive(Prim::CInt),
+
+            TypeId::PRIM_UNTYPED_INT =>     SoulType::Primitive(Prim::UntypedInt),
+            TypeId::PRIM_INT =>             SoulType::Primitive(Prim::Int),
+            TypeId::PRIM_INT8 =>            SoulType::Primitive(Prim::Int8),
+            TypeId::PRIM_INT16 =>           SoulType::Primitive(Prim::Int16),
+            TypeId::PRIM_INT32 =>           SoulType::Primitive(Prim::Int32),
+            TypeId::PRIM_INT64 =>           SoulType::Primitive(Prim::Int64),
+            TypeId::PRIM_INT128 =>          SoulType::Primitive(Prim::Int128),
+            TypeId::PRIM_CUINT =>           SoulType::Primitive(Prim::CUint),
+
+            TypeId::PRIM_UNTYPED_UINT =>    SoulType::Primitive(Prim::UntypedUint),
+            TypeId::PRIM_UINT =>            SoulType::Primitive(Prim::Uint),
+            TypeId::PRIM_UINT8 =>           SoulType::Primitive(Prim::Uint8),
+            TypeId::PRIM_UINT16 =>          SoulType::Primitive(Prim::Uint16),
+            TypeId::PRIM_UINT32 =>          SoulType::Primitive(Prim::Uint32),
+            TypeId::PRIM_UINT64 =>          SoulType::Primitive(Prim::Uint64),
+            TypeId::PRIM_UINT128 =>         SoulType::Primitive(Prim::Uint128),
+
+            TypeId::PRIM_UNTYPED_FLOAT =>   SoulType::Primitive(Prim::UntypedFloat),
+            TypeId::PRIM_FLOAT16 =>         SoulType::Primitive(Prim::Float16),
+            TypeId::PRIM_FLOAT32 =>         SoulType::Primitive(Prim::Float32),
+            TypeId::PRIM_FLOAT64 =>         SoulType::Primitive(Prim::Float64),
+        );
+
     }
 
     /// Inserts a function into the store.
@@ -138,7 +222,7 @@ impl DeclareStore {
             let (signature, _) = &self.functions[*id];
             let is_match = match owner_type {
                 Some(owner) => self.get_type(signature.method_type) == Some(owner),
-                None => matches!(self.get_type(signature.method_type), Some(SoulType::None)),
+                None => signature.method_type == TypeId::NONE,
             };
             if !is_match {
                 continue;

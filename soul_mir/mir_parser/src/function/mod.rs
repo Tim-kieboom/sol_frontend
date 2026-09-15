@@ -1,4 +1,4 @@
-use ast_model::{self as ast, SoulType, declare_store::DeclareStore};
+use ast_model::{self as ast, SoulType, TypeId, declare_store::DeclareStore};
 use mir_model as mir;
 use soul_utils::{
     TypeModifier,
@@ -156,17 +156,20 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let arg_count = signature.parameters.len() + has_receiver_local as usize;
-        let return_type = self
-            .declares
-            .get_type(signature.return_type)
-            .cloned()
-            .expect("InnerFunctionSignature.return_type is always an interned TypeId");
         // A `none`(void)-returning function has nothing to hold a return value
         // in, so it gets no `return_local` at all — see `Function::return_local`.
-        let is_none_return = matches!(return_type, SoulType::None);
+        // Checked via the comptime `TypeId::NONE` first, so the common non-none
+        // case still resolves the actual `SoulType` exactly once, and the
+        // none case skips that lookup entirely.
+        let is_none_return = signature.return_type == TypeId::NONE;
         let return_local = if is_none_return {
             None
         } else {
+            let return_type = self
+                .declares
+                .get_type(signature.return_type)
+                .cloned()
+                .expect("InnerFunctionSignature.return_type is always an interned TypeId");
             self.require_lowerable(&return_type, signature.name.span())?;
             Some(self.alloc_local(return_type, TypeModifier::Mut, signature.name.span()))
         };

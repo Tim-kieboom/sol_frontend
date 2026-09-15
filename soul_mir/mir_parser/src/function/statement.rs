@@ -2,7 +2,7 @@ use crate::{
     fault::{MirErrorKind, MirResult},
     function::FunctionLowerer,
 };
-use ast_model::{self as ast, SoulType};
+use ast_model::{self as ast, TypeId};
 use mir_model as mir;
 use soul_utils::{TypeModifier, fault::Fault, intrinsics::IntrinsicFunction, span::Span};
 
@@ -204,11 +204,7 @@ impl<'a> FunctionLowerer<'a> {
                 Some(span),
             ));
         };
-        let return_type = self
-            .declares
-            .get_type(signature.return_type)
-            .cloned()
-            .expect("InnerFunctionSignature.return_type is always an interned TypeId");
+        let return_type_id = signature.return_type;
         // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
         // declares its receiver as: `&this`/`&mut this` borrow the receiver
         // (matching the callee's own `Reference`-typed local set up in
@@ -256,8 +252,13 @@ impl<'a> FunctionLowerer<'a> {
             args.push(self.lower_operand(argument.value)?);
         }
 
-        let is_none_return = matches!(return_type, SoulType::None);
+        let is_none_return = return_type_id == TypeId::NONE;
         let destination_local = if want_result && !is_none_return {
+            let return_type = self
+                .declares
+                .get_type(return_type_id)
+                .cloned()
+                .expect("InnerFunctionSignature.return_type is always an interned TypeId");
             self.require_lowerable(&return_type, span)?;
             Some(self.alloc_local(return_type, TypeModifier::Immut, span))
         } else {

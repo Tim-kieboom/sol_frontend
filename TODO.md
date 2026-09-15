@@ -620,6 +620,26 @@ that landing first, in order.
         changed. Proven via 5 `ast_model::declare_store_tests` cases (same-value interning dedupes,
         structurally-equal nested types built separately canonicalize to the same id, different
         types get different ids, `get_type`/`get_type_id` round-trip).
+  - [x] Comptime `TypeId` constants for every context-free (parameterless) `SoulType` —
+        `TypeId::{NONE, NEVER, STRING, FORMAT_STRING, ANY, TYPE, ERROR_TYPE}` plus one
+        `TypeId::PRIM_*` per `PrimitiveTypes` variant (28 of them) — as literal `TypeId(N)` consts on
+        `impl TypeId` in `soul_type.rs`. `DeclareStore::new` interns all 35 in that exact order via
+        `register_well_known_types` (the *only* place the raw ordering is spelled out — a
+        `debug_assert_eq!` per entry catches any drift between the hand-written constant and what
+        `intern_type` actually returns immediately in any debug build/test run, since there's no way
+        to derive matching literal `usize`s from a macro-repetition list without much more machinery
+        than 35 straight-line entries warrant). Lets a hot comparison like "is this a `none`-returning
+        function" become a plain `TypeId` equality (`signature.return_type == TypeId::NONE`) instead
+        of `declares.get_type(signature.return_type) == Some(&SoulType::None)` — applied at the 3
+        `mir_parser`/`DeclareStore`/`soul_name_resolver` call sites that were doing exactly that
+        (`FunctionLowerer::lower`'s/`lower_extern_signature`'s/the call-lowering in
+        `function/statement.rs`'s none-return checks skip resolving the `SoulType` entirely now
+        unless it's actually needed; `DeclareStore::find_function`'s static-method-owner check;
+        `is_main`). `DeclareStore` lost its `#[derive(Default)]` in favor of a manual
+        `impl Default { fn default() { Self::new() } }`, so there's no construction path that skips
+        registration. Proven by 2 new `declare_store_tests` cases (the well-known ids resolve back to
+        their `SoulType`; interning a fresh equivalent `SoulType` returns the same constant) plus the
+        same full `cargo test --workspace` + 30-exe-test bar as every field conversion above.
   - [x] `ast_parser::Parser` threaded a `&mut DeclareStore` (new `ParseInfo.declares` field, plumbed
         through both module-parsing entry points) so it can call `intern_type` at the exact point an
         AST node's type gets built — not a later pass, so the AST node's own field is genuinely

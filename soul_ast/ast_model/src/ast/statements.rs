@@ -71,8 +71,8 @@ pub struct Trait {
 
     pub name: Ident,
     pub generics: Vec<Generic>,
-    pub trait_impls: Vec<Ident>,
     pub typedefs: Vec<TypeId>,
+    pub trait_impls: Vec<Ident>,
     pub methods: Vec<FunctionId>,
 }
 
