@@ -38,7 +38,7 @@ impl<'a> FunctionLowerer<'a> {
                         Some(expr.span),
                     ));
                 };
-                let rvalue = self.lower_rvalue(*value_id)?;
+                let rvalue = self.lower_movable_rvalue(*value_id)?;
                 self.push_assign(mir::Place::local(return_local), rvalue);
                 self.seal_return();
                 Ok(())
@@ -82,7 +82,7 @@ impl<'a> FunctionLowerer<'a> {
             }
             _ if is_tail && return_local.is_some() => {
                 let return_local = return_local.expect("checked by this arm's own guard");
-                let rvalue = self.lower_rvalue(expression)?;
+                let rvalue = self.lower_movable_rvalue(expression)?;
                 self.push_assign(mir::Place::local(return_local), rvalue);
                 self.seal_return();
                 Ok(())

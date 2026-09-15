@@ -320,8 +320,18 @@ impl<'a> FunctionLowerer<'a> {
     /// Used by `lower_variable`'s initializer and `lower_assignment`'s
     /// right-hand side: `x := y` and `x = y` are both, structurally, "read
     /// `y`, write into `x`," so both get the same Move-eligibility
-    /// treatment.
-    fn lower_movable_rvalue(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Rvalue> {
+    /// treatment. Also used by `control_flow.rs`'s `Return` lowering (both
+    /// the explicit `return <expr>` arm and the implicit-tail-return
+    /// fallback): `return p` is, structurally, the exact same "read an
+    /// existing place, write it into a fresh one" as `x := p` — the return
+    /// local is just the destination — so it needs the same move-vs-copy
+    /// treatment, or an owning `*T` returned by value would never be marked
+    /// moved and would wrongly get dropped (then double-freed) in the
+    /// returning scope.
+    pub(super) fn lower_movable_rvalue(
+        &mut self,
+        expr_id: ast::ExpressionId,
+    ) -> MirResult<mir::Rvalue> {
         match self.move_eligible_operand(expr_id) {
             Some(result) => Ok(mir::Rvalue::Use(result?)),
             None => self.lower_rvalue(expr_id),

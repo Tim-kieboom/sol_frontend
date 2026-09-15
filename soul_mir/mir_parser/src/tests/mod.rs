@@ -2380,6 +2380,77 @@ fn a_move_only_reassignment_moves_the_source() {
 }
 
 #[test]
+fn returning_a_move_only_variable_moves_it_into_the_return_local() {
+    // `return p` is, structurally, the same "read p, write into a fresh
+    // place" (the return local) as `t := p` — same Move-eligibility
+    // treatment (via `lower_movable_rvalue`, now shared by control_flow.rs).
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nf(): Session {\n    p := Session{n: 1}\n    return p\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    let return_local = mir.return_local.expect("f returns Session, not none");
+    let moved_into_return = all_statements.iter().any(|statement| {
+        matches!(
+            statement,
+            mir_model::Statement::Assign(place, Rvalue::Use(Operand::Move(_)))
+                if place.local == return_local
+        )
+    });
+    assert!(
+        moved_into_return,
+        "expected `return p` to Move p into the return local, got {:#?}",
+        all_statements
+    );
+
+    assert!(
+        all_statements
+            .iter()
+            .any(|s| matches!(s, mir_model::Statement::MarkMoved(local) if *local != return_local)),
+        "expected a MarkMoved(p), got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
+fn an_implicit_tail_return_of_a_move_only_variable_moves_it() {
+    // Same as above, but via the implicit-tail-return fallback (no explicit
+    // `return`), which goes through the same `lower_movable_rvalue` call.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nf(): Session {\n    p := Session{n: 1}\n    p\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    let return_local = mir.return_local.expect("f returns Session, not none");
+    let moved_into_return = all_statements.iter().any(|statement| {
+        matches!(
+            statement,
+            mir_model::Statement::Assign(place, Rvalue::Use(Operand::Move(_)))
+                if place.local == return_local
+        )
+    });
+    assert!(
+        moved_into_return,
+        "expected the implicit tail return of p to Move p into the return local, got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
 fn an_autocopy_declaration_initializer_is_still_copied() {
     let mir = lower_source("f(): int {\n    x := 1\n    y := x\n    return y\n}\n", "f")
         .expect("expected successful lowering");

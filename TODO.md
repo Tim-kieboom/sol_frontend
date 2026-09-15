@@ -801,17 +801,24 @@ that landing first, in order.
       in_a_binary_expression`), and a new exe test (`31_new_expression.soul`: `new(9)` then `*p`
       returns `9`) — the first real proof this allocates and round-trips correctly, not just that
       it constructs a plausible-looking shape.
-  - [ ] **Slice 3** — `Drop` actually calls `free()` for a `*T`, gated entirely at *compile time*
+  - [x] **Slice 3a** — fixed `return`'s own Move-awareness: `return p` (and the implicit-tail-return
+        fallback, `p` as a block's last bare expression) now goes through `lower_movable_rvalue`
+        (same as `x := p`/`x = p`), not raw `lower_rvalue` — previously scoped out of every earlier
+        Move/MarkMoved slice, so `f(): *int { p := new(1); return p }` would MarkMoved never fire for
+        `p`, and (once Slice 3b's free-at-Drop lands) `p` would get freed at the function's own end
+        right after handing that same pointer back to the caller. `lower_movable_rvalue` bumped from
+        private to `pub(super)` so `control_flow.rs` (a sibling module of the file it lives in,
+        `statement.rs`) can call it. Proven via two new `mir_parser` unit tests (`returning_a_move_
+        only_variable_moves_it_into_the_return_local`, `an_implicit_tail_return_of_a_move_only_
+        variable_moves_it`); full workspace test suite and all 31 exe tests still pass unchanged,
+        confirming this doesn't alter any existing AutoCopy-return behavior.
+  - [ ] **Slice 3b** — `Drop` actually calls `free()` for a `*T`, gated entirely at *compile time*
         (no runtime drop-flag storage needed, since move-checking is already static): teach
         `FunctionLowerer` itself to track live moved-state *during* lowering (mirroring
         `move_check`'s own logic) and exclude an already-moved local from its own scope's drop
         chain — otherwise a moved-then-dropped `*T` double-frees, since nothing at the LLVM level
         currently reflects "this was moved" (the local's stack slot still holds the same pointer
-        value after a move). This also requires fixing `return`'s own Move-awareness first:
-        `return p` doesn't go through the Move-lowering path at all today (`lower_rvalue` directly,
-        not `lower_movable_rvalue`) — scoped out of every earlier Move/MarkMoved slice — so
-        `f(): *int { p := new(1); return p }` would otherwise free `p` at the function's own end
-        right after handing that same pointer back to the caller.
+        value after a move).
 
 ### M3 — unions, generics, full traits (not started)
 
