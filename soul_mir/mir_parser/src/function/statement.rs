@@ -69,7 +69,7 @@ impl<'a> FunctionLowerer<'a> {
             })?;
 
         self.require_lowerable(&ty, binding.ident.span())?;
-        let rvalue = self.lower_rvalue(init)?;
+        let rvalue = self.lower_movable_rvalue(init)?;
         let local = self.alloc_local(ty, *modifier, binding.ident.span());
         self.node_to_local.insert(binding.id, local);
         // Tracked as a `body_locals` entry *before* `push_assign` so this
@@ -137,7 +137,7 @@ impl<'a> FunctionLowerer<'a> {
             }
         };
 
-        let rvalue = self.lower_rvalue(assignment.right)?;
+        let rvalue = self.lower_movable_rvalue(assignment.right)?;
         self.push_assign(place, rvalue);
         Ok(())
     }
@@ -298,11 +298,59 @@ impl<'a> FunctionLowerer<'a> {
     /// struct-constructor literal passed inline, ...) has no existing place
     /// to move from in the first place, so it falls through the same way.
     fn lower_call_operand(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Operand> {
+        match self.move_eligible_operand(expr_id) {
+            Some(result) => result,
+            None => self.lower_operand(expr_id),
+        }
+    }
+
+    /// Lowers `expr_id` the same way `lower_rvalue` would, except a bare
+    /// `Variable` right-hand side goes through `move_eligible_operand`
+    /// first — the exact same decision `lower_call_operand` makes for a
+    /// call argument, shared via that one helper. Used by `lower_variable`'s
+    /// initializer and `lower_assignment`'s right-hand side: `x := y` and
+    /// `x = y` are both, structurally, "read `y`, write into `x`," so both
+    /// get the same Move-eligibility treatment.
+    fn lower_movable_rvalue(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Rvalue> {
+        match self.move_eligible_operand(expr_id) {
+            Some(result) => Ok(mir::Rvalue::Use(result?)),
+            None => self.lower_rvalue(expr_id),
+        }
+    }
+
+    /// Shared move-vs-copy decision for a bare `Variable` operand —
+    /// `lower_call_operand` (call arguments, the consuming-`this` receiver)
+    /// and `lower_movable_rvalue` (declaration initializers, plain
+    /// reassignment) both need the exact same check. Returns `None` when
+    /// `expr_id` isn't a bare `Variable` at all (a literal, a nested
+    /// computation, a struct-constructor literal, a field/index/deref
+    /// projection, ...) — none of those have an existing place a caller
+    /// could move out of in the first place, so it's on the caller's own
+    /// fallback (`lower_operand`/`lower_rvalue`) to lower them. `Some(_)`
+    /// means it is a bare variable: `Operand::Copy` when `is_auto_copy` says
+    /// so, otherwise `Operand::Move` plus the `MarkMoved`/
+    /// `SetDropFlag(local, false)` bookkeeping `docs/mir-design.md`'s
+    /// move/drop rules call for. Deliberately scoped to exactly this
+    /// bare-variable case: `SetDropFlag` is per-`LocalId`, not per-place, so
+    /// a field/index/deref projection (`consume(container.item)`) has no
+    /// sound way to express "only this one field moved" yet — that needs
+    /// partial-move tracking, which doesn't exist (see M2's TODO.md entry).
+    fn move_eligible_operand(
+        &mut self,
+        expr_id: ast::ExpressionId,
+    ) -> Option<MirResult<mir::Operand>> {
         let expr = &self.store.expressions[expr_id];
         let ast::ExpressionKind::Variable(var) = &expr.node else {
-            return self.lower_operand(expr_id);
+            return None;
         };
-        let span = expr.span;
+        Some(self.move_variable_operand(var, expr.span))
+    }
+
+    fn move_variable_operand(
+        &mut self,
+        var: &ast::VariableExpression,
+        span: Span,
+    ) -> MirResult<mir::Operand> {
         let local = self.resolve_local(var, span)?;
         let ty = self.locals[local].ty.clone();
         let place = mir::Place::local(local);

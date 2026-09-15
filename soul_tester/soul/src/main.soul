@@ -1,8 +1,10 @@
 
-int.add(this, a: int): int => this + a
+drop(number: Number) {}
 
+struct Number {inner: i32}
 main(): i32 {
-    mut value := 1
-    value = value.add(1)
+    value := Number{inner: 1}
+    drop(value)
+    num := value.inner
     return 0
 }

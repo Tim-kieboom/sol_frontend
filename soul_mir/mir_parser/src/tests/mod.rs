@@ -2188,3 +2188,125 @@ fn a_move_only_parameter_argument_is_moved_the_same_as_a_body_local() {
         .expect("expected a Call terminator");
     assert!(matches!(&arguments[0], Operand::Move(place) if place.projection.is_empty()));
 }
+
+#[test]
+fn a_move_only_declaration_initializer_moves_the_source() {
+    // `t := s` is, structurally, the same "read s, write into a fresh
+    // place" as a call argument — same Move-eligibility treatment (via the
+    // shared `move_eligible_operand`, see `lower_movable_rvalue`'s docs).
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nf() {\n    s := Session{n: 1}\n    t := s\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    let t_decl = all_statements.iter().find_map(|statement| {
+        let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Move(source))) = statement
+        else {
+            return None;
+        };
+        Some((place.local, source.local))
+    });
+    let Some((t_local, s_local)) = t_decl else {
+        panic!(
+            "expected t's declaration to Move s, got {:#?}",
+            all_statements
+        );
+    };
+    assert_ne!(t_local, s_local);
+
+    assert!(
+        all_statements
+            .iter()
+            .any(|s| matches!(s, mir_model::Statement::MarkMoved(local) if *local == s_local)),
+        "expected a MarkMoved(s), got {:#?}",
+        all_statements
+    );
+    assert!(
+        all_statements.iter().any(|s| matches!(
+            s,
+            mir_model::Statement::SetDropFlag(local, false) if *local == s_local
+        )),
+        "expected a SetDropFlag(s, false), got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
+fn a_move_only_reassignment_moves_the_source() {
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nf() {\n    mut t := Session{n: 1}\n    s := Session{n: 2}\n    t = s\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let all_statements: Vec<&mir_model::Statement> = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .collect();
+
+    // `t = s`'s own Assign — a Move of a place distinct from `t`'s own local
+    // and whose write side re-sets `t`'s own drop flag true right after
+    // (`push_assign`, unaffected by this feature).
+    let reassignment = all_statements.iter().find_map(|statement| {
+        let mir_model::Statement::Assign(place, Rvalue::Use(Operand::Move(source))) = statement
+        else {
+            return None;
+        };
+        (source.local != place.local).then_some((place.local, source.local))
+    });
+    let Some((_, s_local)) = reassignment else {
+        panic!("expected t = s to Move s, got {:#?}", all_statements);
+    };
+    assert!(
+        all_statements
+            .iter()
+            .any(|s| matches!(s, mir_model::Statement::MarkMoved(local) if *local == s_local)),
+        "expected a MarkMoved(s), got {:#?}",
+        all_statements
+    );
+}
+
+#[test]
+fn an_autocopy_declaration_initializer_is_still_copied() {
+    let mir = lower_source("f(): int {\n    x := 1\n    y := x\n    return y\n}\n", "f")
+        .expect("expected successful lowering");
+
+    let has_move = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|s| matches!(s, mir_model::Statement::MarkMoved(_)));
+    assert!(
+        !has_move,
+        "an AutoCopy primitive declaration initializer should never be MarkMoved"
+    );
+}
+
+#[test]
+fn a_move_only_declaration_initializer_reached_through_a_field_projection_is_still_copied() {
+    // Same scoping as the call-argument case: `SetDropFlag` is per-`LocalId`,
+    // not per-place, so `t := c.item` still falls through to a plain Copy.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nstruct Container {\n    item: Session\n}\nf(c: Container) {\n    t := c.item\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_move = mir
+        .blocks
+        .entries()
+        .flat_map(|(_, block)| &block.statements)
+        .any(|s| matches!(s, mir_model::Statement::MarkMoved(_)));
+    assert!(
+        !has_move,
+        "a field-projection source should still be Copy, not MarkMoved"
+    );
+}

@@ -613,7 +613,28 @@ that landing first, in order.
       `consuming_this_receiver_is_still_passed_by_value` (renamed
       `..._is_still_passed_directly_with_no_ref_rvalue`), whose premise — a consuming receiver is
       always `Copy` — stopped holding the moment its `Number` struct became correctly move-only.
-  - [ ] Struct-constructor fields, array-literal elements, plain reassignment — not started.
+  - [x] Plain reassignment (`x = y`), extended in the same pass to declaration initializers
+        (`x := y`) too — `/grill-me`'d: the TODO wording only said "plain reassignment," but
+        `lower_variable`'s initializer and `lower_assignment`'s right-hand side both bottom out in
+        the exact same `lower_rvalue` call for a bare-variable source, so scoping Move to only one
+        of the two would have made `x = y` move `y` while `x := y` silently didn't, even though
+        `mir-design.md`'s own worked example (`s := Session.new()`, later moved into `consume`) is
+        precisely the declaration case.
+    - New `move_eligible_operand` (`statement.rs`) factors out the shared "is `expr_id` a bare
+      `Variable`, and is its local move-only" decision — `None` for anything else (a literal, a
+      nested computation, a struct-constructor literal, a field/index/deref projection), `Some(_)`
+      otherwise. `lower_call_operand` (the function-call-arguments slice above) now delegates to
+      it instead of duplicating the logic; new `lower_movable_rvalue` wraps it as `Rvalue::Use(_)`
+      for `lower_variable`/`lower_assignment` to call instead of `lower_rvalue` directly —
+      `lower_rvalue` itself stays untouched, same discipline as `lower_operand` before it.
+    - Same field-projection scoping as the call-argument case, for the same reason (`SetDropFlag`
+      is per-`LocalId`, not per-place): `t := c.item` still falls through to a plain `Copy`.
+    - Proven via 4 new `mir_parser` unit tests: `a_move_only_declaration_initializer_moves_the_
+      source`, `a_move_only_reassignment_moves_the_source`, `an_autocopy_declaration_initializer_
+      is_still_copied`, `a_move_only_declaration_initializer_reached_through_a_field_projection_
+      is_still_copied`. No exe-test regressions (still all 30 passing) — same zero-codegen-risk
+      reasoning as the call-argument slice: `Operand::Move` already codegens identically to `Copy`.
+  - [ ] Struct-constructor fields, array-literal elements — not started.
 - [ ] Scope-stack tracking in `FunctionLowerer` (currently one flat locals map, no concept of
       "which lexical block a local belongs to") plus `Drop` emission for every early-exit path
       (`break`/`continue`/`return`, in addition to normal fallthrough) through however many nested
