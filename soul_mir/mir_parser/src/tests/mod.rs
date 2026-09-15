@@ -2217,6 +2217,30 @@ fn a_move_only_struct_argument_is_moved_not_copied() {
 }
 
 #[test]
+fn a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain() {
+    // `s` is moved into `consume(s)` — its own scope's `Drop` chain (the
+    // function's own top-level frame, unwound at the implicit end-of-body
+    // `return`) must skip it: once `Terminator::Drop` actually frees an
+    // owning `*T` (see M2's TODO.md entry), dropping an already-moved local
+    // would double-free it.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(
+        !has_drop,
+        "expected the moved-out s to have no Drop terminator at all, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
 fn an_autocopy_primitive_argument_is_still_copied() {
     let mir = lower_source(
         "consume(n: int) {}\nf() {\n    n := 1\n    consume(n)\n}\n",

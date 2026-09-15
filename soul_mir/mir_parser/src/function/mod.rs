@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ast_model::{self as ast, SoulType, TypeId, declare_store::DeclareStore};
 use mir_model as mir;
 use soul_utils::{
@@ -68,6 +70,28 @@ pub struct FunctionLowerer<'a> {
     /// exactly like an `if`-branch falling through to its join).
     scopes: Vec<Vec<mir::LocalId>>,
 
+    /// Which locals are currently moved-out-of, tracked live *during*
+    /// lowering (not a separate post-pass, unlike `move_check`'s own
+    /// straight-line-only analysis) so `drop_chain` can exclude an
+    /// already-moved local from its own scope's `Drop` — otherwise a moved
+    /// `*T` would get `free()`'d a second time once `Terminator::Drop`
+    /// actually calls it (see M2's TODO.md entry). Updated at exactly the
+    /// two places that already emit `MarkMoved`/`SetDropFlag`:
+    /// `move_variable_operand` inserts (a move just happened),
+    /// `push_assign` removes on a whole-place write (a reinit — mirrors
+    /// `move_check`'s own "reassign clears moved" rule).
+    ///
+    /// Deliberately *not* saved/restored per `if`/`else` branch or reset
+    /// between loop iterations: an outer-scope local moved in only one
+    /// branch (or only some loop iterations) stays flagged moved for
+    /// whatever lowers next, including the sibling branch and any code
+    /// after the join. This can only ever cause a still-live value on some
+    /// untaken/not-yet-moved runtime path to be silently skipped by its own
+    /// later `Drop` (a leak), never the reverse (a double free) — full
+    /// per-path precision needs real dataflow, out of scope here (see M3's
+    /// TODO.md entry on extending the borrow checker to generic MIR).
+    moved: HashSet<mir::LocalId>,
+
     options: &'a CompilerOptions,
 }
 impl<'a> FunctionLowerer<'a> {
@@ -85,6 +109,7 @@ impl<'a> FunctionLowerer<'a> {
             loops: vec![],
             statements: vec![],
             scopes: vec![Vec::new()],
+            moved: HashSet::new(),
             locals: VecMap::new(),
             blocks: VecMap::new(),
             node_to_local: VecMap::new(),
@@ -223,6 +248,7 @@ impl<'a> FunctionLowerer<'a> {
         self.block_alloc = IdGenerator::new();
         self.scopes.clear();
         self.scopes.push(Vec::new());
+        self.moved.clear();
     }
 
     /// Pushes an `Assign`, followed by `SetDropFlag(place.local, true)` when
@@ -237,10 +263,18 @@ impl<'a> FunctionLowerer<'a> {
     /// write into the *return* local gets no `SetDropFlag` either).
     pub(super) fn push_assign(&mut self, place: mir::Place, rvalue: mir::Rvalue) {
         let local = place.local;
+        // A whole-place write reinitializes `local` — same "reassign clears
+        // moved" rule `move_check` applies, and the same reason `moved` is
+        // only ever cleared here, not on a projected write (`x.field = ..`
+        // doesn't make the rest of `x` any less moved than it already was).
+        let is_whole_place = place.projection.is_empty();
         self.statements.push(mir::Statement::Assign(place, rvalue));
         if self.scopes.iter().any(|frame| frame.contains(&local)) {
             self.statements
                 .push(mir::Statement::SetDropFlag(local, true));
+        }
+        if is_whole_place {
+            self.moved.remove(&local);
         }
     }
 
@@ -333,6 +367,12 @@ impl<'a> FunctionLowerer<'a> {
     /// ends the scope exit.
     fn drop_chain(&mut self, locals: Vec<mir::LocalId>) {
         for local in locals.into_iter().rev() {
+            // Already moved out of — nothing left here to free; emitting a
+            // `Drop` anyway would double-free an owning `*T` once codegen
+            // actually calls `free()` for one (see `moved`'s own docs).
+            if self.moved.contains(&local) {
+                continue;
+            }
             let next = self.new_block();
             self.seal(
                 mir::Terminator::Drop {

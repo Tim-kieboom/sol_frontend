@@ -379,6 +379,7 @@ impl<'a> FunctionLowerer<'a> {
         self.statements.push(mir::Statement::MarkMoved(local));
         self.statements
             .push(mir::Statement::SetDropFlag(local, false));
+        self.moved.insert(local);
         Ok(mir::Operand::Move(place))
     }
 

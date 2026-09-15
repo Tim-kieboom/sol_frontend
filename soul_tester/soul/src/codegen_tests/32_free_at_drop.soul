@@ -1,0 +1,10 @@
+// expect: 7
+helper(): i32 {
+    p := new(7)
+    v := *p
+    return v
+}
+
+main(): i32 {
+    return helper()
+}

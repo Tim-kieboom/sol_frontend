@@ -812,13 +812,30 @@ that landing first, in order.
         only_variable_moves_it_into_the_return_local`, `an_implicit_tail_return_of_a_move_only_
         variable_moves_it`); full workspace test suite and all 31 exe tests still pass unchanged,
         confirming this doesn't alter any existing AutoCopy-return behavior.
-  - [ ] **Slice 3b** — `Drop` actually calls `free()` for a `*T`, gated entirely at *compile time*
-        (no runtime drop-flag storage needed, since move-checking is already static): teach
-        `FunctionLowerer` itself to track live moved-state *during* lowering (mirroring
-        `move_check`'s own logic) and exclude an already-moved local from its own scope's drop
-        chain — otherwise a moved-then-dropped `*T` double-frees, since nothing at the LLVM level
-        currently reflects "this was moved" (the local's stack slot still holds the same pointer
-        value after a move).
+  - [x] **Slice 3b** — `Drop` actually calls `free()` for a `*T`, gated entirely at *compile time*
+        (no runtime drop-flag storage needed, since move-checking is already static).
+        `FunctionLowerer` gained a `moved: HashSet<LocalId>` tracked live *during* lowering
+        (mirroring `move_check`'s own state-derivation logic, but inline instead of a separate
+        post-pass): `move_variable_operand` inserts a local the moment it emits `MarkMoved`/
+        `SetDropFlag(_, false)`, `push_assign` removes one on a whole-place reinitializing write
+        (mirrors `move_check`'s own "reassign clears moved" rule), and `drop_chain` now skips any
+        local still in that set instead of emitting a `Terminator::Drop` for it at all — otherwise
+        a moved `*T` would free the same allocation twice once codegen started actually calling
+        `free()`. Deliberately *not* saved/restored per `if`/`else` branch or reset between loop
+        iterations: an outer-scope local moved on only one path stays flagged moved for whatever
+        lowers next (including a sibling branch and code after the join), which can only cause a
+        still-live value on some untaken path to be silently leaked, never double-freed — full
+        per-path precision needs real dataflow (see M3's "extend borrow checker to generic MIR").
+        `mir_codegen`'s `Terminator::Drop` arm now checks the dropped local's own type: `*T`
+        (`SoulType::Pointer`) loads the pointer and calls `free()` (declared lazily via the same
+        `declare_void_libc_fn` helper `abort`/`exit` already use); every other type is still a
+        pure no-op scope-exit marker, unchanged. Proven via a new `mir_parser` unit test
+        (`a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain`) and a new exe test
+        (`32_free_at_drop.soul`: a `new(7)` pointer that's read via `*p` but never moved or
+        returned still frees cleanly at its own scope exit, exit code 7); full workspace test
+        suite and all 32 exe tests pass, confirming the `return`-move-awareness fix from Slice 3a
+        was in fact load-bearing for this (without it, `f(): *int { p := new(1); return p }` would
+        double-free `p`).
 
 ### M3 — unions, generics, full traits (not started)
 

@@ -2,6 +2,7 @@
 //! `SwitchInt`, `Return`, ...) that `function`'s per-block driver dispatches
 //! to — split out since each is its own small, self-contained concern.
 
+use ast_model::SoulType;
 use inkwell::{
     AddressSpace, IntPredicate,
     module::Linkage,
@@ -55,18 +56,54 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             Terminator::Unreachable => {
                 self.builder.build_unreachable().map_err(llvm_err)?;
             }
-            // No destructor exists anywhere in this compiler yet (M2's
-            // borrow checker is what will eventually give a struct/array
-            // type real drop glue) — until then every `Drop` is a pure
-            // scope-exit marker with no runtime effect, so codegen just
-            // falls through to its target like a `Goto`.
-            Terminator::Drop { target, .. } => {
+            // No destructor exists for a struct/array yet (M2's borrow
+            // checker is what will eventually give those real drop glue) —
+            // an owning `*T` is the only type with drop glue so far
+            // (`codegen_drop` frees it; every other type is still a pure
+            // scope-exit marker with no runtime effect).
+            Terminator::Drop { place, target } => {
+                self.codegen_drop(place)?;
                 self.builder
                     .build_unconditional_branch(self.blocks[*target])
                     .map_err(llvm_err)?;
             }
         }
         Ok(())
+    }
+
+    /// `mir_parser`'s `drop_chain` only ever emits `Terminator::Drop` for a
+    /// bare local (`mir::Place::local`, no projection) — a moved-out-of
+    /// local is excluded before this ever runs (see `FunctionLowerer::
+    /// moved`'s own docs), so every `Drop` reaching codegen is for a value
+    /// still owned by its local. Only `*T` (`SoulType::Pointer`) has real
+    /// drop glue right now — `free()`'ing the heap allocation `new(expr)`
+    /// made; every other type falls through as a no-op, same as before this
+    /// existed.
+    fn codegen_drop(&mut self, place: &Place) -> CodegenResult<()> {
+        let decl = &self.function.locals[place.local];
+        if !matches!(self.ctx.resolve_type(decl.ty), SoulType::Pointer(_)) {
+            return Ok(());
+        }
+
+        let ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
+        let value = self
+            .builder
+            .build_load(ptr_ty, self.locals[place.local], "drop_ptr")
+            .map_err(llvm_err)?;
+
+        let free_fn = self.free_function();
+        self.builder
+            .build_call(free_fn, &[value.into()], "free_call")
+            .map_err(llvm_err)?;
+        Ok(())
+    }
+
+    /// libc's `free(ptr)`, declared lazily (once per module) — pairs with
+    /// `mir_codegen::rvalue`'s `malloc_function`, the allocator every `*T`
+    /// (`new(expr)`) is allocated through.
+    fn free_function(&self) -> FunctionValue<'ctx> {
+        let ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
+        self.declare_void_libc_fn("free", &[ptr_ty.into()])
     }
 
     fn codegen_return(&mut self) -> CodegenResult<()> {
