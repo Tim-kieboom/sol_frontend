@@ -2241,6 +2241,39 @@ fn a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain() {
 }
 
 #[test]
+fn a_conditional_move_in_only_one_if_branch_leaks_on_the_untaken_path_but_never_double_frees() {
+    // `p` is declared *outside* the `if`, and moved into `consume(p)` in
+    // only the `then` branch — the `else` branch (here, simply absent)
+    // never touches it. `moved` isn't saved/restored per branch (see its
+    // own docs on `FunctionLowerer`): lowering the `then` branch marks `p`
+    // moved, and that state is never reset before `f`'s own top-level frame
+    // (which is what actually owns `p`) unwinds at the end-of-body return.
+    // So `p` gets **no** `Drop` at all, regardless of which branch actually
+    // ran at runtime — correct (no double free) on the `cond == true` path,
+    // where `consume` already owns `p`, but a real leak on the `cond ==
+    // false` path, where `p` was never moved and nothing ever frees it.
+    // This is the documented, accepted imprecision of Slice 3b (see
+    // `TODO.md`'s M2 entry) — full per-path precision needs real dataflow,
+    // not implemented yet.
+    let mir = lower_source(
+        "consume(p: *int) {}\nf(cond: bool) {\n    p := new(1)\n    if cond {\n        consume(p)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(
+        !has_drop,
+        "expected p to have no Drop at all (the documented leak-not-crash \
+         imprecision for a conditionally-moved outer-scope local), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
 fn an_autocopy_primitive_argument_is_still_copied() {
     let mir = lower_source(
         "consume(n: int) {}\nf() {\n    n := 1\n    consume(n)\n}\n",
@@ -2979,4 +3012,37 @@ fn new_expression_lowers_to_a_heap_alloc_rvalue() {
         deref_place.projection.as_slice(),
         [mir_model::PlaceElem::Deref]
     ));
+}
+
+#[test]
+fn new_expressions_bare_literal_argument_defaults_to_a_concrete_type() {
+    // `new(1)` has no declared target type for its bare literal argument to
+    // coerce against (unlike `x: i64 = 1`) — without `default_concrete_type`
+    // (see `check_new_expression`'s own docs), `1`'s untyped literal type
+    // (`UntypedUint`) would leak straight through into `new(1)`'s own `*T`,
+    // producing `*UntypedUint` instead of `*int`.
+    let mut ast = resolve_source("f(): none {\n    p := new(1)\n}\n");
+    let function_id = find_function(&ast.crates.store, "f");
+    let mir = lower_function(&ast.crates.store, &mut ast.declares, function_id)
+        .expect("expected successful lowering");
+
+    let heap_alloc_ty = mir.blocks.entries().find_map(|(_, block)| {
+        block.statements.iter().find_map(|statement| {
+            let mir_model::Statement::Assign(_, Rvalue::HeapAlloc(ty, _)) = statement else {
+                return None;
+            };
+            Some(*ty)
+        })
+    });
+    let Some(heap_alloc_ty) = heap_alloc_ty else {
+        panic!(
+            "expected a HeapAlloc rvalue assigned into p, got {:#?}",
+            mir.blocks
+        );
+    };
+    assert_eq!(
+        ast.declares.get_type(heap_alloc_ty),
+        Some(&SoulType::Primitive(PrimitiveTypes::Int)),
+        "expected new(1)'s allocated element type to default to int, not stay untyped"
+    );
 }

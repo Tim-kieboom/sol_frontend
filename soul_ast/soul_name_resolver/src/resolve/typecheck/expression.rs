@@ -176,6 +176,15 @@ impl<'a> NameResolver<'a> {
     /// typed (e.g. an unresolvable inner expression); nothing to log here,
     /// since whatever fault caused that already got logged resolving
     /// `value` itself.
+    ///
+    /// `default_concrete_type`s `value`'s own type first — `new(1)` has no
+    /// declared target type for its bare literal to coerce against (unlike
+    /// `x: i64 = 1` or an array literal's own element type), so without this
+    /// its untyped literal type (`UntypedInt`/`UntypedUint`) would leak
+    /// straight through into `*T`, producing `*UntypedUint` — a type that's
+    /// never valid as a value's own resolved type outside of exactly this
+    /// still-being-inferred window (mirrors `array_literal_element_type`'s
+    /// own reason for calling this on an array literal's inferred element).
     pub(crate) fn check_new_expression(
         &mut self,
         expression_id: ExpressionId,
@@ -184,6 +193,7 @@ impl<'a> NameResolver<'a> {
         let Some(inner) = self.expression_type(value) else {
             return;
         };
+        let inner = default_concrete_type(inner);
         let inner = self.declares.intern_type(inner);
         let ptr_ty = SoulType::Pointer(ReferenceType {
             inner,
@@ -317,8 +327,11 @@ impl<'a> NameResolver<'a> {
             // `new(expr)`'s own type is `*T`, `T` being `expr`'s own
             // resolved type — the one expression kind whose type depends on
             // an inner expression's type rather than being fixed or `None`.
+            // `default_concrete_type`d for the same reason `check_new_
+            // expression` does it — see that method's own docs.
             ExpressionKind::New(value) => {
                 let inner = self.expression_type(*value)?;
+                let inner = default_concrete_type(inner);
                 let inner = self.declares.intern_type(inner);
                 Some(SoulType::Pointer(ReferenceType {
                     inner,

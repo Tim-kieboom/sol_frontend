@@ -836,6 +836,27 @@ that landing first, in order.
         suite and all 32 exe tests pass, confirming the `return`-move-awareness fix from Slice 3a
         was in fact load-bearing for this (without it, `f(): *int { p := new(1); return p }` would
         double-free `p`).
+    - The conditional-move imprecision this slice's docs call out (an outer-scope local moved on
+      only one `if`/`else` branch leaks on the untaken path, never double-frees) is now itself
+      proven, not just described: a new `mir_parser` unit test
+      (`a_conditional_move_in_only_one_if_branch_leaks_on_the_untaken_path_but_never_double_frees`)
+      lowers `consume(p: *int) {}; f(cond: bool) { p := new(1); if cond { consume(p) } }` and
+      asserts `p` gets **no** `Drop` at all — confirming the accepted leak-not-crash tradeoff
+      actually holds, and will catch it if a future dataflow-based fix changes this behavior.
+    - Found and fixed a real bug while writing that test: `new(1)`'s bare literal argument was
+      typing as `*untypedUint` (`1`'s own `UntypedUint` leaking straight through into `*T`
+      unchanged), not `*int` — `new(expr)` has no declared target type for its argument to coerce
+      against the way `x: i64 = 1` or an array literal's own element type do, so `check_new_
+      expression` and `expression_type`'s `New` arm now both call `default_concrete_type` on
+      `value`'s own type before wrapping it in `*T` (the same helper `array_literal_element_type`
+      already uses for the exact same reason). Proven via a new `mir_parser` unit test
+      (`new_expressions_bare_literal_argument_defaults_to_a_concrete_type`), confirmed to actually
+      catch the bug by reverting the fix and re-running it (failed with `UntypedUint` vs `Int`, as
+      expected). This also surfaced that `31_new_expression.soul`/`32_free_at_drop.soul` had been
+      silently relying on the bug: once `new(...)`'s argument concretely defaults to `int` (not a
+      coercible untyped literal), returning it through an `i32`-typed function is a genuine type
+      mismatch — both exe tests now declare an explicit `n: i32 = ..` and pass `new(n)` instead of
+      a bare literal, matching how every other exe test already threads a concrete type through.
 
 ### M3 — unions, generics, full traits (not started)
 
