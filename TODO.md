@@ -684,9 +684,33 @@ that landing first, in order.
     "a return inside an if gets zero drops" — stopped holding the moment `if`/`else` got real
     scope tracking (renamed `a_return_nested_inside_an_if_now_drops_enclosing_scope_locals`). All
     30 exe tests still pass unchanged.
-- [ ] Extend scope-stack tracking to `for` bodies plus `break`/`continue` unwinding to the correct
-      loop-boundary frame (not all the way to the function root, unlike `return`) — the deferred
-      half of the bullet above.
+- [x] Extend scope-stack tracking to `for` bodies plus `break`/`continue` unwinding to the correct
+      loop-boundary frame. `/grill-me`'d "what's next": surfaced that once a `for` body gets a real
+      frame (this bullet's own first half), `return`'s old hard-stop-on-any-enclosing-`for` rule
+      (from the previous slice) no longer has a reason to exist — a `return` diverges straight out
+      of the function, so there's no per-iteration concern the way `break`/`continue` genuinely
+      have; confirmed with the user and lifted it as part of this same pass.
+  - A `for` body is now scoped exactly like an `if`-branch: `lower_for` pushes a fresh `scopes`
+    frame before lowering the body, and at the end either `seal_scope_exit(header_id)` (fell
+    through normally — pop the frame, drop it, loop back via the *same* per-iteration edge every
+    normal iteration takes) or a plain pop (already terminated via an internal `break`/`continue`/
+    `return`, each of which already emitted its own drop chain on the way out).
+  - `break`/`continue` need a *partial*-stack unwind, not `seal_return`'s full one — from the
+    innermost frame down to (and including) the loop's own frame, never past it (locals declared
+    outside the loop stay alive). `LoopTargets` gained `loop_frame_index: usize`
+    (`self.scopes.len()` at the moment the loop's own frame was pushed) so a `break`/`continue`
+    inside a *nested* loop unwinds to that loop's own boundary, not an outer one. New
+    `seal_loop_exit(from_index, target)` and a shared `unwind_from(from_index)` — `seal_return`
+    is just `unwind_from(0)` now, no `for_loop_depth` gate at all (the field was deleted outright
+    once nothing read it anymore, not left as a dead vestige).
+  - Zero new codegen risk: only `Drop`/`Goto`/`Return`, all already safe from earlier slices.
+  - Proven via 7 new `mir_parser` unit tests (`a_for_loop_body_local_is_dropped_on_the_normal_
+    back_edge_to_the_header`, `break_drops_the_loop_bodys_own_local_before_exiting`,
+    `continue_drops_the_loop_bodys_own_local_before_looping_back`, `break_inside_a_nested_if_
+    drops_the_ifs_and_loops_frames_but_not_an_outer_one`) plus rewriting two whose premise —
+    "a return through an enclosing for gets zero drops" — stopped holding the moment `for` got
+    real scope tracking (`a_return_through_an_enclosing_for_now_drops_it_too`, replacing
+    `for_loop_is_a_hard_stop_for_return_unwinding`). All 30 exe tests still pass unchanged.
 - [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset
 
 ### M3 — unions, generics, full traits (not started)

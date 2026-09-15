@@ -1970,13 +1970,12 @@ fn return_inside_an_if_branch_drops_branch_then_enclosing_locals_in_order() {
 }
 
 #[test]
-fn for_loop_is_a_hard_stop_for_return_unwinding() {
-    // A `return` reached through *any* enclosing `for` — regardless of how
-    // many `if`s are also in between — is still a hard stop with no drops
-    // at all, exactly as before per-branch `if`/`else` scope tracking
-    // existed: a `for` body's own locals never get a scope frame, and
-    // unwinding through a loop needs a per-iteration story this slice
-    // deliberately doesn't build (see M2's TODO.md entry).
+fn a_return_through_an_enclosing_for_now_drops_it_too() {
+    // Once `for` bodies got real scope frames (same shape as `if`-branches),
+    // `return`'s old hard-stop-on-any-enclosing-`for` rule was lifted: a
+    // `return` diverges straight out of the function, so a `for`'s frame is
+    // walked by `seal_return` exactly like an `if`-branch's — no per-
+    // iteration concern applies to a path that never loops back at all.
     let mir = lower_source(
         "struct Thing {\n    n: int\n}\nf(cond: bool): int {\n    x := Thing{n: 1}\n    for cond {\n        if cond {\n            return 0\n        }\n    }\n    return 1\n}\n",
         "f",
@@ -1988,12 +1987,11 @@ fn for_loop_is_a_hard_stop_for_return_unwinding() {
         .entries()
         .filter(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }))
         .count();
-    // Only the top-level `return 1` (reached with no enclosing `for`) drops
-    // `x`; the `return 0` inside the `for`+`if` doesn't, even though `x` is
-    // a perfectly ordinary, otherwise-trackable enclosing-scope local.
+    // Both the `return 0` inside the `for`+`if` and the top-level `return 1`
+    // drop `x` — two separate Drop(x) chains, one per return site.
     assert_eq!(
-        drop_count, 1,
-        "expected exactly one Drop(x), from the return outside the for loop, got {:#?}",
+        drop_count, 2,
+        "expected a Drop(x) chain at both return sites, got {:#?}",
         mir.blocks
     );
 }
@@ -2542,4 +2540,195 @@ fn an_autocopy_array_literal_is_still_copied() {
         !has_move,
         "AutoCopy primitive array elements should never be MarkMoved"
     );
+}
+
+/// Follows a chain of `Drop` terminators starting at `start`, returning the
+/// `BlockId` the chain ultimately `Goto`s to (or `None` if it ends in
+/// something other than a plain `Goto`, e.g. `Return`) — a `Drop`'s own
+/// `target` is always a fresh intermediate block (from `new_block()`), never
+/// the chain's real final destination directly, so tests can't just check a
+/// `Drop`'s immediate `target` field against the destination they expect.
+fn drop_chain_target(
+    mir: &mir_model::Function,
+    start: mir_model::BlockId,
+) -> Option<mir_model::BlockId> {
+    let mut current = start;
+    loop {
+        let block = mir.blocks.get(current)?;
+        match &block.terminator {
+            mir_model::Terminator::Drop { target, .. } => current = *target,
+            mir_model::Terminator::Goto(target) => return Some(*target),
+            _ => return None,
+        }
+    }
+}
+
+#[test]
+fn a_for_loop_body_local_is_dropped_on_the_normal_back_edge_to_the_header() {
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(): int {\n    for true {\n        y := Thing{n: 1}\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    // Every normal (non-`break`/`continue`) iteration falls off the end of
+    // the body and loops back via the *same* scope-exit machinery an
+    // `if`-branch's join uses (`seal_scope_exit`): drop the body's own
+    // frame, then `Goto(header)`.
+    let (header_id, _) = mir
+        .blocks
+        .entries()
+        .find(|(_, block)| matches!(block.terminator, mir_model::Terminator::SwitchInt { .. }))
+        .expect("expected a loop header block");
+
+    let reaches_header = mir.blocks.entries().any(|(id, block)| {
+        matches!(block.terminator, mir_model::Terminator::Drop { .. })
+            && drop_chain_target(&mir, id) == Some(header_id)
+    });
+    assert!(
+        reaches_header,
+        "expected a Drop chain ending in Goto(header), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn break_drops_the_loop_bodys_own_local_before_exiting() {
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(): int {\n    for true {\n        y := Thing{n: 1}\n        break\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let (_, header) = mir
+        .blocks
+        .entries()
+        .find(|(_, block)| matches!(block.terminator, mir_model::Terminator::SwitchInt { .. }))
+        .expect("expected a loop header block");
+    let mir_model::Terminator::SwitchInt {
+        otherwise: exit_id, ..
+    } = header.terminator
+    else {
+        unreachable!("just matched on SwitchInt above")
+    };
+
+    let drop_targets_exit = mir.blocks.entries().any(|(id, block)| {
+        matches!(block.terminator, mir_model::Terminator::Drop { .. })
+            && drop_chain_target(&mir, id) == Some(exit_id)
+    });
+    assert!(
+        drop_targets_exit,
+        "expected break's own Drop(y) chain to end in Goto(exit), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn continue_drops_the_loop_bodys_own_local_before_looping_back() {
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(): int {\n    for true {\n        y := Thing{n: 1}\n        continue\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let (header_id, _) = mir
+        .blocks
+        .entries()
+        .find(|(_, block)| matches!(block.terminator, mir_model::Terminator::SwitchInt { .. }))
+        .expect("expected a loop header block");
+
+    let drop_targets_header = mir.blocks.entries().any(|(id, block)| {
+        matches!(block.terminator, mir_model::Terminator::Drop { .. })
+            && drop_chain_target(&mir, id) == Some(header_id)
+    });
+    assert!(
+        drop_targets_header,
+        "expected continue's own Drop(y) chain to end in Goto(header), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn break_inside_a_nested_if_drops_the_ifs_and_loops_frames_but_not_an_outer_one() {
+    // `x` is declared outside the loop, `y` inside the loop body, `z` inside
+    // an `if`-branch nested in the loop body — `break` from inside that `if`
+    // must drop `z` then `y` (the loop's own frame boundary,
+    // `LoopTargets::loop_frame_index`) but never touch `x`, which stays
+    // alive after the loop.
+    let mir = lower_source(
+        "struct Thing {\n    n: int\n}\nf(cond: bool): int {\n    x := Thing{n: 0}\n    for cond {\n        y := Thing{n: 1}\n        if cond {\n            z := Thing{n: 2}\n            break\n        }\n    }\n    return 1\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let (_, header) = mir
+        .blocks
+        .entries()
+        .find(|(_, block)| matches!(block.terminator, mir_model::Terminator::SwitchInt { .. }))
+        .expect("expected a loop header block");
+    let mir_model::Terminator::SwitchInt {
+        otherwise: exit_id, ..
+    } = header.terminator
+    else {
+        unreachable!("just matched on SwitchInt above")
+    };
+
+    // Every block whose own Drop chain (transitively) reaches `exit` is part
+    // of break's chain — there may be other, unrelated Drop chains too (e.g.
+    // the loop's own normal back-edge to the header). Their `target`s are
+    // each other's *next* step, so the one entry point is whichever of them
+    // is never itself somebody else's target.
+    let exit_chain_drops: Vec<mir_model::BlockId> = mir
+        .blocks
+        .entries()
+        .filter(|(id, block)| {
+            matches!(block.terminator, mir_model::Terminator::Drop { .. })
+                && drop_chain_target(&mir, *id) == Some(exit_id)
+        })
+        .map(|(id, _)| id)
+        .collect();
+    let later_steps: std::collections::HashSet<mir_model::BlockId> = exit_chain_drops
+        .iter()
+        .filter_map(|id| match &mir.blocks[*id].terminator {
+            mir_model::Terminator::Drop { target, .. } => Some(*target),
+            _ => None,
+        })
+        .collect();
+    let entry = exit_chain_drops
+        .iter()
+        .copied()
+        .find(|id| !later_steps.contains(id));
+
+    // Walk forward from the entry point, collecting exactly which locals
+    // break's own chain drops, in order.
+    let mut drops = Vec::new();
+    let mut current = entry;
+    while let Some(id) = current {
+        let block = &mir.blocks[id];
+        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+            break;
+        };
+        drops.push(place.local);
+        current = mir
+            .blocks
+            .get(*target)
+            .is_some_and(|b| matches!(b.terminator, mir_model::Terminator::Drop { .. }))
+            .then_some(*target);
+    }
+
+    assert_eq!(
+        drops.len(),
+        2,
+        "expected exactly 2 Drops (z then y) on break's own path, got {:#?}",
+        mir.blocks
+    );
+    assert!(
+        drops[0] > drops[1],
+        "expected the innermost local (z, higher LocalId) dropped before the loop's own (y), got order {:#?}",
+        drops
+    );
+    // `drops.len() == 2` above already proves the boundary: break's own
+    // chain drops exactly `z` and `y`, never a third local — `x` (declared
+    // outside the loop) is dropped separately, at the function's own final
+    // `return`, not as part of this chain.
 }

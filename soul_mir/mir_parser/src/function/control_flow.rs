@@ -246,9 +246,21 @@ impl<'a> FunctionLowerer<'a> {
             Some(body_id),
         );
 
+        // The loop body is its own lexical scope, same treatment as an
+        // `if`-branch: a fresh `scopes` frame, popped once the body's own
+        // lowering is done — either via `seal_scope_exit` (fell through to
+        // the end of the body normally: drops the frame's own locals, then
+        // loops back via `Goto(header_id)`, the same per-iteration edge
+        // every normal iteration takes) or a plain pop (the body already
+        // terminated itself, via an internal `break`/`continue`/`return` —
+        // each of those already emitted its own drop chain on the way out,
+        // so there's nothing left to do here but discard the bookkeeping).
+        let loop_frame_index = self.scopes.len();
+        self.scopes.push(Vec::new());
         self.loops.push(LoopTargets {
             header: header_id,
             exit: exit_id,
+            loop_frame_index,
         });
         let body_statements = self.store.blocks[for_expr.block].statements.clone();
         // A loop body is never in tail position, regardless of the `for`
@@ -256,14 +268,15 @@ impl<'a> FunctionLowerer<'a> {
         // (`check_tail_if`) never recurses into `For` either, since a loop
         // has no well-defined "trailing value" (it may run zero times).
         const IN_TAIL_POSITION: bool = false;
-        self.for_loop_depth += 1;
         let body_result = self.lower_body(return_local, &body_statements, IN_TAIL_POSITION);
-        self.for_loop_depth -= 1;
         self.loops.pop();
+        let body_reaches_backedge = body_result.is_ok() && !self.is_terminated();
+        if !body_reaches_backedge {
+            self.scopes.pop();
+        }
         body_result?;
-
-        if !self.is_terminated() {
-            self.seal(mir::Terminator::Goto(header_id), None);
+        if body_reaches_backedge {
+            self.seal_scope_exit(header_id);
         }
 
         // The exit block is always reachable via the header's false edge,
@@ -273,24 +286,26 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn lower_break(&mut self, span: Span) -> MirResult<()> {
-        let Some(target) = self.loops.last().map(|l| l.exit) else {
+        let Some(loop_targets) = self.loops.last() else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::BreakOutsideLoop,
                 Some(span),
             ));
         };
-        self.seal(mir::Terminator::Goto(target), None);
+        let (from_index, target) = (loop_targets.loop_frame_index, loop_targets.exit);
+        self.seal_loop_exit(from_index, target);
         Ok(())
     }
 
     fn lower_continue(&mut self, span: Span) -> MirResult<()> {
-        let Some(target) = self.loops.last().map(|l| l.header) else {
+        let Some(loop_targets) = self.loops.last() else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::ContinueOutsideLoop,
                 Some(span),
             ));
         };
-        self.seal(mir::Terminator::Goto(target), None);
+        let (from_index, target) = (loop_targets.loop_frame_index, loop_targets.header);
+        self.seal_loop_exit(from_index, target);
         Ok(())
     }
 }
