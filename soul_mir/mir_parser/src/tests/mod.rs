@@ -462,7 +462,7 @@ fn array_reference_lowers_to_a_ref_plus_fat_pointer_aggregate() {
             block.statements[3]
         );
     };
-    assert!(matches!(kind, mir_model::AggregateKind::Array));
+    assert!(matches!(kind, mir_model::AggregateKind::Slice));
     assert_eq!(operands.len(), 2);
     assert!(matches!(&operands[0], Operand::Copy(_)));
     assert!(matches!(

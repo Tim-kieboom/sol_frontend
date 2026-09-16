@@ -253,7 +253,9 @@ fn stub_type<'ctx>(
     let struct_ = resolve_struct(declares, module, ty).ok_or_else(|| {
         Fault::error_with_kind(
             CodegenErrorKind::NonPrimitiveType {
-                ty: ast_model::print_type(ty, declares).to_string().into_boxed_str(),
+                ty: ast_model::print_type(ty, declares)
+                    .to_string()
+                    .into_boxed_str(),
             },
             span,
         )

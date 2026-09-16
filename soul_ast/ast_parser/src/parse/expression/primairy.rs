@@ -4,7 +4,7 @@ use ast_model::{Array, Expression, ExpressionId, ExpressionKind, Literal, String
 use soul_tokenizer::model::{StringFormatTag, TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident, TypeModifier,
-    collections::{try_result::TryError},
+    collections::try_result::TryError,
     fault::Fault,
     literal::{Number, StringLiteral, TokenLiteral},
     soul_error_internal,

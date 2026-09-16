@@ -1,5 +1,5 @@
-mod rc_arr;
 mod arr;
+mod rc_arr;
 pub use arr::Arr;
 pub use rc_arr::RcArr;
 

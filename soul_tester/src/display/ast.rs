@@ -1430,12 +1430,18 @@ impl<'a, W: Writer> Displayer<'a, W> {
     fn write_any_array(&mut self, any_array: &AnyArray) -> Result<()> {
         match any_array {
             AnyArray::Array(array) => {
-                if let Some(ty) = array.collection_type.and_then(|id| self.ast.declares.get_type(id)) {
+                if let Some(ty) = array
+                    .collection_type
+                    .and_then(|id| self.ast.declares.get_type(id))
+                {
                     self.write_type(ty)?;
                     self.push_char('.')?;
                 }
                 self.push_char('[')?;
-                if let Some(ty) = array.element_type.and_then(|id| self.ast.declares.get_type(id)) {
+                if let Some(ty) = array
+                    .element_type
+                    .and_then(|id| self.ast.declares.get_type(id))
+                {
                     self.write_type(ty)?;
                     self.push_str(": ")?;
                 }
@@ -1449,12 +1455,18 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.push_char(']')
             }
             AnyArray::ArrayFiller(array) => {
-                if let Some(collection) = array.collection_type.and_then(|id| self.ast.declares.get_type(id)) {
+                if let Some(collection) = array
+                    .collection_type
+                    .and_then(|id| self.ast.declares.get_type(id))
+                {
                     self.write_type(collection)?;
                     self.push_char('.')?;
                 }
                 self.push_char('[')?;
-                if let Some(ty) = array.element_type.and_then(|id| self.ast.declares.get_type(id)) {
+                if let Some(ty) = array
+                    .element_type
+                    .and_then(|id| self.ast.declares.get_type(id))
+                {
                     self.write_type(ty)?;
                     self.push_str(": ")?;
                 }

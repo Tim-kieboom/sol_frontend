@@ -4,9 +4,7 @@ use ast_model::{
 use soul_tokenizer::model::TokenKind;
 use soul_utils::{
     Ident, TypeModifier,
-    collections::{
-        try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
-    },
+    collections::try_result::{ResultTryErr, TryErr, TryError, TryNotValue, TryOk},
     fault::Fault,
     soul_names::Symbol,
     span::{Attribute, Span},

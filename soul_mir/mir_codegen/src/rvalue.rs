@@ -58,9 +58,10 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 self.codegen_checked_binary(result_ty, *op, left, right)
             }
             Rvalue::UnaryOp(op, operand) => self.codegen_unary(op, operand),
-            Rvalue::Aggregate(AggregateKind::Struct | AggregateKind::Array, operands) => {
-                self.codegen_aggregate(operands, result_ty)
-            }
+            Rvalue::Aggregate(
+                AggregateKind::Struct | AggregateKind::Array | AggregateKind::Slice,
+                operands,
+            ) => self.codegen_aggregate(operands, result_ty),
             // Just the address `resolve_place` already computes, no load —
             // this is the bare-pointer case only (see `resolve_field_place`'s
             // docs in `mir_parser`): a reference to an array-typed place is

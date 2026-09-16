@@ -8,9 +8,7 @@ use ast_model::{
 use soul_tokenizer::model::{TokenKind, keyword::KeyWord};
 use soul_utils::{
     Ident,
-    collections::{
-        try_result::{ToResult, TryError},
-    },
+    collections::try_result::{ToResult, TryError},
     fault::Fault,
     soul_names::Symbol,
     span::Span,

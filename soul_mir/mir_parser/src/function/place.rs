@@ -119,7 +119,7 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         Ok(mir::Rvalue::Aggregate(
-            mir::AggregateKind::Array,
+            mir::AggregateKind::Slice,
             vec![
                 mir::Operand::Copy(mir::Place::local(ptr_temp)),
                 mir::Operand::Constant(mir::ConstValue::Uint(len as u128)),

@@ -153,6 +153,7 @@ pub enum AggregateKind {
     Struct,
     Tuple,
     Array,
+    Slice,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -1,7 +1,5 @@
 use core::slice;
-use std::{
-    ops::{Deref, Index},
-};
+use std::ops::{Deref, Index};
 
 /// A fixed-size, exclusively-owned array (`Box<[T]>` under the hood).
 ///

@@ -4,20 +4,20 @@ use crate::display::{
 };
 use anyhow::Result;
 use ast_model::AstTree;
-use ast_run::{to_ast, AstRequest};
+use ast_run::{AstRequest, to_ast};
 use inkwell::context::Context;
 use mir_codegen::to_llvm;
 use mir_model::MirProgram;
-use soul_tokenizer::{to_token_stream, TokenStream};
+use soul_tokenizer::{TokenStream, to_token_stream};
 use soul_utils::{
+    CrateContext,
     char_colors::{DEFAULT, GREEN, RED},
     collections::{
         benchmark::Benchmark,
-        crate_store::{resolve_source_root, CrateEntry, CrateStore, Manifest},
+        crate_store::{CrateEntry, CrateStore, Manifest, resolve_source_root},
         module_store::ModuleStore,
     },
     fault::FaultCollector,
-    CrateContext,
 };
 
 use std::{

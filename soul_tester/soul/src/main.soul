@@ -2,6 +2,8 @@ consume(v: int) {}
 
 struct Number {inner: i32}
 main(): i32 {
+    arr := [1, 2, 3]
+    slice := &arr
     one: int = 1
     num: *int = new(one)
     value := Number{inner: 1}

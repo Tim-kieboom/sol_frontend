@@ -524,6 +524,21 @@ Called automatically at scope-exit for a value's final (non-moved-from) owner.
 **Open:** what `mut` means for a variable after it's been moved from (is reassignment always
 legal regardless, since the slot is empty)?
 
+**Idea, not designed (arena allocation for non-escaping-from-allocating-frame values):** narrowed,
+after grill-me, from a full region-inference design (general cross-scope regions, ML Kit-style) to
+one specific, tractable case — a heap value (typically growable, e.g. a locally-built `List<T>`)
+that's provably never returned, never moved into a longer-lived place, and never captured by an
+escaping closure/spawn from the function frame that allocated it gets bump-allocated out of a
+per-frame arena instead of the general allocator, with the whole arena bulk-freed at frame exit
+instead of an individual free/`Drop`. This reuses M2's own move-tracking proof obligations rather
+than needing a new analysis. Deliberately out of scope: a non-escaping *fixed-size* value doesn't
+need this at all (it should just be a stack value); a value that does escape its frame falls back
+to the ordinary allocator; full cross-scope/loop-iteration regions are not attempted (too easy to
+silently keep a whole region alive via one small still-referenced object). Expected win is real
+but narrow — cheaper on allocation-heavy hot paths, near-zero elsewhere — so this is
+profiling-driven follow-up work, not a default. Depends on M2's move checker landing first; tracked
+in [TODO.md](TODO.md#m4--everything-else-not-sequenced).
+
 ---
 
 ## 12. Control Flow

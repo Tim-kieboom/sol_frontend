@@ -259,7 +259,17 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.write_place(place)?;
             }
             Rvalue::Aggregate(kind, operands) => {
-                push_fmt!(self, "{}(", aggregate_kind_str(kind))?;
+                let (open, close) = match kind {
+                    AggregateKind::Tuple => ('(', ')'),
+                    AggregateKind::Array => ('[', ']'),
+                    AggregateKind::Struct => ('{', '}'),
+                    AggregateKind::Slice => {
+                        self.push_str("/*Slice*/")?;
+                        ('{', '}')
+                    }
+                };
+                self.push_char(open)?;
+
                 let last_index = operands.len().saturating_sub(1);
                 for (i, operand) in operands.iter().enumerate() {
                     self.write_operand(operand)?;
@@ -267,7 +277,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                         self.push_str(", ")?;
                     }
                 }
-                self.push_char(')')?;
+                self.push_char(close)?;
             }
             Rvalue::Cast(operand, ty) => {
                 self.write_operand(operand)?;
@@ -386,14 +396,6 @@ impl<'a, W: Writer> Writer for Displayer<'a, W> {
 
     fn writer_flush(&mut self) -> std::prelude::v1::Result<(), Self::Error> {
         self.writer.writer_flush()
-    }
-}
-
-fn aggregate_kind_str(kind: &AggregateKind) -> &'static str {
-    match kind {
-        AggregateKind::Struct => "Struct",
-        AggregateKind::Tuple => "Tuple",
-        AggregateKind::Array => "Array",
     }
 }
 

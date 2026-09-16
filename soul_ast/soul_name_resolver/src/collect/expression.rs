@@ -186,11 +186,19 @@ impl<'a> NameResolver<'a> {
     fn collect_any_array(&mut self, any_array: &AnyArray) {
         match any_array {
             AnyArray::Array(array) => {
-                if let Some(ty) = array.collection_type.and_then(|id| self.declares.get_type(id)).cloned() {
+                if let Some(ty) = array
+                    .collection_type
+                    .and_then(|id| self.declares.get_type(id))
+                    .cloned()
+                {
                     self.collect_type(&ty);
                 }
 
-                if let Some(ty) = array.element_type.and_then(|id| self.declares.get_type(id)).cloned() {
+                if let Some(ty) = array
+                    .element_type
+                    .and_then(|id| self.declares.get_type(id))
+                    .cloned()
+                {
                     self.collect_type(&ty);
                 }
 

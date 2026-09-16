@@ -872,6 +872,23 @@ that landing first, in order.
 
 ### M4 — everything else (not sequenced)
 
+- [ ] Arena allocation for non-escaping-from-allocating-frame values (idea, not designed — see
+      [soul-lang.md §11](soul-lang.md#11-ownership--borrowing)). Deliberately narrowed from a full
+      region-inference design (ML Kit-style, à la Tofte-Talpin regions) after grill-me: general
+      cross-scope regions are a hard, failure-prone static analysis (a region can be kept alive
+      indefinitely by one small still-referenced object), and a non-escaping, fixed-size value
+      doesn't need heap allocation at all — it should just be a stack value. The scoped case that's
+      actually worth it: a heap value (typically a growable one, e.g. a `List<T>` built and consumed
+      locally) that's provably never returned, never moved into a longer-lived place, and never
+      captured by an escaping closure/spawn from the function frame that allocated it. That's an
+      extension of M2's own move-tracking proof obligations, not a new analysis — bump-allocate it
+      out of a per-frame arena, bulk-free the arena at frame exit instead of an individual free.
+      Expected payoff is real but narrow: bump allocation + one bulk free is meaningfully cheaper
+      than per-value malloc/free on allocation-heavy hot paths (rough estimate: 10-30% there), but
+      close to zero everywhere else — this is profiling-driven follow-up work, not a default.
+      Explicitly out of scope: values escaping via return/longer-lived-container/capture (no
+      arena — falls back to the ordinary allocator), and multi-frame/loop-iteration regions. Blocked
+      on M2 (borrow/move checker) landing first.
 - [ ] `async`/`await` + structured concurrency runtime — spec (§15) now also covers `task.block { }`,
       the sync-side blocking counterpart to `task { }` (plus brace-optional single-statement form
       for both), and disallows it from nested-async call sites; not implemented yet
