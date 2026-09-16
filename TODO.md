@@ -857,6 +857,23 @@ that landing first, in order.
       coercible untyped literal), returning it through an `i32`-typed function is a genuine type
       mismatch — both exe tests now declare an explicit `n: i32 = ..` and pass `new(n)` instead of
       a bare literal, matching how every other exe test already threads a concrete type through.
+  - [x] **Slice 3c** — fixed a real leak: an owning parameter (or by-value `this`) was never
+        dropped at all, since `scopes` — the set of locals a function's own end-of-body `Drop`
+        chain covers — deliberately excluded every parameter/receiver outright (correct back when
+        `Drop` was a universal no-op, but not once Slice 3b made it actually call `free()` for a
+        `*T`): `consume(v: *int) {}` took ownership of `v` and then simply never freed it on any
+        call, a leak on every single call, not just the documented conditional-move edge case.
+        `FunctionLowerer::lower` now pushes an owning (non-`AutoCopy`) parameter/by-value-receiver
+        local onto `scopes[0]` (the function's own top-level frame) right after allocating it, the
+        same frame body locals already live in — an `AutoCopy` parameter/receiver (a primitive, a
+        `&T`/`&mut T`) still isn't tracked at all, unchanged. This also surfaced a latent, unrelated
+        inconsistency in `push_assign`: it emitted `SetDropFlag(local, true)` for *any* write into a
+        tracked local, including a partial field write (`p.x = 5`) — harmless while no parameter was
+        ever tracked, but now double-counts a struct parameter's own field write as if it were a
+        whole-place reinit. Fixed to match `moved`'s own existing whole-place-only rule (mirrors
+        `move_check`'s "reassign clears moved"). Proven via a new `mir_parser` unit test
+        (`an_owning_pointer_parameter_is_dropped_at_its_own_functions_end`) and a new exe test
+        (`33_owning_parameter_dropped.soul`); full workspace suite and all 33 exe tests pass.
 
 ### M3 — unions, generics, full traits (not started)
 
@@ -872,6 +889,19 @@ that landing first, in order.
 
 ### M4 — everything else (not sequenced)
 
+- [ ] Swap the runtime allocator from raw libc `malloc`/`free` to **mimalloc**, statically linked,
+      as a single cross-platform default (decided via /grill-me). One allocator on every target
+      rather than a per-platform choice — a Windows/Linux/macOS split was considered and rejected:
+      it multiplies the build matrix and debugging surface for a gain that's unmeasured (there's no
+      non-Windows target to profile against yet, per `PlatformInfo::host()` below), whereas mimalloc
+      already performs well on all three from the same codebase. This is orthogonal to, and lands
+      independently of, the arena-allocation idea directly below — mimalloc is the fallback
+      allocator for anything that isn't arena-eligible even after that lands. Not yet scoped: where
+      the `malloc`/`free` calls actually live today (`mir_codegen::rvalue`/`terminator`, currently
+      calling libc's `malloc`/`free` by name) and what the static-link step looks like per platform
+      (mimalloc's CMake-built static lib needs to be vendored/fetched and linked alongside whatever
+      `clang`/linker invocation each target uses; POSIX builds add a `pthreads` dependency Windows
+      doesn't need).
 - [ ] Arena allocation for non-escaping-from-allocating-frame values (idea, not designed — see
       [soul-lang.md §11](soul-lang.md#11-ownership--borrowing)). Deliberately narrowed from a full
       region-inference design (ML Kit-style, à la Tofte-Talpin regions) after grill-me: general

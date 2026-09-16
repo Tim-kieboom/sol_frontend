@@ -2241,6 +2241,48 @@ fn a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain() {
 }
 
 #[test]
+fn an_owning_pointer_parameter_is_dropped_at_its_own_functions_end() {
+    // `consume`'s own body never moves `v` anywhere else (no reassignment,
+    // no return, no further consuming call) — it's still owned by `v` when
+    // `consume` itself returns, so `consume`'s own top-level frame must drop
+    // it there. Before parameters were tracked in `scopes` at all, `v` got
+    // **no** `Drop` ever, meaning `consume`'s own `free()` never ran — a
+    // real leak on every call, not just the documented conditional-move one.
+    let mir =
+        lower_source("consume(v: *int) {}\n", "consume").expect("expected successful lowering");
+
+    let drop_target = mir.blocks.entries().find_map(|(_, block)| {
+        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+            return None;
+        };
+        Some((place.local, *target))
+    });
+    let Some((dropped_local, target)) = drop_target else {
+        panic!(
+            "expected v to be Dropped at consume's own end, got {:#?}",
+            mir.blocks
+        );
+    };
+    let (v_local, _) = mir
+        .locals
+        .entries()
+        .next()
+        .expect("expected v, consume's sole parameter, as its first local");
+    assert_eq!(
+        dropped_local, v_local,
+        "expected v (consume's sole parameter) to be the one dropped"
+    );
+    assert!(
+        matches!(
+            mir.blocks.get(target).map(|b| &b.terminator),
+            Some(mir_model::Terminator::Return)
+        ),
+        "expected the Drop to chain straight into Return, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
 fn a_conditional_move_in_only_one_if_branch_leaks_on_the_untaken_path_but_never_double_frees() {
     // `p` is declared *outside* the `if`, and moved into `consume(p)` in
     // only the `then` branch — the `else` branch (here, simply absent)

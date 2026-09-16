@@ -52,22 +52,31 @@ pub struct FunctionLowerer<'a> {
     current: Option<mir::BlockId>,
     statements: Vec<mir::Statement>,
     loops: Vec<LoopTargets>,
-    /// A stack of lexical scope frames, each holding the locals bound to an
-    /// explicit, user-written `x := ..`/`x: T = ..` declaration inside that
-    /// scope (via `lower_variable`), in declaration order — parameters, the
-    /// receiver, the return local, and every compiler-internal temp
-    /// (checked-overflow tuples, bounds-check bookkeeping, ref/deref temps,
-    /// ...) are deliberately excluded everywhere, mirroring
-    /// `docs/mir-design.md`'s own worked example (`add(a, b)`'s `Drop(_3)`
-    /// covers only `c`, never `_0`/`_1`). Frame `0` is the function's own top
-    /// level, always present; `lower_if` pushes one fresh frame per branch
-    /// body it lowers (see `seal_scope_exit`) and pops it again once that
-    /// branch is done, whether it fell through or returned early — so at any
-    /// point during lowering, `scopes` holds exactly the frames for every
-    /// scope currently open, innermost last. `lower_for` pushes one frame per
-    /// loop body too, popped the same way (see `seal_scope_exit`, used for
-    /// a loop body's normal per-iteration fallthrough back to its header,
-    /// exactly like an `if`-branch falling through to its join).
+    /// A stack of lexical scope frames, each holding the locals whose own
+    /// `Drop` this function is responsible for — every explicit,
+    /// user-written `x := ..`/`x: T = ..` body declaration (via
+    /// `lower_variable`), *plus* an owning (move-only, `is_auto_copy ==
+    /// false`) parameter or by-value receiver, pushed onto frame `0`
+    /// directly in `lower` right after it's allocated: a parameter this
+    /// function owns is exactly as much its responsibility to drop as a
+    /// body local, once nothing later moves it out (a return, another
+    /// consuming call, ...) — otherwise an owning `*T` handed in as a plain
+    /// "use it, don't return it" argument would never get freed at all (see
+    /// M2's TODO.md entry). An `AutoCopy` parameter/receiver (a primitive, a
+    /// `&T`/`&mut T`) and the return local are still never tracked —
+    /// mirrors `docs/mir-design.md`'s own worked example (`add(a, b)`'s
+    /// `Drop(_3)` covers only `c`, never `_0`/`_1`, both `int`), and every
+    /// compiler-internal temp (checked-overflow tuples, bounds-check
+    /// bookkeeping, ref/deref temps, ...) stays excluded too. Frame `0` is
+    /// the function's own top level, always present; `lower_if` pushes one
+    /// fresh frame per branch body it lowers (see `seal_scope_exit`) and
+    /// pops it again once that branch is done, whether it fell through or
+    /// returned early — so at any point during lowering, `scopes` holds
+    /// exactly the frames for every scope currently open, innermost last.
+    /// `lower_for` pushes one frame per loop body too, popped the same way
+    /// (see `seal_scope_exit`, used for a loop body's normal per-iteration
+    /// fallthrough back to its header, exactly like an `if`-branch falling
+    /// through to its join).
     scopes: Vec<Vec<mir::LocalId>>,
 
     /// Which locals are currently moved-out-of, tracked live *during*
@@ -176,6 +185,15 @@ impl<'a> FunctionLowerer<'a> {
             let local = self.alloc_local(receiver_ty, TypeModifier::Mut, span);
             self.node_to_local.insert(this_node, local);
             has_receiver_local = true;
+            // A by-value `this` (`FunctionThisKind::Consume`) owns
+            // `method_type` exactly as much as an owning parameter does —
+            // tracked the same way, so it gets dropped (freed, for a `*T`)
+            // at this function's own end unless moved out first. `&this`/
+            // `&mut this` are `Reference`s, always `AutoCopy`, so this is a
+            // no-op for those.
+            if !self.is_auto_copy(receiver_ty, span)? {
+                self.scopes[0].push(local);
+            }
         }
 
         for parameter in &signature.parameters {
@@ -185,6 +203,13 @@ impl<'a> FunctionLowerer<'a> {
             let modifier = parameter.mutable.to_type_modifier();
             let local = self.alloc_local(ty, modifier, span);
             self.node_to_local.insert(parameter.id, local);
+            // See `scopes`'s own docs: an owning parameter is this
+            // function's responsibility to drop, exactly like a body local
+            // — otherwise a `*T` argument that's used but never returned or
+            // moved elsewhere would never get freed at all.
+            if !self.is_auto_copy(ty, span)? {
+                self.scopes[0].push(local);
+            }
         }
 
         let arg_count = signature.parameters.len() + has_receiver_local as usize;
@@ -253,23 +278,25 @@ impl<'a> FunctionLowerer<'a> {
 
     /// Pushes an `Assign`, followed by `SetDropFlag(place.local, true)` when
     /// `place.local` is a tracked `scopes` entry (any currently-open frame,
-    /// not just the innermost) — i.e. this write (re)initializes a
-    /// user-declared variable, per `docs/mir-design.md`'s move/drop rules
-    /// ("every place written via Assign emits `SetDropFlag(place.local,
-    /// true)`"). A write into anything else (a parameter, `this`, the return
-    /// local, or a compiler-internal temp — none of which are ever added to
-    /// `scopes`) gets no drop-flag bookkeeping, mirroring
-    /// `docs/mir-design.md`'s own worked example (`_2 = Use(Copy(_3))`'s
-    /// write into the *return* local gets no `SetDropFlag` either).
+    /// not just the innermost) *and* this is a whole-place write — i.e. this
+    /// write (re)initializes a user-declared variable, or reassigns an
+    /// owning parameter/receiver (both are pushed onto frame `0` directly in
+    /// `lower`, see `scopes`'s own docs), per `docs/mir-design.md`'s
+    /// move/drop rules ("every place written via Assign emits
+    /// `SetDropFlag(place.local, true)`" — read as "every *whole-place*
+    /// write," the same reading `moved`'s own reinit-clearing uses: a
+    /// projected write like `x.field = ..` doesn't reinitialize the rest of
+    /// `x`, so it shouldn't toggle `x`'s own drop flag either). A write into
+    /// anything else (an `AutoCopy` parameter/receiver, the return local, or
+    /// a compiler-internal temp — none of which are ever added to `scopes`)
+    /// gets no drop-flag bookkeeping, mirroring `docs/mir-design.md`'s own
+    /// worked example (`_2 = Use(Copy(_3))`'s write into the *return* local
+    /// gets no `SetDropFlag` either).
     pub(super) fn push_assign(&mut self, place: mir::Place, rvalue: mir::Rvalue) {
         let local = place.local;
-        // A whole-place write reinitializes `local` — same "reassign clears
-        // moved" rule `move_check` applies, and the same reason `moved` is
-        // only ever cleared here, not on a projected write (`x.field = ..`
-        // doesn't make the rest of `x` any less moved than it already was).
         let is_whole_place = place.projection.is_empty();
         self.statements.push(mir::Statement::Assign(place, rvalue));
-        if self.scopes.iter().any(|frame| frame.contains(&local)) {
+        if is_whole_place && self.scopes.iter().any(|frame| frame.contains(&local)) {
             self.statements
                 .push(mir::Statement::SetDropFlag(local, true));
         }
