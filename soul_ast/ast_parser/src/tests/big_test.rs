@@ -508,7 +508,7 @@ fn all_kinds() {
         _ => panic!("body[36]: expected Variable"),
     };
     match &store.expressions[expr36.unwrap()].node {
-        ExpressionKind::New(_) => (),
+        ExpressionKind::New(_, _) => (),
         other => panic!("body[36]: expected New, got {:?}", other),
     }
 

@@ -28,9 +28,9 @@ impl<'a> NameResolver<'a> {
             | ExpressionKind::Literal(_)
             | ExpressionKind::Undefined(_) => (),
 
-            ExpressionKind::New(value) => {
+            ExpressionKind::New(value, mutable) => {
                 self.resolve_expression(*value);
-                self.check_new_expression(expression_id, *value);
+                self.check_new_expression(expression_id, *value, mutable.clone());
             }
 
             ExpressionKind::Pass(value)

@@ -6,7 +6,7 @@ use ast_model::{
 };
 use soul_tokenizer::model::{Token, TokenKind, keyword::KeyWord};
 use soul_utils::{
-    LoopState, define_symbols,
+    LoopState, Mutable, define_symbols,
     fault::Fault,
     soul_names::{Operator, Symbol},
     span::Span,
@@ -391,12 +391,18 @@ impl<'a, 'f> Parser<'a, 'f> {
     }
 
     fn parse_new_ptr(&mut self, start_span: Span) -> Result<Expression, crate::fault::AstFault> {
+        let mutable = if self.current_is(&crate::utils::MUT) {
+            self.bump();
+            Mutable::Mut
+        } else {
+            Mutable::Immut
+        };
         self.expect(&ROUND_OPEN)?;
         let inner =
             self.parse_expression_id(&[ROUND_CLOSE, TokenKind::EndLine, TokenKind::EndFile])?;
         self.expect(&ROUND_CLOSE)?;
         Ok(Expression::new(
-            ExpressionKind::New(inner),
+            ExpressionKind::New(inner, mutable),
             self.span_combine(start_span),
         ))
     }

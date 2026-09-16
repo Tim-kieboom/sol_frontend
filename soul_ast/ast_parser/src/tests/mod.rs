@@ -511,12 +511,43 @@ fn new_ptr() {
         StatementKind::Expression { expression, .. } => {
             let expr = &store.expressions[*expression];
             match &expr.node {
-                ExpressionKind::New(inner) => {
+                ExpressionKind::New(inner, mutable) => {
                     let inner_expr = &store.expressions[*inner];
                     assert!(matches!(
                         inner_expr.node,
                         ExpressionKind::Literal((_, Literal::Uint(42)))
                     ));
+                    assert_eq!(*mutable, soul_utils::Mutable::Immut);
+                }
+                _ => panic!("expected New expression"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn new_mut_ptr() {
+    let (module, store, context) = parse("new mut(42)");
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::New(inner, mutable) => {
+                    let inner_expr = &store.expressions[*inner];
+                    assert!(matches!(
+                        inner_expr.node,
+                        ExpressionKind::Literal((_, Literal::Uint(42)))
+                    ));
+                    assert_eq!(*mutable, soul_utils::Mutable::Mut);
                 }
                 _ => panic!("expected New expression"),
             }

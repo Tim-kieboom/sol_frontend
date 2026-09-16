@@ -3013,7 +3013,7 @@ fn new_expression_lowers_to_a_heap_alloc_rvalue() {
 
     let heap_alloc = mir.blocks.entries().find_map(|(_, block)| {
         block.statements.iter().find_map(|statement| {
-            let mir_model::Statement::Assign(place, Rvalue::HeapAlloc(_, operand)) = statement
+            let mir_model::Statement::Assign(place, Rvalue::HeapAlloc(_, operand, _)) = statement
             else {
                 return None;
             };
@@ -3070,7 +3070,7 @@ fn new_expressions_bare_literal_argument_defaults_to_a_concrete_type() {
 
     let heap_alloc_ty = mir.blocks.entries().find_map(|(_, block)| {
         block.statements.iter().find_map(|statement| {
-            let mir_model::Statement::Assign(_, Rvalue::HeapAlloc(ty, _)) = statement else {
+            let mir_model::Statement::Assign(_, Rvalue::HeapAlloc(ty, _, _)) = statement else {
                 return None;
             };
             Some(*ty)

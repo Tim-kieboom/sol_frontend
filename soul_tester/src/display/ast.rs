@@ -968,8 +968,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.write_expression(*value)?;
                 push_fmt!(self, ".{SIZEOF_STR}")
             }
-            ExpressionKind::New(expression_id) => {
-                push_fmt!(self, "{NEW_STR}(")?;
+            ExpressionKind::New(expression_id, mutable) => {
+                self.push_str(NEW_STR)?;
+                if mutable.is_mut() {
+                    self.push_str(" mut")?;
+                }
+                self.push_char('(')?;
                 self.write_expression(*expression_id)?;
                 self.push_char(')')
             }

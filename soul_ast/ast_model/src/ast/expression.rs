@@ -1,7 +1,7 @@
 use std::{fmt::Display, rc::Rc};
 
 use soul_utils::{
-    Ident,
+    Ident, Mutable,
     collections::array::Arr,
     impl_soul_ids,
     span::{Span, Spanned},
@@ -59,8 +59,9 @@ pub enum ExpressionKind {
     /// `expr.pass // returns is null or Err()`
     Pass(ExpressionId),
 
-    /// `new(expr)` — heap-allocate and initialize a single value, returns `*T`.
-    New(ExpressionId),
+    /// `new(expr)`/`new mut(expr)` — heap-allocate and initialize a single
+    /// value, returns `*T`/`*mut T`.
+    New(ExpressionId, Mutable),
     /// `new[1, 2, 3]`, `new[for N => init]` — heap-allocate an array, returns `[]T`.
     NewArray(AnyArray),
 
@@ -682,7 +683,7 @@ impl ExpressionKind {
     pub const fn variant_name(&self) -> &'static str {
         match self {
             ExpressionKind::If(_) => "if",
-            ExpressionKind::New(_) => "new",
+            ExpressionKind::New(_, _) => "new",
             ExpressionKind::Ref(_) => "ref",
             ExpressionKind::For(_) => "for",
             ExpressionKind::Break => "break",

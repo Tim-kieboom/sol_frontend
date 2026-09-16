@@ -13,7 +13,7 @@ use mir_model::{
     Terminator,
 };
 use soul_utils::{
-    FunctionId, SharedStr, TypeModifier,
+    FunctionId, Mutable, SharedStr, TypeModifier,
     collections::vec_map::{VecMap, VecMapIndex},
 };
 
@@ -196,13 +196,13 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.write_rvalue(rvalue)?;
             }
             Statement::MarkMoved(local) => {
-                push_fmt!(self, "MarkMoved({})", local_str(*local))?;
+                push_fmt!(self, "MarkMoved:({})", local_str(*local))?;
             }
             Statement::SetDropFlag(local, value) => {
-                push_fmt!(self, "SetDropFlag({}, {value})", local_str(*local))?;
+                push_fmt!(self, "SetDropFlag:({}, {value})", local_str(*local))?;
             }
             Statement::StorageDead(local) => {
-                push_fmt!(self, "StorageDead({})", local_str(*local))?;
+                push_fmt!(self, "StorageDead:({})", local_str(*local))?;
             }
         }
         Ok(())
@@ -227,8 +227,9 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.push_str(".copy")?;
             }
             Operand::Move(place) => {
-                self.push_str("move ")?;
+                self.push_str("Move:(")?;
                 self.write_place(place)?;
+                self.push_char(')')?;
             }
             Operand::Constant(value) => push_fmt!(self, "{value:?}")?,
         }
@@ -244,7 +245,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.write_operand(right)?;
             }
             Rvalue::CheckedBinaryOp(op, left, right) => {
-                self.push_str("checked(")?;
+                self.push_str("Checked:(")?;
                 self.write_operand(left)?;
                 push_fmt!(self, " {} ", op.as_str())?;
                 self.write_operand(right)?;
@@ -294,8 +295,13 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 self.write_place(place)?;
                 self.push_char(')')?;
             }
-            Rvalue::HeapAlloc(ty, operand) => {
-                self.push_str("new(")?;
+            Rvalue::HeapAlloc(ty, operand, mutable) => {
+                self.push_str("new")?;
+                match mutable {
+                    Mutable::Mut => self.push_str(" mut(")?,
+                    Mutable::Immut => self.push_char('(')?,
+                }
+
                 self.write_operand(operand)?;
                 let ty = ast_model::print_type(
                     self.declares
@@ -303,7 +309,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                         .expect("mir::Type is always an interned TypeId"),
                     self.declares,
                 );
-                push_fmt!(self, ") /* -> *{ty} */")?;
+                push_fmt!(self, ") /*as {ty}*/")?;
             }
         }
         Ok(())
@@ -319,7 +325,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 targets,
                 otherwise,
             } => {
-                self.push_str("switchInt(")?;
+                self.push_str("SwitchInt:(")?;
                 self.write_operand(discriminant)?;
                 self.push_str(") -> [")?;
                 for (value, target) in targets {
@@ -352,7 +358,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
                 }
             }
             Terminator::Drop { place, target } => {
-                self.push_str("drop(")?;
+                self.push_str("Drop:(")?;
                 self.write_place(place)?;
                 push_fmt!(self, ") -> {}", block_str(*target))?;
             }

@@ -9,7 +9,7 @@
 
 use ast_model::{Literal, TypeId, operators::BinaryOperatorKind};
 use soul_utils::{
-    FunctionId, TypeModifier,
+    FunctionId, Mutable, TypeModifier,
     collections::{array::Arr, vec_map::VecMap},
     impl_soul_ids,
     span::Span,
@@ -145,7 +145,7 @@ pub enum Rvalue {
     /// Carries `Type` explicitly (like `Cast`) since `mir_codegen` can't
     /// recover the pointee's size from context alone — the destination
     /// place's own LLVM type is just an opaque `ptr`.
-    HeapAlloc(Type, Operand),
+    HeapAlloc(Type, Operand, Mutable),
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -27,8 +27,8 @@ impl<'a> NameResolver<'a> {
             | ExpressionKind::Undefined(_) => (),
 
             ExpressionKind::If(if_) => self.collect_if(if_),
-            ExpressionKind::New(value)
-            | ExpressionKind::Pass(value)
+            ExpressionKind::New(value, _) => self.collect_expression(*value),
+            ExpressionKind::Pass(value)
             | ExpressionKind::Copy(value)
             | ExpressionKind::Sizeof(value) => self.collect_expression(*value),
             ExpressionKind::Return(value) => {

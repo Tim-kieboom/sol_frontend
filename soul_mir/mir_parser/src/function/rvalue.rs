@@ -8,8 +8,8 @@ use ast_model::{
 };
 use mir_model as mir;
 use soul_utils::{
-    TypeModifier, compiler_options::MirOptions, fault::Fault, intrinsics::IntrinsicFunction,
-    soul_error_internal, soul_names::PrimitiveTypes, span::Span,
+    Mutable, TypeModifier, compiler_options::MirOptions, fault::Fault,
+    intrinsics::IntrinsicFunction, soul_error_internal, soul_names::PrimitiveTypes, span::Span,
 };
 
 impl<'a> FunctionLowerer<'a> {
@@ -167,8 +167,8 @@ impl<'a> FunctionLowerer<'a> {
             ast::ExpressionKind::Array(ast::AnyArray::Array(array)) => {
                 self.lower_array_literal(array)
             }
-            ast::ExpressionKind::New(inner_expr) => {
-                self.lower_new_expression(expr_id, *inner_expr, expr.span)
+            ast::ExpressionKind::New(inner_expr, mutable) => {
+                self.lower_new_expression(expr_id, *inner_expr, mutable, expr.span)
             }
             _ => Ok(mir::Rvalue::Use(self.lower_operand(expr_id)?)),
         }
@@ -184,6 +184,7 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         expr_id: ast::ExpressionId,
         inner_expr: ast::ExpressionId,
+        mutable: &Mutable,
         span: Span,
     ) -> MirResult<mir::Rvalue> {
         let ptr_ty = self
@@ -193,6 +194,7 @@ impl<'a> FunctionLowerer<'a> {
             .ok_or_else(|| {
                 Fault::error_with_kind(MirErrorKind::NestedExpressionHasNoResolvedType, Some(span))
             })?;
+
         let SoulType::Pointer(reference) = &ptr_ty else {
             return Err(soul_error_internal!(
                 "new(expr)'s own expression type is always SoulType::Pointer",
@@ -200,10 +202,11 @@ impl<'a> FunctionLowerer<'a> {
             )
             .into_kind());
         };
+
         let inner_ty = reference.inner;
         self.require_lowerable(inner_ty, span)?;
         let operand = self.lower_move_aware_operand(inner_expr)?;
-        Ok(mir::Rvalue::HeapAlloc(inner_ty, operand))
+        Ok(mir::Rvalue::HeapAlloc(inner_ty, operand, *mutable))
     }
 
     /// Lowers `Struct{field: value, ...}` into `Rvalue::Aggregate`, with the

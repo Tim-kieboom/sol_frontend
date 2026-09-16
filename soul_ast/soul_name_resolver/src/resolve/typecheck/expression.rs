@@ -189,6 +189,7 @@ impl<'a> NameResolver<'a> {
         &mut self,
         expression_id: ExpressionId,
         value: ExpressionId,
+        mutable: Mutable,
     ) {
         let Some(inner) = self.expression_type(value) else {
             return;
@@ -198,7 +199,7 @@ impl<'a> NameResolver<'a> {
         let ptr_ty = SoulType::Pointer(ReferenceType {
             inner,
             lifetime: None,
-            mutable: Mutable::Immut,
+            mutable,
         });
         self.declares.insert_expression_type(expression_id, ptr_ty);
     }
@@ -329,14 +330,14 @@ impl<'a> NameResolver<'a> {
             // an inner expression's type rather than being fixed or `None`.
             // `default_concrete_type`d for the same reason `check_new_
             // expression` does it — see that method's own docs.
-            ExpressionKind::New(value) => {
+            ExpressionKind::New(value, mutable) => {
                 let inner = self.expression_type(*value)?;
                 let inner = default_concrete_type(inner);
                 let inner = self.declares.intern_type(inner);
                 Some(SoulType::Pointer(ReferenceType {
                     inner,
                     lifetime: None,
-                    mutable: Mutable::Immut,
+                    mutable: mutable.clone(),
                 }))
             }
 

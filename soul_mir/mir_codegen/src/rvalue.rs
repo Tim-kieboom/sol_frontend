@@ -74,7 +74,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             }
             Rvalue::Len(place) => self.codegen_len(place),
             Rvalue::Cast(operand, _) => self.codegen_cast(operand, result_ty),
-            Rvalue::HeapAlloc(ty, operand) => self.codegen_heap_alloc(*ty, operand),
+            Rvalue::HeapAlloc(ty, operand, _mutable) => self.codegen_heap_alloc(*ty, operand),
             Rvalue::Aggregate(..) => Err(err(CodegenErrorKind::UnsupportedRvalue)),
         }
     }

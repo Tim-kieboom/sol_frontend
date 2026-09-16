@@ -1,7 +1,7 @@
 consume(v: *mut int) {}
 
 main(): i32 {
-    num := mut new(1)
+    num := new mut(1)
     consume(num)
     return 0
 }

@@ -16,8 +16,8 @@ use crate::{
     fault::AstResult,
     parser::Parser,
     utils::{
-        ARRAY, ARROW_LEFT, COLON, COMMA, CURLY_CLOSE, CURLY_OPEN, DOT, ROUND_CLOSE, ROUND_OPEN,
-        SQUARE_OPEN,
+        ARRAY, ARROW_LEFT, COLON, COMMA, CURLY_CLOSE, CURLY_OPEN, DOT, MUT, ROUND_CLOSE,
+        ROUND_OPEN, SQUARE_OPEN,
     },
 };
 
@@ -375,7 +375,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             KeyWord::New => {
                 self.bump();
                 match &self.token().kind {
-                    &ROUND_OPEN => self.parse_new_ptr(start_span)?,
+                    &ROUND_OPEN | &MUT => self.parse_new_ptr(start_span)?,
                     &SQUARE_OPEN | &ARRAY => self.parse_new_array(start_span)?,
                     _ => {
                         return Err(Fault::error_with_kind(
