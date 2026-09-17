@@ -1035,7 +1035,14 @@ that landing first, in order.
       every slice above (no new dedicated test added — the underlying `type_resolves`/
       `insert_type_resolve` mechanism is already covered at the `ast_model` level by Slice 2's own
       tests; this slice is a second, structurally identical producer of the same table).
-  - [ ] **Slice 4** — `TypeResolve::Trait`, `check_impl_conformance` migrates.
+  - [x] **Slice 4** — `check_impl_conformance` (`resolve/statement.rs`) now populates
+        `type_resolves` with `TypeResolve::Trait(entry.node_id)`, keyed directly on
+        `impl_block.impl_trait` (already the occurrence's own `TypeId` — no `get_type_id`
+        re-derivation needed here, unlike the struct/enum cases). Same shape as Slice 3: only one
+        call site ever resolves a trait-typed `Stub` today, so this is pure population, not a
+        duplicate-lookup migration. Proven by the same full `cargo test --workspace` (zero
+        warnings) + all 33 exe tests bar as every slice above (`26_trait_impl_dispatch.soul`
+        exercises `check_impl_conformance` directly).
   - [ ] **Slice 5** — `TypeResolve::Alias`, `resolve_type_alias` migrates.
   - [ ] **Slice 6** — `TypeResolve::Generic`, `is_generic_parameter`/`generic_name_of` migrate.
   - [ ] **Slice 7** — hard error (`UnresolvedTypeName`) at resolve time for a `Stub` occurrence that

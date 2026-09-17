@@ -107,6 +107,12 @@ impl<'a> NameResolver<'a> {
             .filter_map(|id| self.store.functions.get(*id))
             .map(FunctionKind::signature)
             .collect();
+
+        self.declares.insert_type_resolve(
+            impl_block.impl_trait,
+            ast_model::declare_store::TypeResolve::Trait(entry.expect("checked above").node_id),
+        );
+
         let impl_methods: Vec<&InnerFunctionSignature> = impl_block
             .methods
             .iter()
