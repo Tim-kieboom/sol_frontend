@@ -894,13 +894,27 @@ that landing first, in order.
       fully retiring it is Part C's job, not this one.
     - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
       every A-slice above.
-  - [ ] **Part C** — sequenced after A2/A5 land: retire `mir_codegen`'s own duplicated shape logic
-        (`operand_is_signed`, `operand_type`, `resolve_struct` in `rvalue.rs`/`types.rs`) in favor of
-        calling the same shared facts, instead of a second independent implementation kept in sync
-        by convention. `llvm_type`/`stub_type`/`array_type`'s struct-field-ordering and
-        array-kind-acceptance rules (comments there already say they "must match `mir_parser`'s own"
-        conventions) should pull from `require_lowerable`'s same accept-list rather than
-        re-encoding it.
+  - [x] **Part C** — `operand_is_signed` was already retired in A1; `mir_codegen::rvalue::operand_type`
+        turned out (per A5's correction) not to be a real duplicate at all, so nothing to retire
+        there. What was left:
+    - `mir_codegen::types::resolve_struct` — its only remaining call site (`stub_type`, within the
+      same file; `function.rs`'s `step_into_field` call site was already removed in A5) now goes
+      through `declares.resolve_struct(ty, module)` (A2) directly; the free function itself is
+      deleted.
+    - New `ArrayKind::is_lowerable(self) -> bool` (`ast_model::ast::soul_type`) — the actual shared
+      "which array kinds does this pipeline represent" rule, needing no `DeclareStore` at all (pure
+      enum classification). `DeclareStore::is_lowerable`'s array arm and `mir_codegen::array_type`'s
+      accept/reject guard both now call it, instead of each independently spelling out
+      `StackArray(_) | MutSlice | ConstSlice`. `array_type`'s own kind-`match` still does its own
+      per-kind LLVM-representation dispatch (that part is inherently codegen-specific, not shape
+      classification) — only the accept/reject decision moved, with its final
+      `StackArrayWildcard | HeapArray` arm now `unreachable!` (rejected by the guard above it).
+    - Struct-field-ordering was checked and found to be nothing to extract: `stub_type`'s field loop
+      is a plain `for field in struct_.fields` — the "same order as `mir_parser`'s `Aggregate`
+      operands" invariant is just both sides independently iterating a `Vec` in its natural
+      declared order, not a computed ordering rule; there's no function to share.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
+      every A-slice above.
   - [ ] **Part B** — new `mir_parser::desugar` submodule owning the `foreach`/`while` → loop +
         `SwitchInt` rewrite currently inlined in `control_flow.rs`. Explicitly *not* a new IR/tree
         stage — no separate desugared AST gets built and handed off; `lower_for`/`lower_while` call

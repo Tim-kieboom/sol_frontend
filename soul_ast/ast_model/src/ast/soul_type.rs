@@ -358,6 +358,19 @@ pub enum ArrayKind {
     ConstSlice,
 }
 
+impl ArrayKind {
+    /// Whether this array kind is one the current pipeline can actually
+    /// represent, in both MIR lowering (`DeclareStore::is_lowerable`) and
+    /// codegen (`mir_codegen`'s `array_type`) — a fixed-size stack array or
+    /// either slice kind, but not yet `StackArrayWildcard`/`HeapArray`.
+    pub fn is_lowerable(self) -> bool {
+        matches!(
+            self,
+            ArrayKind::StackArray(_) | ArrayKind::MutSlice | ArrayKind::ConstSlice
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ReferenceType {
     /// The inner type being referenced.

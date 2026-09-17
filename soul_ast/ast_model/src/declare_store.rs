@@ -318,13 +318,8 @@ impl DeclareStore {
     /// — callers that need a diagnostic on failure (`mir_parser`'s own
     /// `require_lowerable`) wrap this with their own `Fault`.
     pub fn is_lowerable(&self, ty: &SoulType, module: Option<ModuleId>) -> bool {
-        let is_lowerable_array = matches!(
-            ty,
-            SoulType::Array(array) if matches!(
-                array.kind,
-                crate::ArrayKind::StackArray(_) | crate::ArrayKind::MutSlice | crate::ArrayKind::ConstSlice
-            )
-        );
+        let is_lowerable_array =
+            matches!(ty, SoulType::Array(array) if array.kind.is_lowerable());
         matches!(ty, SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_))
             || self.resolve_struct(ty, module).is_some()
             || is_lowerable_array

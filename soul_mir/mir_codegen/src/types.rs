@@ -3,7 +3,7 @@
 //! these but none of them own any codegen *state* (no `Context`/`Builder`
 //! wrapper, just pure functions over inkwell's type/value builders).
 
-use ast_model::{ArrayKind, SoulType, Struct, TupleKind, declare_store::DeclareStore};
+use ast_model::{ArrayKind, SoulType, TupleKind, declare_store::DeclareStore};
 use inkwell::{
     AddressSpace,
     context::Context,
@@ -64,22 +64,6 @@ pub(crate) fn const_float<'ctx>(
             }));
         }
     })
-}
-
-/// Resolves a struct-typed `SoulType::Stub`'s bare name back to its `Struct`
-/// declaration — mirrors `mir_parser`'s own `resolve_struct`, since codegen
-/// gets handed the exact same unresolved `SoulType` MIR lowering already
-/// accepted. `None` for anything that isn't a `Stub`, or a `Stub` that
-/// doesn't name an in-scope struct.
-pub(crate) fn resolve_struct<'d>(
-    declares: &'d DeclareStore,
-    module: Option<ModuleId>,
-    ty: &SoulType,
-) -> Option<&'d Struct> {
-    let SoulType::Stub(stub) = ty else {
-        return None;
-    };
-    declares.get_struct_by_name(&stub.name, module?)
 }
 
 /// Narrows a value to an `IntValue`, faulting (not panicking) if it's
@@ -203,6 +187,16 @@ fn array_type<'ctx>(
     array: &ast_model::ArrayType,
     span: Option<Span>,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
+    if !array.kind.is_lowerable() {
+        return Err(Fault::error_with_kind(
+            CodegenErrorKind::NonPrimitiveType {
+                ty: ast_model::print_type(&SoulType::Array(array.clone()), declares)
+                    .to_string()
+                    .into_boxed_str(),
+            },
+            span,
+        ));
+    }
     match array.kind {
         ArrayKind::StackArray(len) => {
             let of_type = declares.get_type(array.of_type).ok_or_else(|| {
@@ -223,14 +217,9 @@ fn array_type<'ctx>(
                 .struct_type(&[ptr_ty.into(), len_ty.into()], false)
                 .into())
         }
-        ArrayKind::StackArrayWildcard | ArrayKind::HeapArray => Err(Fault::error_with_kind(
-            CodegenErrorKind::NonPrimitiveType {
-                ty: ast_model::print_type(&SoulType::Array(array.clone()), declares)
-                    .to_string()
-                    .into_boxed_str(),
-            },
-            span,
-        )),
+        ArrayKind::StackArrayWildcard | ArrayKind::HeapArray => {
+            unreachable!("already rejected above by is_lowerable")
+        }
     }
 }
 
@@ -242,7 +231,7 @@ fn stub_type<'ctx>(
     ty: &SoulType,
     span: Option<Span>,
 ) -> Result<BasicTypeEnum<'ctx>, Fault<CodegenErrorKind>> {
-    let struct_ = resolve_struct(declares, module, ty).ok_or_else(|| {
+    let struct_ = declares.resolve_struct(ty, module).ok_or_else(|| {
         Fault::error_with_kind(
             CodegenErrorKind::NonPrimitiveType {
                 ty: ast_model::print_type(ty, declares)
