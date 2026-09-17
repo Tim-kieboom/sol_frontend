@@ -288,6 +288,80 @@ impl DeclareStore {
         }
     }
 
+    /// Resolves a struct-typed `SoulType::Stub`'s bare name back to its
+    /// `Struct` declaration, scoped to `module`. `None` for anything that
+    /// isn't a `Stub`, or a `Stub` that doesn't name a struct visible from
+    /// `module` (an enum/trait, a generic, or an unresolved name). Shared by
+    /// `mir_parser` and `mir_codegen` — both used to carry an identical
+    /// private copy of this same lookup.
+    ///
+    /// Note: this takes `module` as an explicit parameter rather than being
+    /// cached per-`TypeId`, because `SoulType::Stub` only carries a bare name
+    /// (no module qualifier) — two different modules' same-named-but-
+    /// different structs intern to the *same* `TypeId`, so a `TypeId`-only
+    /// cache would silently return the wrong module's answer. See TODO.md's
+    /// pipeline-cleanup entry for the (deferred) fixes to that.
+    pub fn resolve_struct(&self, ty: &SoulType, module: Option<ModuleId>) -> Option<&Struct> {
+        let SoulType::Stub(stub) = ty else {
+            return None;
+        };
+        self.get_struct_by_name(&stub.name, module?)
+    }
+
+    /// Whether `ty` is one this compiler's MIR lowering can turn into a local
+    /// at all: primitives, structs whose name resolves to a declaration
+    /// visible from `module`, fixed-size-array/slice-typed arrays (`[N]T`,
+    /// `[&]T`, `[&mut]T`), and bare `&T`/`&mut T`/`*T` references. A
+    /// reference is just an opaque pointer-sized value here (no recursive
+    /// check on its inner type). Everything else (wildcard/heap arrays,
+    /// generics, an undeclared/unresolvable name) isn't. Pure classification
+    /// — callers that need a diagnostic on failure (`mir_parser`'s own
+    /// `require_lowerable`) wrap this with their own `Fault`.
+    pub fn is_lowerable(&self, ty: &SoulType, module: Option<ModuleId>) -> bool {
+        let is_lowerable_array = matches!(
+            ty,
+            SoulType::Array(array) if matches!(
+                array.kind,
+                crate::ArrayKind::StackArray(_) | crate::ArrayKind::MutSlice | crate::ArrayKind::ConstSlice
+            )
+        );
+        matches!(ty, SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_))
+            || self.resolve_struct(ty, module).is_some()
+            || is_lowerable_array
+    }
+
+    /// Classifies `ty` as `AutoCopy` (`Operand::Copy` is safe — reading it
+    /// doesn't invalidate the source) or move-only (`Operand::Move` needed).
+    /// Only meaningful for a type `is_lowerable` already accepts — callers
+    /// that need to reject an unlowerable type first should check that
+    /// themselves (this never panics on one, it just falls through to the
+    /// `false`/move-only default below, same as a resolved struct would).
+    ///
+    /// Primitives and references are `AutoCopy` — a `&T`/`&mut T` reference
+    /// never owns what it points at, so copying it is always sound
+    /// regardless of what's on the other end. A slice (`[&]T`/`[&mut]T`) is
+    /// the same fat-pointer case: non-owning, so `AutoCopy` too, even though
+    /// it's a `SoulType::Array`.
+    ///
+    /// `SoulType::Pointer` (`*T`) is deliberately **not** `AutoCopy` — unlike
+    /// `&T`, a `*T` is an *owning* heap pointer (`new(expr)`'s own result
+    /// type; its `Drop` frees the allocation), so it's move-only, same as a
+    /// struct: copying it would produce two "owners" of the same allocation,
+    /// both trying to free it. A resolved struct and an *owning* array
+    /// (`StackArray`/`HeapArray`) are move-only for the same reason.
+    pub fn is_auto_copy(&self, ty: &SoulType) -> bool {
+        match ty {
+            SoulType::Primitive(_) | SoulType::Reference(_) => true,
+            SoulType::Array(array) => {
+                matches!(
+                    array.kind,
+                    crate::ArrayKind::MutSlice | crate::ArrayKind::ConstSlice
+                )
+            }
+            _ => false,
+        }
+    }
+
     /// Records that a variable reference node resolves to the declaration
     /// node `resolved`. Returns the previously stored resolution, if any.
     pub fn insert_variable_resolve(&mut self, node_id: NodeId, resolved: NodeId) -> Option<NodeId> {

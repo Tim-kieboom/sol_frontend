@@ -432,34 +432,15 @@ impl<'a> FunctionLowerer<'a> {
         id
     }
 
-    /// Accepts primitives, structs whose name resolves to a declaration in
-    /// this function's module, fixed-size-array/slice-typed arrays
-    /// (`[N]T`, `[&]T`, `[&mut]T`), and bare `&T`/`&mut T`/`*T` references —
-    /// the boundary this lowering slice actually knows how to turn into MIR
-    /// locals/places. A reference is just an opaque pointer-sized value here
-    /// (no recursive check on `T`: a place built by dereferencing it is
-    /// re-validated on its own terms wherever it's actually used, the same
-    /// way a struct field's type already is). Everything else
-    /// (wildcard/heap arrays, generics, an undeclared/unresolvable name)
-    /// still faults, same as before struct support existed.
+    /// Faults with a diagnostic when `ty` isn't one MIR lowering can turn
+    /// into a local — see `DeclareStore::is_lowerable` for the actual accept
+    /// list (shared with `mir_codegen`, which needs the same classification).
     fn require_lowerable(&self, ty: mir::Type, span: Span) -> MirResult<()> {
         let resolved = self
             .declares
             .get_type(ty)
             .expect("mir::Type is always an interned TypeId");
-        let is_lowerable_array = matches!(
-            resolved,
-            SoulType::Array(array) if matches!(
-                array.kind,
-                ast::ArrayKind::StackArray(_) | ast::ArrayKind::MutSlice | ast::ArrayKind::ConstSlice
-            )
-        );
-        if matches!(
-            resolved,
-            SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_)
-        ) || self.resolve_struct(resolved).is_some()
-            || is_lowerable_array
-        {
+        if self.declares.is_lowerable(resolved, self.module) {
             return Ok(());
         }
         Err(Fault::error_with_kind(
@@ -470,48 +451,18 @@ impl<'a> FunctionLowerer<'a> {
         ))
     }
 
-    /// Classifies `ty` as `AutoCopy` (`Operand::Copy` is safe — reading it
-    /// doesn't invalidate the source) or move-only (`Operand::Move` needed —
-    /// see `docs/mir-design.md`'s move/drop section), for the upcoming
-    /// `Move`/`MarkMoved` lowering. Only ever needs an opinion on the subset
-    /// `require_lowerable` already accepts — calls it first, so both
-    /// "can this even become a MIR local" and "is it AutoCopy" are governed
-    /// by the exact same accept list instead of two independent matches that
-    /// could silently drift apart as `SoulType` grows new variants.
-    ///
-    /// Primitives and references are `AutoCopy` — a `&T`/`&mut T` reference
-    /// never owns what it points at, so copying it is always sound
-    /// regardless of what's on the other end. A slice (`[&]T`/`[&mut]T`) is
-    /// the same fat-pointer case: non-owning, so `AutoCopy` too, even though
-    /// it's a `SoulType::Array`.
-    ///
-    /// `SoulType::Pointer` (`*T`) is deliberately **not** in that list —
-    /// unlike `&T`/`RawPtr<T>`, a `*T` is an *owning* heap pointer (the
-    /// `new(expr)` intrinsic's own result type; its `Drop` frees the
-    /// allocation), so it's move-only, same as a struct: copying it would
-    /// produce two "owners" of the same allocation, both trying to free it.
-    ///
-    /// A resolved struct (`Stub`) and an *owning* array (`StackArray`/
-    /// `HeapArray`) are also move-only — everything else that reaches this
-    /// point (only those two `SoulType::Array` kinds and `Pointer` remain
-    /// possible once `require_lowerable` has already accepted `ty`) falls
-    /// through to that move-only default.
+    /// Classifies `ty` as `AutoCopy` (`Operand::Copy` is safe) or move-only
+    /// (`Operand::Move` needed — see `docs/mir-design.md`'s move/drop
+    /// section), for `Move`/`MarkMoved` lowering. Faults first via
+    /// `require_lowerable` — see `DeclareStore::is_auto_copy` for the actual
+    /// classification, shared with `mir_codegen`.
     pub(crate) fn is_auto_copy(&self, ty: mir::Type, span: Span) -> MirResult<bool> {
         self.require_lowerable(ty, span)?;
         let resolved = self
             .declares
             .get_type(ty)
             .expect("mir::Type is always an interned TypeId");
-        Ok(match resolved {
-            SoulType::Primitive(_) | SoulType::Reference(_) => true,
-            SoulType::Array(array) => {
-                matches!(
-                    array.kind,
-                    ast::ArrayKind::MutSlice | ast::ArrayKind::ConstSlice
-                )
-            }
-            _ => false,
-        })
+        Ok(self.declares.is_auto_copy(resolved))
     }
 
     fn new_block(&mut self) -> mir::BlockId {

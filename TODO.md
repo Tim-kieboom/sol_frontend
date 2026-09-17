@@ -791,11 +791,46 @@ that landing first, in order.
     - Proven by the full `cargo test --workspace` (all crates green, zero warnings) + all 33 exe
       tests (`scripts/run_codegen_tests.py`) passing unchanged — none of these were behavior
       changes, purely relocations.
-  - [ ] **Part A2** — move `is_auto_copy`, `require_lowerable`, `resolve_struct` (all
-        `mir_parser::function::mod`/`type`) onto `DeclareStore` itself (not just
-        `soul_name_resolver` — `mir_codegen` needs the same facts, see Part C), with a per-`TypeId`
-        fact cache instead of re-deriving from `SoulType` shape on every call site. Directly
-        unblocks resuming the paused borrow-checker slice, since these are the most-recomputed.
+  - [x] **Part A2** — moved `resolve_struct`/`is_lowerable`/`is_auto_copy` (formerly
+        `mir_parser::function::mod`'s `require_lowerable`/`is_auto_copy` and `function::type`'s
+        `resolve_struct`) onto `DeclareStore` itself (`ast_model::declare_store`), as pure
+        classification methods `mir_parser` now calls as thin wrappers (`require_lowerable` keeps
+        its own `Fault`-constructing shape, but delegates the actual classification).
+    - **No cache** — dropped from the original plan after a `/grill-me` follow-up surfaced a real
+      correctness hazard: `SoulType::Stub` only carries a bare `name` (no module qualifier), so two
+      *different* modules' same-named-but-different structs intern to the **same** `TypeId` — a
+      `TypeId`-only cache would silently answer with whichever module's struct got cached first.
+      Since the actual computation being deduplicated (a `BiMap` lookup + an enum `match`, plus one
+      already-module-scoped `HashMap` lookup for struct resolution) was never a measured performance
+      problem — only a *duplicated-across-crates* one — the fix was to just take `module` as an
+      explicit parameter everywhere (same cost as before, correctness-safe by construction) rather
+      than force a cache to be correct. Two follow-up ideas surfaced by that discussion, logged
+      rather than acted on:
+      - **Smaller stopgap (not done):** give `Stub` an `Option<ModuleId>` field that participates in
+        its own `Eq`/`Hash`, so structurally-identical-but-different-module `Stub`s intern to
+        genuinely different `TypeId`s (making a future `TypeId`-only cache sound). Bounded to 4
+        production construction sites (`ast_parser`'s `parse/soul_type.rs` ×2,
+        `parse/statements/{objects,from_keyword}.rs`, each of which already has the current module
+        via `ParseInfo.id`) plus ~20 existing test assertions that construct
+        `Stub::new("Name")`/compare against a parsed result, which would need the right module
+        threaded through too (the module field can't be excluded from `Eq`/`Hash` without silently
+        defeating the fix). Considered and deliberately not done in this pass — real but bounded
+        cost, revisit if `resolve_struct`-family calls ever actually show up in a profile.
+      - **Bigger, root-cause redesign (not done):** stop interning bare-name `Stub` references into
+        the long-lived `SoulType`/`TypeId` system at all — have the resolver replace a `Stub` with a
+        real resolved reference (e.g. `SoulType::Struct(StructId)`, pointing straight at the
+        declaration) the moment it resolves it, so every downstream consumer (`mir_parser`,
+        `mir_codegen`) carries an unambiguous, self-contained type with **no module parameter needed
+        anywhere** — the specific caching hazard above stops being possible by construction, not by
+        careful parameter-threading. Would also mean an unresolved name becomes a hard resolve-time
+        error instead of a `Stub` that every consumer downstream has to independently reject. Not
+        attempted here: it ripples through the *entire* already-completed `TypeId`-flattening series
+        (every AST-node-attached type field would need a "still just a name, ask the resolver to
+        finalize it" story), since types are interned eagerly *during parsing*
+        (`ast_parser::intern_type`), before the resolver — the only pass with full module/import
+        context — has run at all.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests
+      (`scripts/run_codegen_tests.py`) bar as A1 — pure relocation, no behavior change.
   - [ ] **Part A3** — move `is_type_boolean`/`expression_is_bool` and `is_float_operand`
         (`mir_parser::function::type`) to the resolver the same way — both already read
         `self.declares`, so this is closer to mechanical relocation than A2.

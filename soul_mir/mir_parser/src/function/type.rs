@@ -98,14 +98,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     /// Resolves a struct-typed `SoulType::Stub`'s bare name back to its
-    /// `Struct` declaration in this function's module. `None` for anything
-    /// that isn't a `Stub`, or a `Stub` that doesn't name a struct in scope
-    /// (an enum/trait, a generic, or an unresolved name).
+    /// `Struct` declaration in this function's module — see
+    /// `DeclareStore::resolve_struct`, shared with `mir_codegen`.
     pub(super) fn resolve_struct(&self, ty: &SoulType) -> Option<&ast::Struct> {
-        let SoulType::Stub(stub) = ty else {
-            return None;
-        };
-        self.declares.get_struct_by_name(&stub.name, self.module?)
+        self.declares.resolve_struct(ty, self.module)
     }
 
     fn is_type_boolean(&self, var: &ast_model::VariableExpression) -> bool {
