@@ -865,11 +865,35 @@ that landing first, in order.
     - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
       every A-slice above — pure relocation, no behavior change. `29_deref_places.soul` specifically
       exercises both `mir_parser` call sites end-to-end.
-  - [ ] **Part A5** — partial only (not a full move): extract the shared *projection rule* behind
-        `place_type`/`operand_type` (`mir_parser::function::type`) — "given a type + a
-        field-index/array/deref step, what's the resulting type" — as a helper both `mir_parser`
-        and `mir_codegen`'s own duplicate `operand_type` (`rvalue.rs`) can call; the traversal itself
-        (walking `mir::Place`/`LocalId`) stays in each crate since that's MIR-only structure.
+  - [x] **Part A5** — partial, as scoped, plus a correction found while doing it: the function
+        originally named (`mir_codegen::rvalue::operand_type`) turned out **not** to be the real
+        duplicate — it only ever looks at a bare local with an *empty* projection and returns an
+        LLVM `BasicTypeEnum`, never walking `Field`/`Index`/`Deref` at all. The actual duplicate of
+        `place_type`'s per-step walk was `mir_codegen::function::resolve_place`'s
+        `step_into_field`/`step_into_index`/`step_into_deref`, which compute the same Soul-type
+        transition interleaved with the LLVM pointer/GEP mechanics.
+    - New `PlaceElem::step_type(&self, ty, declares, module) -> Option<SoulType>` (`mir_model`, not
+      `ast_model` — `PlaceElem` is MIR-only, and `mir_model` already depends on `ast_model`) is the
+      one shared "given a type and a projection step, what's the resulting type" rule.
+      `mir_parser::place_type`'s loop is now a two-line `for elem in &place.projection { ty =
+      elem.step_type(&ty, self.declares, self.module)?; }` (previously a 27-line inline match); its
+      `Deref` arm was *also* still duplicating `SoulType::deref_once` (A4) inline — folded in too,
+      a gap the earlier A4 pass missed.
+    - `mir_codegen::function::resolve_place`'s three steps: `step_into_deref` now calls
+      `soul_ty.deref_once(declares)` directly (a clean full swap — no new `mir_model` code needed,
+      A4's helper already covered it exactly); `step_into_field`/`step_into_index` now get their
+      `field_ty`/`element_ty` from `PlaceElem::{Field,Index}(..).step_type(..)` instead of
+      re-deriving it inline, while keeping their own GEP-shape dispatch and (for `step_into_index`)
+      the extra slice-kind guard (`MutSlice`/`ConstSlice` only) as an explicit check *before*
+      calling `step_type` — preserving that real strictness difference from `place_type` (which
+      doesn't care what kind of array it is, since it's just re-deriving an already-validated
+      place) rather than blurring it into one shared function.
+    - `mir_codegen::types::resolve_struct`'s only call site inside `function.rs` (`step_into_field`)
+      is gone as a side effect — it now goes through `step_type` → `DeclareStore::resolve_struct`
+      (A2) instead. `types::resolve_struct` itself still exists for `stub_type`'s own call site;
+      fully retiring it is Part C's job, not this one.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
+      every A-slice above.
   - [ ] **Part C** — sequenced after A2/A5 land: retire `mir_codegen`'s own duplicated shape logic
         (`operand_is_signed`, `operand_type`, `resolve_struct` in `rvalue.rs`/`types.rs`) in favor of
         calling the same shared facts, instead of a second independent implementation kept in sync

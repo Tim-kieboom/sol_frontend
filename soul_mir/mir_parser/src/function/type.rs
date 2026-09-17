@@ -20,30 +20,7 @@ impl<'a> FunctionLowerer<'a> {
             .get_type(self.locals.get(place.local)?.ty)?
             .clone();
         for elem in &place.projection {
-            ty = match elem {
-                mir::PlaceElem::Field(index) => {
-                    if let SoulType::TupleKind(ast::TupleKind::Tuple(types)) = &ty {
-                        let id = *types.get(*index)?;
-                        self.declares.get_type(id)?.clone()
-                    } else {
-                        let struct_ = self.resolve_struct(&ty)?;
-                        let field_ty_id = struct_.fields.get(*index)?.value.ty?;
-                        self.declares.get_type(field_ty_id)?.clone()
-                    }
-                }
-                mir::PlaceElem::Index(_) => {
-                    let SoulType::Array(array) = &ty else {
-                        return None;
-                    };
-                    self.declares.get_type(array.of_type)?.clone()
-                }
-                mir::PlaceElem::Deref => match ty {
-                    SoulType::Reference(reference) | SoulType::Pointer(reference) => {
-                        self.declares.get_type(reference.inner)?.clone()
-                    }
-                    _ => return None,
-                },
-            };
+            ty = elem.step_type(&ty, self.declares, self.module)?;
         }
         Some(ty)
     }

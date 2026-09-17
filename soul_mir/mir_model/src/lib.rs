@@ -7,12 +7,12 @@
 //! calls, structs, borrow checking) are new passes over an already-complete shape
 //! rather than a shape migration.
 
-use ast_model::{Literal, TypeId, operators::BinaryOperatorKind};
+use ast_model::{Literal, SoulType, TypeId, declare_store::DeclareStore, operators::BinaryOperatorKind};
 use soul_utils::{
     FunctionId, Mutable, TypeModifier,
     collections::{array::Arr, vec_map::VecMap},
     impl_soul_ids,
-    span::Span,
+    span::{ModuleId, Span},
 };
 
 impl_soul_ids!(LocalId, BlockId);
@@ -187,6 +187,49 @@ pub enum PlaceElem {
     Field(usize),
     Index(LocalId),
     Deref,
+}
+
+impl PlaceElem {
+    /// The Soul type reached by stepping through this one projection element
+    /// from `ty` — a struct/tuple field's type for `Field`, an array's
+    /// element type for `Index` (any array kind; a caller that only accepts
+    /// some kinds, e.g. `mir_codegen`'s slice-only restriction, checks that
+    /// itself before calling this), a reference/pointer's inner type for
+    /// `Deref` (delegates to `SoulType::deref_once`). `None` if `ty` doesn't
+    /// support this step at all (an unresolvable struct/field, a non-array
+    /// `Index`, a non-reference `Deref`).
+    ///
+    /// Shared by `mir_parser`'s `place_type` (a pure, side-effect-free
+    /// Soul-type re-derivation of an already-built `Place`) and
+    /// `mir_codegen`'s `resolve_place` (which additionally walks the
+    /// matching LLVM pointer/GEP for each step — that mechanical half stays
+    /// separate, since it's inherently codegen-specific).
+    pub fn step_type(
+        &self,
+        ty: &SoulType,
+        declares: &DeclareStore,
+        module: Option<ModuleId>,
+    ) -> Option<SoulType> {
+        match self {
+            PlaceElem::Field(index) => {
+                if let SoulType::TupleKind(ast_model::TupleKind::Tuple(types)) = ty {
+                    let id = *types.get(*index)?;
+                    declares.get_type(id).cloned()
+                } else {
+                    let struct_ = declares.resolve_struct(ty, module)?;
+                    let field_ty_id = struct_.fields.get(*index)?.value.ty?;
+                    declares.get_type(field_ty_id).cloned()
+                }
+            }
+            PlaceElem::Index(_) => {
+                let SoulType::Array(array) = ty else {
+                    return None;
+                };
+                declares.get_type(array.of_type).cloned()
+            }
+            PlaceElem::Deref => ty.deref_once(declares),
+        }
+    }
 }
 
 /// Every block ends in exactly one of these; this is the whole CFG.

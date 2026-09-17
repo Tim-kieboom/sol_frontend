@@ -6,7 +6,7 @@
 
 use std::cell::Cell;
 
-use ast_model::{ArrayKind, AstStore, SoulType, TupleKind};
+use ast_model::{ArrayKind, AstStore, SoulType};
 use inkwell::{
     AddressSpace,
     basic_block::BasicBlock as LlvmBlock,
@@ -27,7 +27,7 @@ use crate::{
     fault::{CodegenErrorKind, CodegenResult},
     llvm_err,
     module::ModuleCodegen,
-    types::{expect_int, resolve_struct},
+    types::expect_int,
 };
 
 pub(crate) struct FunctionCodegen<'ctx, 'a> {
@@ -229,21 +229,9 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         soul_ty: &SoulType,
         index: usize,
     ) -> CodegenResult<SoulType> {
-        let field_ty = if let SoulType::TupleKind(TupleKind::Tuple(types)) = soul_ty {
-            types
-                .get(index)
-                .and_then(|id| self.ctx.declares.get_type(*id).cloned())
-                .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?
-        } else {
-            let struct_ = resolve_struct(self.ctx.declares, self.soul_module, soul_ty)
-                .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
-            struct_
-                .fields
-                .get(index)
-                .and_then(|field| field.value.ty)
-                .and_then(|id| self.ctx.declares.get_type(id).cloned())
-                .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?
-        };
+        let field_ty = PlaceElem::Field(index)
+            .step_type(soul_ty, self.ctx.declares, self.soul_module)
+            .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
 
         let BasicTypeEnum::StructType(struct_llvm_ty) =
             self.ctx.llvm_type(self.soul_module, soul_ty, None)?
@@ -269,14 +257,8 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         ptr: &mut PointerValue<'ctx>,
         soul_ty: &SoulType,
     ) -> CodegenResult<SoulType> {
-        let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = soul_ty else {
-            return Err(err(CodegenErrorKind::PlaceProjectionUnsupported));
-        };
-        let inner_ty = self
-            .ctx
-            .declares
-            .get_type(reference.inner)
-            .cloned()
+        let inner_ty = soul_ty
+            .deref_once(self.ctx.declares)
             .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
 
         let opaque_ptr_ty = self.ctx.context.ptr_type(AddressSpace::default());
@@ -311,11 +293,8 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         if !matches!(array.kind, ArrayKind::MutSlice | ArrayKind::ConstSlice) {
             return Err(err(CodegenErrorKind::PlaceProjectionUnsupported));
         }
-        let element_ty = self
-            .ctx
-            .declares
-            .get_type(array.of_type)
-            .cloned()
+        let element_ty = PlaceElem::Index(index_local)
+            .step_type(soul_ty, self.ctx.declares, self.soul_module)
             .ok_or_else(|| err(CodegenErrorKind::PlaceProjectionUnsupported))?;
 
         let data_ptr = self.slice_data_ptr(*ptr, soul_ty)?;
