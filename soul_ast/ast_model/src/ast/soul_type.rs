@@ -4,7 +4,7 @@ use soul_utils::{
     Ident, Mutable, SharedStr, collections::array::RcArr, impl_soul_ids, soul_names::PrimitiveTypes,
 };
 
-use crate::declare_store::DeclareStore;
+use crate::{NodeId, declare_store::DeclareStore};
 
 // TypeId: uniquely identifies a canonical, interned SoulType — see
 // DeclareStore::intern_type.
@@ -383,12 +383,27 @@ pub struct ReferenceType {
 
 /// An as-yet-unresolved named type reference (e.g. a struct/enum/trait name
 /// before it has been linked to its declaration), with any generic arguments.
+///
+/// `occurrence` is a fresh `NodeId` the parser allocates once per syntactic
+/// type-name occurrence (not shared/deduplicated across occurrences), and
+/// participates in this struct's own `Eq`/`Hash` — so two textually
+/// identical names (`Point` written in two different modules, or even twice
+/// in the same function) always intern to two different `TypeId`s. This is
+/// deliberate: interning `Stub` purely by `name`/`generics` (as it was
+/// before) meant two different modules' same-named-but-different structs
+/// collided on one `TypeId`, which made per-`TypeId` caching of struct
+/// resolution unsound (see `DeclareStore::resolve_struct`'s own history) and
+/// left "does this name resolve to anything" as something every downstream
+/// consumer had to reject independently instead of once, at resolve time.
+/// `DeclareStore::type_resolves` is keyed on this now-unique `TypeId`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Stub {
     /// The referenced type's name.
     pub name: SharedStr,
     /// The generic type arguments applied to the reference, if any.
     pub generics: RcArr<TypeId>,
+    /// This occurrence's own identity — see the struct's own docs.
+    pub occurrence: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -400,12 +415,35 @@ pub struct Generic {
 }
 
 impl Stub {
-    /// Creates a stub reference to a named type with no generic arguments.
-    pub fn new(name: impl Into<Rc<str>>) -> Self {
+    /// Creates a stub reference to a named type with no generic arguments, at
+    /// a real occurrence — use this from production parsing code, where a
+    /// fresh `NodeId` is always available.
+    pub fn new_at(name: impl Into<Rc<str>>, occurrence: NodeId) -> Self {
         Self {
             generics: RcArr::new(),
             name: SharedStr::new(name),
+            occurrence,
         }
+    }
+
+    /// Test/fixture convenience: a stub reference with no real occurrence
+    /// identity (`NodeId::ERROR`). Never equal to a genuinely parsed `Stub`
+    /// (which always carries a real, unique `occurrence`) — tests that need
+    /// to assert something about a parsed/resolved `Stub` should use
+    /// `matches_ignoring_occurrence` instead of comparing full equality
+    /// against this. Production code should use `new_at`, which takes a
+    /// real occurrence.
+    pub fn new(name: impl Into<Rc<str>>) -> Self {
+        Self::new_at(name, NodeId::ERROR)
+    }
+
+    /// Test/fixture helper: compares two stubs by `name`/`generics` only,
+    /// ignoring `occurrence` — a hand-built expected `Stub` (via `new`/
+    /// `new_at`) can never share a real parsed value's occurrence, so a
+    /// test asserting "this resolved to a `Stub` named `Foo`" should use
+    /// this instead of `==`/`assert_eq!`.
+    pub fn matches_ignoring_occurrence(&self, other: &Stub) -> bool {
+        self.name == other.name && self.generics == other.generics
     }
 }
 

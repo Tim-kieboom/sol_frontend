@@ -614,10 +614,12 @@ fn all_kinds() {
             ..
         }) => {
             assert!(!is_distinct);
-            assert_eq!(
-                declares.get_type(*new_type),
-                Some(&SoulType::Stub(Stub::new("MyInt".to_string())))
-            );
+            match declares.get_type(*new_type) {
+                Some(SoulType::Stub(stub)) => {
+                    assert!(stub.matches_ignoring_occurrence(&Stub::new("MyInt".to_string())))
+                }
+                other => panic!("expected a Stub named MyInt, got {other:?}"),
+            }
             assert_eq!(
                 declares.get_type(*old_type),
                 Some(&SoulType::Primitive(PrimitiveTypes::Int))
@@ -636,10 +638,12 @@ fn all_kinds() {
             ..
         }) => {
             assert!(is_distinct);
-            assert_eq!(
-                declares.get_type(*new_type),
-                Some(&SoulType::Stub(Stub::new("DistinctInt".to_string())))
-            );
+            match declares.get_type(*new_type) {
+                Some(SoulType::Stub(stub)) => assert!(
+                    stub.matches_ignoring_occurrence(&Stub::new("DistinctInt".to_string()))
+                ),
+                other => panic!("expected a Stub named DistinctInt, got {other:?}"),
+            }
             assert_eq!(
                 declares.get_type(*old_type),
                 Some(&SoulType::Primitive(PrimitiveTypes::Int))

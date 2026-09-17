@@ -1,7 +1,7 @@
 use ast_model::{
     Assignment, CustomType, Enum, EnumVariant, ExpressionId, FunctionKind, ImplBlock,
     InnerFunctionSignature, SoulType, StatementId, StatementKind, Struct, Trait, UseBlock,
-    VarPattern, Variable, scope::ScopeTypeEntryKind,
+    VarPattern, Variable, declare_store::DeclareStore, scope::ScopeTypeEntryKind,
 };
 use ast_parser::fault::AstErrorKind;
 use soul_utils::{FunctionId, soul_error_internal, span::Span};
@@ -130,7 +130,7 @@ impl<'a> NameResolver<'a> {
                 continue;
             };
 
-            if !signatures_match(trait_sig, impl_sig) {
+            if !signatures_match(self.declares, trait_sig, impl_sig) {
                 self.log_error(
                     AstErrorKind::ImplTraitMethodSignatureMismatch {
                         trait_name: trait_name.clone(),
@@ -263,13 +263,23 @@ impl<'a> NameResolver<'a> {
 /// Compares an impl method's signature against its trait method's, ignoring
 /// the receiver (`method_type` never matches — see `check_impl_conformance`)
 /// and parameter names (M1 conformance is positional-type-only, not named).
-fn signatures_match(trait_sig: &InnerFunctionSignature, impl_sig: &InnerFunctionSignature) -> bool {
+///
+/// Parameter/return types compare via `types_equal_ignoring_occurrence`, not
+/// raw `TypeId` equality: the trait method's types are parsed from the
+/// `trait` block, the impl method's from a separate `impl` block — two
+/// independent occurrences of the same struct/enum name, which no longer
+/// share a `TypeId` now that `Stub` carries a per-occurrence identity.
+fn signatures_match(
+    declares: &DeclareStore,
+    trait_sig: &InnerFunctionSignature,
+    impl_sig: &InnerFunctionSignature,
+) -> bool {
     trait_sig.function_kind == impl_sig.function_kind
-        && trait_sig.return_type == impl_sig.return_type
+        && declares.types_equal_ignoring_occurrence(trait_sig.return_type, impl_sig.return_type)
         && trait_sig.parameters.len() == impl_sig.parameters.len()
         && trait_sig
             .parameters
             .iter()
             .zip(&impl_sig.parameters)
-            .all(|(a, b)| a.ty == b.ty)
+            .all(|(a, b)| declares.types_equal_ignoring_occurrence(a.ty, b.ty))
 }

@@ -158,7 +158,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let mut methods = vec![];
         let mut typedefs = vec![];
-        let this_type = SoulType::Stub(Stub::new(name.as_str()));
+        let this_type = SoulType::Stub(Stub::new_at(name.as_str(), self.alloc_node()));
         loop {
             self.skip_end_lines();
             if self.current_is(&CURLY_CLOSE) {

@@ -22,7 +22,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
         let mut fields = vec![];
         let mut statements = vec![];
-        let this_type = SoulType::Stub(Stub::new(struct_name.to_string()));
+        let this_type = SoulType::Stub(Stub::new_at(struct_name.to_string(), self.alloc_node()));
 
         let prev_type = self.current.this_type.take();
         self.current.this_type = Some(this_type);

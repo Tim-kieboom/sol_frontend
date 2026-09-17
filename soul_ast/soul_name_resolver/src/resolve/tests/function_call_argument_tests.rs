@@ -62,6 +62,23 @@ fn generic_used_once_is_skipped_without_fault() {
     assert_eq!(fault_count_matching(&ast, is_generic_parameter_conflict), 0);
 }
 
+/// Regression test for the `Stub`-occurrence-identity change: `Point` is
+/// written three separate times here (the struct's own field type is
+/// irrelevant; what matters is the parameter annotation, the variable's
+/// declared type, and the struct-constructor's target type below) — three
+/// independent syntactic occurrences of the same name, each interning to
+/// its own distinct `TypeId` now that `Stub` carries a per-occurrence
+/// identity. Argument-type checking must still recognize them as the same
+/// type via `DeclareStore::soul_types_equal_ignoring_occurrence`, not raw
+/// `TypeId`/`SoulType` equality.
+#[test]
+fn struct_argument_matches_parameter_across_independently_parsed_occurrences() {
+    let ast = resolve_source(
+        "struct Point { x: i64 }\nconsume(p: Point) {}\nmain() {\n    a: Point = Point{x: 1}\n    consume(a)\n}\n",
+    );
+    assert_eq!(fault_count_matching(&ast, is_argument_type_mismatch), 0);
+}
+
 #[test]
 fn non_distinct_type_alias_is_interchangeable_with_its_underlying_type() {
     let ast = resolve_source(

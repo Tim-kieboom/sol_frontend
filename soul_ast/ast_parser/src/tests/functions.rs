@@ -512,7 +512,12 @@ fn function_with_where_clause() {
     let Generic { name, bound } = &signature.value.generics[0];
     assert_eq!(name.as_str(), "T");
     let bound = bound.as_ref().expect("expected a bound");
-    assert_eq!(*bound, SoulType::Stub(Stub::new("Display")));
+    match bound {
+        SoulType::Stub(stub) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Display")))
+        }
+        other => panic!("expected a Stub named Display, got {other:?}"),
+    }
 }
 
 #[test]
@@ -538,10 +543,16 @@ fn function_with_multi_where_clause() {
     assert_eq!(signature.value.generics.len(), 2);
     let Generic { name, bound } = &signature.value.generics[0];
     assert_eq!(name.as_str(), "T");
-    assert_eq!(*bound.as_ref().unwrap(), SoulType::Stub(Stub::new("A")));
+    match bound.as_ref().unwrap() {
+        SoulType::Stub(stub) => assert!(stub.matches_ignoring_occurrence(&Stub::new("A"))),
+        other => panic!("expected a Stub named A, got {other:?}"),
+    }
     let Generic { name, bound } = &signature.value.generics[1];
     assert_eq!(name.as_str(), "U");
-    assert_eq!(*bound.as_ref().unwrap(), SoulType::Stub(Stub::new("B")));
+    match bound.as_ref().unwrap() {
+        SoulType::Stub(stub) => assert!(stub.matches_ignoring_occurrence(&Stub::new("B"))),
+        other => panic!("expected a Stub named B, got {other:?}"),
+    }
 }
 
 // ----------------------------------------------------------------
@@ -549,7 +560,7 @@ fn function_with_multi_where_clause() {
 // ----------------------------------------------------------------
 #[test]
 fn param_impl_trait() {
-    let (module, store, context, mut declares) =
+    let (module, store, context, declares) =
         parse_with_declares("describeImpl(value: impl Display): str {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
@@ -569,11 +580,15 @@ fn param_impl_trait() {
         _ => panic!("expected Normal function"),
     };
     assert_eq!(signature.value.parameters.len(), 1);
-    let stub_id = declares.intern_type(SoulType::Stub(Stub::new("Display")));
-    assert_eq!(
-        declares.get_type(signature.value.parameters[0].ty),
-        Some(&SoulType::ImplTrait(stub_id))
-    );
+    match declares.get_type(signature.value.parameters[0].ty) {
+        Some(SoulType::ImplTrait(id)) => match declares.get_type(*id) {
+            Some(SoulType::Stub(stub)) => {
+                assert!(stub.matches_ignoring_occurrence(&Stub::new("Display")))
+            }
+            other => panic!("expected ImplTrait wrapping a Stub named Display, got {other:?}"),
+        },
+        other => panic!("expected ImplTrait, got {other:?}"),
+    }
 }
 
 // ----------------------------------------------------------------
@@ -662,7 +677,7 @@ fn extern_function_missing_language_string_is_rejected() {
 
 #[test]
 fn return_impl_trait() {
-    let (module, store, context, mut declares) =
+    let (module, store, context, declares) =
         parse_with_declares("makeDefault(): impl Display {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
@@ -681,9 +696,13 @@ fn return_impl_trait() {
         ast_model::FunctionKind::Normal(f) => f,
         _ => panic!("expected Normal function"),
     };
-    let stub_id = declares.intern_type(SoulType::Stub(Stub::new("Display")));
-    assert_eq!(
-        declares.get_type(signature.value.return_type),
-        Some(&SoulType::ImplTrait(stub_id))
-    );
+    match declares.get_type(signature.value.return_type) {
+        Some(SoulType::ImplTrait(id)) => match declares.get_type(*id) {
+            Some(SoulType::Stub(stub)) => {
+                assert!(stub.matches_ignoring_occurrence(&Stub::new("Display")))
+            }
+            other => panic!("expected ImplTrait wrapping a Stub named Display, got {other:?}"),
+        },
+        other => panic!("expected ImplTrait, got {other:?}"),
+    }
 }

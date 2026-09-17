@@ -607,7 +607,9 @@ fn combine_resolved_operand_types(
     }
 
     match (untyped_kind_of(left), untyped_kind_of(right)) {
-        (None, None) if left == right => Some(left.clone()),
+        (None, None) if declares.soul_types_equal_ignoring_occurrence(left, right) => {
+            Some(left.clone())
+        }
         (None, None) => None,
         (Some(kind), None) => coerce_untyped_to_concrete(kind, right),
         (None, Some(kind)) => coerce_untyped_to_concrete(kind, left),

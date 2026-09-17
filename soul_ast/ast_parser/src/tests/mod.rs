@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::LazyLock};
 
 use ast_model::{
     AnyArray, ArrayKind, ArrayType, Assignment, AstStore, AstTree, Constructor, ExpressionKind,
-    FunctionCall, FunctionCalleeKind, Import, ImportKind, Literal, MatchMethod, Module,
+    FunctionCall, FunctionCalleeKind, Import, ImportKind, Literal, MatchMethod, Module, NodeId,
     ReferenceType, SoulType, Statement, StatementKind, StructConstructor, Stub, TypeId, TypeOf,
     TypeofKind, Variable, operators::BinaryOperatorKind,
 };
@@ -378,13 +378,16 @@ fn struct_constructor() {
                     values,
                     ..
                 }) => {
-                    assert_eq!(
-                        declares.get_type(*struct_type),
-                        Some(&SoulType::Stub(Stub {
-                            name: "Point".into(),
-                            generics: vec![].into()
-                        }))
-                    );
+                    match declares.get_type(*struct_type) {
+                        Some(SoulType::Stub(stub)) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub {
+                                name: "Point".into(),
+                                generics: vec![].into(),
+                                occurrence: NodeId::ERROR,
+                            }))
+                        }
+                        other => panic!("expected a Stub named Point, got {other:?}"),
+                    }
                     assert_eq!(values.len(), 2);
                     assert_eq!(values[0].0.as_str(), "x");
                     assert_eq!(values[1].0.as_str(), "y");
@@ -572,13 +575,16 @@ fn type_alias() {
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
         StatementKind::TypeDef(def) => {
-            assert_eq!(
-                declares.get_type(def.new_type),
-                Some(&SoulType::Stub(Stub {
-                    name: "MyInt".into(),
-                    generics: vec![].into()
-                }))
-            );
+            match declares.get_type(def.new_type) {
+                Some(SoulType::Stub(stub)) => {
+                    assert!(stub.matches_ignoring_occurrence(&Stub {
+                        name: "MyInt".into(),
+                        generics: vec![].into(),
+                        occurrence: NodeId::ERROR,
+                    }))
+                }
+                other => panic!("expected a Stub named MyInt, got {other:?}"),
+            }
             assert_eq!(
                 declares.get_type(def.old_type),
                 Some(&SoulType::Primitive(PrimitiveTypes::Int))
@@ -1035,11 +1041,12 @@ fn array_contructor_literal() {
             let expr = &store.expressions[*expression];
             match &expr.node {
                 ExpressionKind::Array(AnyArray::Array(arr)) => {
-                    let collection = SoulType::Stub(Stub::new("List"));
-                    assert_eq!(
-                        arr.collection_type.and_then(|id| declares.get_type(id)),
-                        Some(&collection)
-                    );
+                    match arr.collection_type.and_then(|id| declares.get_type(id)) {
+                        Some(SoulType::Stub(stub)) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub::new("List")))
+                        }
+                        other => panic!("expected a Stub named List, got {other:?}"),
+                    }
                     assert_eq!(arr.element_type, None);
                     assert_eq!(arr.values.len(), 3);
                 }
@@ -1066,11 +1073,12 @@ fn array_contructor_element_type_literal() {
             let expr = &store.expressions[*expression];
             match &expr.node {
                 ExpressionKind::Array(AnyArray::Array(arr)) => {
-                    let collection = SoulType::Stub(Stub::new("List"));
-                    assert_eq!(
-                        arr.collection_type.and_then(|id| declares.get_type(id)),
-                        Some(&collection)
-                    );
+                    match arr.collection_type.and_then(|id| declares.get_type(id)) {
+                        Some(SoulType::Stub(stub)) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub::new("List")))
+                        }
+                        other => panic!("expected a Stub named List, got {other:?}"),
+                    }
                     assert_eq!(
                         arr.element_type.and_then(|id| declares.get_type(id)),
                         Some(&SoulType::Primitive(PrimitiveTypes::Int))
@@ -1100,11 +1108,12 @@ fn array_contructor_empty_literal() {
             let expr = &store.expressions[*expression];
             match &expr.node {
                 ExpressionKind::Array(AnyArray::Array(arr)) => {
-                    let collection = SoulType::Stub(Stub::new("List"));
-                    assert_eq!(
-                        arr.collection_type.and_then(|id| declares.get_type(id)),
-                        Some(&collection)
-                    );
+                    match arr.collection_type.and_then(|id| declares.get_type(id)) {
+                        Some(SoulType::Stub(stub)) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub::new("List")))
+                        }
+                        other => panic!("expected a Stub named List, got {other:?}"),
+                    }
                     assert_eq!(arr.element_type, None);
                     assert_eq!(arr.values.len(), 0);
                 }
@@ -1132,14 +1141,16 @@ fn array_contructor_generic_literal() {
             match &expr.node {
                 ExpressionKind::Array(AnyArray::Array(arr)) => {
                     let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
-                    let collection = SoulType::Stub(Stub {
-                        name: SharedStr::new("List"),
-                        generics: vec![int_id].into(),
-                    });
-                    assert_eq!(
-                        arr.collection_type.and_then(|id| declares.get_type(id)),
-                        Some(&collection)
-                    );
+                    match arr.collection_type.and_then(|id| declares.get_type(id)) {
+                        Some(SoulType::Stub(stub)) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub {
+                                name: SharedStr::new("List"),
+                                generics: vec![int_id].into(),
+                                occurrence: NodeId::ERROR,
+                            }))
+                        }
+                        other => panic!("expected a Stub named List, got {other:?}"),
+                    }
                     assert_eq!(arr.element_type, None);
                     assert_eq!(arr.values.len(), 3);
                 }
@@ -1301,13 +1312,16 @@ fn constructor_expression() {
             let expr = &store.expressions[*expression];
             match &expr.node {
                 ExpressionKind::Constructor(Constructor { ty, arguments, .. }) => {
-                    assert_eq!(
-                        *ty,
-                        SoulType::Stub(Stub {
-                            name: "Foo".into(),
-                            generics: vec![].into()
-                        })
-                    );
+                    match ty {
+                        SoulType::Stub(stub) => {
+                            assert!(stub.matches_ignoring_occurrence(&Stub {
+                                name: "Foo".into(),
+                                generics: vec![].into(),
+                                occurrence: NodeId::ERROR,
+                            }))
+                        }
+                        other => panic!("expected a Stub named Foo, got {other:?}"),
+                    }
                     assert_eq!(arguments.len(), 2);
                 }
                 other => panic!("expected Constructor, got {:?}", other),
@@ -1744,13 +1758,16 @@ fn named_variant_type_variable() {
     match resolved_ty {
         Some(SoulType::NamedVariant { base, variant }) => {
             assert_eq!(variant.as_str(), "Bar");
-            assert_eq!(
-                declares.get_type(*base),
-                Some(&SoulType::Stub(Stub {
-                    name: "Foo".into(),
-                    generics: vec![].into()
-                }))
-            );
+            match declares.get_type(*base) {
+                Some(SoulType::Stub(stub)) => {
+                    assert!(stub.matches_ignoring_occurrence(&Stub {
+                        name: "Foo".into(),
+                        generics: vec![].into(),
+                        occurrence: NodeId::ERROR,
+                    }))
+                }
+                other => panic!("expected a Stub named Foo, got {other:?}"),
+            }
         }
         other => panic!("expected NamedVariant, got {:?}", other),
     }

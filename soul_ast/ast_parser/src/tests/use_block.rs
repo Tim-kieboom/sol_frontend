@@ -18,10 +18,12 @@ fn use_block_empty() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(
-        declares.get_type(use_block.ty),
-        Some(&SoulType::Stub(Stub::new("Foo")))
-    );
+    match declares.get_type(use_block.ty) {
+        Some(SoulType::Stub(stub)) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Foo")))
+        }
+        other => panic!("expected a Stub named Foo, got {other:?}"),
+    }
     assert!(use_block.use_generics.is_empty());
     assert!(use_block.methods.is_empty());
     assert!(use_block.impls.is_empty());
@@ -43,10 +45,12 @@ fn use_block_method() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(
-        declares.get_type(use_block.ty),
-        Some(&SoulType::Stub(Stub::new("Foo")))
-    );
+    match declares.get_type(use_block.ty) {
+        Some(SoulType::Stub(stub)) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Foo")))
+        }
+        other => panic!("expected a Stub named Foo, got {other:?}"),
+    }
     assert_eq!(use_block.methods.len(), 1);
     assert!(!use_block.methods[0].is_public);
     let func = &store.functions[use_block.methods[0].id];
@@ -127,10 +131,12 @@ fn use_block_impl_block() {
         _ => panic!("expected UseBlock"),
     };
     assert_eq!(use_block.impls.len(), 1);
-    assert_eq!(
-        declares.get_type(use_block.impls[0].impl_trait),
-        Some(&SoulType::Stub(Stub::new("Bar")))
-    );
+    match declares.get_type(use_block.impls[0].impl_trait) {
+        Some(SoulType::Stub(stub)) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Bar")))
+        }
+        other => panic!("expected a Stub named Bar, got {other:?}"),
+    }
     assert_eq!(use_block.impls[0].methods.len(), 1);
     let func = &store.functions[use_block.impls[0].methods[0]];
     let FunctionKind::Normal(f) = func else {
@@ -157,13 +163,14 @@ fn use_block_with_generic_type() {
         _ => panic!("expected UseBlock"),
     };
     let int_id = declares.intern_type(SoulType::Primitive(PrimitiveTypes::Int));
-    assert_eq!(
-        declares.get_type(use_block.ty),
-        Some(&SoulType::Stub(Stub {
+    match declares.get_type(use_block.ty) {
+        Some(SoulType::Stub(stub)) => assert!(stub.matches_ignoring_occurrence(&Stub {
             name: SharedStr::new("Foo"),
-            generics: vec![int_id].into()
-        }))
-    );
+            generics: vec![int_id].into(),
+            occurrence: ast_model::NodeId::ERROR,
+        })),
+        other => panic!("expected a Stub named Foo, got {other:?}"),
+    }
     assert!(use_block.use_generics.is_empty());
     assert_eq!(use_block.methods.len(), 1);
 }
@@ -263,10 +270,12 @@ fn use_block_inline_method() {
         StatementKind::UseBlock(b) => b,
         _ => panic!("expected UseBlock"),
     };
-    assert_eq!(
-        declares.get_type(use_block.ty),
-        Some(&SoulType::Stub(Stub::new("Foo")))
-    );
+    match declares.get_type(use_block.ty) {
+        Some(SoulType::Stub(stub)) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Foo")))
+        }
+        other => panic!("expected a Stub named Foo, got {other:?}"),
+    }
     assert_eq!(use_block.methods.len(), 1);
     assert!(!use_block.methods[0].is_public);
     let func = &store.functions[use_block.methods[0].id];
@@ -296,10 +305,12 @@ fn use_block_mixed_methods_and_impl() {
     };
     assert_eq!(use_block.methods.len(), 2);
     assert_eq!(use_block.impls.len(), 1);
-    assert_eq!(
-        declares.get_type(use_block.impls[0].impl_trait),
-        Some(&SoulType::Stub(Stub::new("Baz")))
-    );
+    match declares.get_type(use_block.impls[0].impl_trait) {
+        Some(SoulType::Stub(stub)) => {
+            assert!(stub.matches_ignoring_occurrence(&Stub::new("Baz")))
+        }
+        other => panic!("expected a Stub named Baz, got {other:?}"),
+    }
     assert_eq!(use_block.impls[0].methods.len(), 1);
     let func = &store.functions[use_block.impls[0].methods[0]];
     let FunctionKind::Normal(f) = func else {

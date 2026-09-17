@@ -929,6 +929,76 @@ that landing first, in order.
   - [ ] Once A/B/C land: resume the paused borrow-checker slice — CFG traversal (back-edge/cycle
         detection via DFS) + two-state definite/maybe dataflow for `if`/`else` move-checking (see
         the borrow-checker entry above for the full scope of that slice).
+- [ ] **Replace `SoulType::Stub` with resolved type references** — the "bigger, root-cause redesign"
+      logged above, picked up on user request (`/grill-me`'d into a full plan first: 3 parallel
+      Explore passes, then a 7-slice plan, `C:\Users\tim_k\.claude\plans\vast-wiggling-galaxy.md`).
+      Scope turned out bigger than the earlier note implied: `Stub` isn't struct-only — it's the
+      single, undifferentiated representation for **five** kinds of names (struct, enum, trait,
+      type-alias, and generic type parameters, the last disambiguated today purely by matching
+      `stub.name` against the enclosing `Generic` list) — user confirmed covering all five, not
+      just structs. Mechanism settled on: **not** AST mutation (`soul_name_resolver`'s `NameResolver`
+      holds only `&AstStore`, never `&mut` — confirmed by research, so "rewrite the AST node's own
+      type field once resolved" isn't achievable without restructuring its whole borrow-splitting
+      pattern) but a `DeclareStore`-owned side table (`type_resolves`, a later slice), mirroring the
+      already-working `variable_resolves`/`function_resolves` pattern — a referencing id maps to a
+      resolved declaration id, no AST mutation needed.
+  - [x] **Slice 1 — identity only.** `Stub` gained `occurrence: NodeId` (`ast_model::ast::
+        soul_type`), participating in its own `Eq`/`Hash` — a fresh id allocated once per syntactic
+        occurrence (`ast_parser`'s existing `self.alloc_node()`), not shared/deduplicated the way
+        `name`/`generics` alone were. This is the load-bearing move: every syntactic occurrence now
+        interns to its own unique `TypeId`, fixing the cross-module collision bug as a side effect
+        and giving a future `type_resolves` table a sound key to use. `Stub::new_at(name,
+        occurrence)` is the real constructor (used at all 4 production sites — `parse/soul_type.rs`
+        ×2, `parse/statements/{objects,from_keyword}.rs`); `Stub::new(name)` stays as a test/fixture
+        convenience defaulting to `NodeId::ERROR`, documented as never equal to a genuinely parsed
+        `Stub`.
+    - **The correctness risk the plan called out as the crux of this slice, found and fixed**: any
+      comparison relying on "same `TypeId`/`SoulType` ⇒ same type" for a `Stub`-shaped value now
+      silently breaks, since two independently-written occurrences of the same name (e.g. a
+      parameter's declared type vs. an argument's inferred type) are never `==` any more. New
+      `DeclareStore::{types_equal_ignoring_occurrence, soul_types_equal_ignoring_occurrence}` — a
+      recursive structural-equality check that treats two `Stub`s as equal whenever `name`/
+      `generics` match, ignoring `occurrence`, recursing through every `TypeId`-nesting `SoulType`
+      variant (`Array`, `Reference`/`Pointer`, `RawPtr`, `Res`, `Optional`/`ImplTrait`,
+      `NamedVariant`, `Function`, `TupleKind`). Explicitly a stopgap (documented on the function
+      itself): restores today's pre-`occurrence` "same name = same type" semantics without needing
+      `type_resolves` yet; once that lands, this should compare *resolved declarations* instead of
+      raw names, which would also fix the cross-module-collision case this still can't (same
+      limitation `resolve_struct` already had).
+    - Three real call sites found and fixed (an Explore audit pass, cross-checked by hand):
+      `combine_resolved_operand_types` (`soul_name_resolver`'s single choke point for
+      argument-vs-parameter, declared-vs-initializer, struct-field, enum-variant-argument, and
+      binary-operand type-checking — fixing this one spot fixed ~8 call sites transitively);
+      `signatures_match` (`check_impl_conformance`'s trait-vs-impl signature comparison — gained a
+      `&DeclareStore` parameter it didn't have before, since it was comparing raw `TypeId`s with no
+      alias-resolution safety net at all); `DeclareStore::find_function`'s owner-type matching
+      (method-call resolution — this one wasn't caught by the static audit at all, only by the test
+      suite: it broke 3 `mir_parser` receiver tests and 1 `soul_name_resolver` ambiguous-impl test
+      with `FunctionCallHasNoResolvedTarget`/lookup failures, since a method's declared owner type
+      and a call site's receiver type are exactly two independent occurrences of the same struct
+      name).
+    - New regression test proving the fix actually works (per the plan's own verification bar):
+      `struct_argument_matches_parameter_across_independently_parsed_occurrences`
+      (`soul_name_resolver`'s `function_call_argument_tests.rs`) — a struct named in 3 separate
+      syntactic positions (parameter annotation, variable declaration, constructor target),
+      confirmed to fail without the fix (temporarily reverted `combine_resolved_operand_types`'s own
+      call to prove it) and pass with it.
+    - ~25 existing test sites across `ast_parser`'s `tests/{mod,use_block,big_test,functions}.rs`
+      needed updating (a background agent's mechanical sweep, verified): full-`Stub`-equality
+      assertions against a parsed/resolved value can never hold any more (a hand-built `Stub` always
+      carries the `NodeId::ERROR` placeholder), converted to a new `Stub::matches_ignoring_occurrence`
+      helper that checks `name`/`generics` only.
+    - Proven by full `cargo test --workspace` (zero warnings, including the new test) + all 33 exe
+      tests (`scripts/run_codegen_tests.py`) passing unchanged.
+  - [ ] **Slice 2** — `type_resolves` table + `TypeResolve::Struct`, `DeclareStore::resolve_struct`
+        populates it, `mir_parser`/`mir_codegen`'s struct consumers migrate to read it instead of a
+        name+module lookup.
+  - [ ] **Slice 3** — `TypeResolve::Enum`, `check_enum_variant_construction` migrates.
+  - [ ] **Slice 4** — `TypeResolve::Trait`, `check_impl_conformance` migrates.
+  - [ ] **Slice 5** — `TypeResolve::Alias`, `resolve_type_alias` migrates.
+  - [ ] **Slice 6** — `TypeResolve::Generic`, `is_generic_parameter`/`generic_name_of` migrate.
+  - [ ] **Slice 7** — hard error (`UnresolvedTypeName`) at resolve time for a `Stub` occurrence that
+        resolves to none of the above, once all five kinds correctly populate `type_resolves` first.
 - [x] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the
       user asking whether `*int` gets a real `dealloc` at `Drop` yet (it didn't — `Drop` is a pure
       no-op for every type right now). `/grill-me`'d and sequenced into three slices, since it

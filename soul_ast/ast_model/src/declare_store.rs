@@ -220,7 +220,11 @@ impl DeclareStore {
         for id in functions {
             let (signature, _) = &self.functions[*id];
             let is_match = match owner_type {
-                Some(owner) => self.get_type(signature.method_type) == Some(owner),
+                Some(owner) => self
+                    .get_type(signature.method_type)
+                    .is_some_and(|method_type| {
+                        self.soul_types_equal_ignoring_occurrence(method_type, owner)
+                    }),
                 None => signature.method_type == TypeId::NONE,
             };
             if !is_match {
@@ -354,6 +358,107 @@ impl DeclareStore {
                 )
             }
             _ => false,
+        }
+    }
+
+    /// Structural equality between two types, treating a `Stub` as equal to
+    /// another `Stub` whenever their `name`/`generics` match — ignoring
+    /// `occurrence` at every level of nesting.
+    ///
+    /// Needed because `Stub.occurrence` (a fresh `NodeId` per syntactic
+    /// occurrence) participates in `Stub`'s own derived `Eq`, so two
+    /// *independently written* occurrences of the same name (e.g. a
+    /// parameter's declared type vs. an argument expression's inferred type)
+    /// are never `==` any more, even when they name the same struct/enum/
+    /// trait/alias/generic. Every type-checking comparison that means "is
+    /// this the same type" (argument-vs-parameter, declared-vs-initializer,
+    /// trait-method-vs-impl-method signatures, ...) needs this instead of a
+    /// bare `==`/`PartialEq` — see `TODO.md`'s `Stub`-redesign entry.
+    ///
+    /// This restores today's pre-`occurrence` "same name = same type"
+    /// semantics without needing full resolved-identity (`type_resolves`,
+    /// a later slice of that redesign) — a stopgap, not the end state: once
+    /// `type_resolves` exists, this should compare *resolved declarations*
+    /// instead of raw names, which would also correctly distinguish two
+    /// different modules' same-named-but-different structs (this function
+    /// cannot do that yet, same limitation `resolve_struct` already has).
+    pub fn types_equal_ignoring_occurrence(&self, a: TypeId, b: TypeId) -> bool {
+        if a == b {
+            return true;
+        }
+        match (self.get_type(a), self.get_type(b)) {
+            (Some(ta), Some(tb)) => self.soul_types_equal_ignoring_occurrence(ta, tb),
+            _ => false,
+        }
+    }
+
+    pub fn soul_types_equal_ignoring_occurrence(&self, a: &SoulType, b: &SoulType) -> bool {
+        let ids_eq = |x: TypeId, y: TypeId| self.types_equal_ignoring_occurrence(x, y);
+        let opt_ids_eq = |x: Option<TypeId>, y: Option<TypeId>| match (x, y) {
+            (Some(x), Some(y)) => ids_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        };
+        match (a, b) {
+            (SoulType::Stub(sa), SoulType::Stub(sb)) => {
+                sa.name == sb.name
+                    && sa.generics.len() == sb.generics.len()
+                    && sa
+                        .generics
+                        .iter()
+                        .zip(sb.generics.iter())
+                        .all(|(&x, &y)| ids_eq(x, y))
+            }
+            (SoulType::Array(aa), SoulType::Array(ab)) => {
+                aa.kind == ab.kind && ids_eq(aa.of_type, ab.of_type)
+            }
+            (SoulType::Reference(ra), SoulType::Reference(rb))
+            | (SoulType::Pointer(ra), SoulType::Pointer(rb)) => {
+                ra.mutable == rb.mutable && ids_eq(ra.inner, rb.inner)
+            }
+            (SoulType::RawPtr(pa), SoulType::RawPtr(pb)) => opt_ids_eq(*pa, *pb),
+            (SoulType::Res { ok: oa, err: ea }, SoulType::Res { ok: ob, err: eb }) => {
+                opt_ids_eq(*oa, *ob) && opt_ids_eq(*ea, *eb)
+            }
+            (SoulType::Optional(pa), SoulType::Optional(pb))
+            | (SoulType::ImplTrait(pa), SoulType::ImplTrait(pb)) => ids_eq(*pa, *pb),
+            (
+                SoulType::NamedVariant {
+                    base: ba,
+                    variant: va,
+                },
+                SoulType::NamedVariant {
+                    base: bb,
+                    variant: vb,
+                },
+            ) => va == vb && ids_eq(*ba, *bb),
+            (
+                SoulType::Function {
+                    arity: aa,
+                    return_type: ra,
+                },
+                SoulType::Function {
+                    arity: ab,
+                    return_type: rb,
+                },
+            ) => aa == ab && ids_eq(*ra, *rb),
+            (SoulType::TupleKind(ta), SoulType::TupleKind(tb)) => match (ta, tb) {
+                (crate::TupleKind::Tuple(xs), crate::TupleKind::Tuple(ys)) => {
+                    xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(&x, &y)| ids_eq(x, y))
+                }
+                (crate::TupleKind::NamedTuple(xs), crate::TupleKind::NamedTuple(ys)) => {
+                    xs.len() == ys.len()
+                        && xs
+                            .iter()
+                            .zip(ys.iter())
+                            .all(|((nx, x), (ny, y))| nx == ny && ids_eq(*x, *y))
+                }
+                _ => false,
+            },
+            // Everything else (None/Never/String/FormatString/Any/Type/
+            // Primitive/Error) never nests a Stub, so plain structural
+            // equality is exactly right and already covers it.
+            _ => a == b,
         }
     }
 
