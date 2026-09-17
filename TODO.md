@@ -1043,7 +1043,14 @@ that landing first, in order.
         duplicate-lookup migration. Proven by the same full `cargo test --workspace` (zero
         warnings) + all 33 exe tests bar as every slice above (`26_trait_impl_dispatch.soul`
         exercises `check_impl_conformance` directly).
-  - [ ] **Slice 5** — `TypeResolve::Alias`, `resolve_type_alias` migrates.
+  - [x] **Slice 5** — `resolve_type_alias` (`resolve/typecheck/expression.rs`) gained `&mut self`
+        (was `&self`) and now interns its final resolved type, recording
+        `TypeResolve::Alias(resolved_id)` against the *original* occurrence's `TypeId` (recovered via
+        `get_type_id`, same as `struct_field_type`) — but **only** when the alias chain actually
+        resolved at least once (`resolved_any`); an occurrence that never named an alias is left
+        uncached here, since it might still be a struct/enum/trait/generic that its own call site is
+        responsible for caching — a no-op "alias" entry would have shadowed that. Proven by the same
+        full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as every slice above.
   - [ ] **Slice 6** — `TypeResolve::Generic`, `is_generic_parameter`/`generic_name_of` migrate.
   - [ ] **Slice 7** — hard error (`UnresolvedTypeName`) at resolve time for a `Stub` occurrence that
         resolves to none of the above, once all five kinds correctly populate `type_resolves` first.

@@ -496,16 +496,31 @@ impl<'a> NameResolver<'a> {
         combine_resolved_operand_types(self.declares, &left, &right)
     }
 
-    fn resolve_type_alias(&self, ty: &SoulType) -> SoulType {
+    fn resolve_type_alias(&mut self, ty: &SoulType) -> SoulType {
+        let occurrence = self.declares.get_type_id(ty);
         let mut current = ty.clone();
+        let mut resolved_any = false;
         for _ in 0..8 {
             let SoulType::Stub(stub) = &current else {
-                return current;
+                break;
             };
             let Some(underlying) = self.declares.get_type_alias(stub.name.as_str()) else {
-                return current;
+                break;
             };
             current = underlying.clone();
+            resolved_any = true;
+        }
+        // Only cache when this occurrence actually named an alias — an
+        // occurrence that never resolved here might still be a struct/enum/
+        // trait/generic, which its own call site (`check_struct_constructor`,
+        // `check_enum_variant_construction`, ...) is responsible for caching
+        // instead; caching a no-op "alias" entry here would shadow that.
+        if resolved_any && let Some(occurrence) = occurrence {
+            let resolved_id = self.declares.intern_type(current.clone());
+            self.declares.insert_type_resolve(
+                occurrence,
+                ast_model::declare_store::TypeResolve::Alias(resolved_id),
+            );
         }
         current
     }
