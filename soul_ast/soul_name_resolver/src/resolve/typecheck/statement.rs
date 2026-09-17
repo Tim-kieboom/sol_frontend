@@ -15,17 +15,16 @@ impl<'a> NameResolver<'a> {
         declared_ty: &SoulType,
         value: ExpressionId,
     ) {
-        let empty = vec![].into();
         let generics = match self.current.function {
             Some(id) => self
                 .declares
                 .get_function(id)
-                .map(|(signature, _)| &signature.generics)
-                .unwrap_or(&empty),
-            None => &empty,
+                .map(|(signature, _)| signature.generics.clone())
+                .unwrap_or_default(),
+            None => Default::default(),
         };
 
-        if is_generic_parameter(declared_ty, generics) {
+        if is_generic_parameter(self.declares, declared_ty, &generics) {
             return;
         }
 
@@ -57,17 +56,16 @@ impl<'a> NameResolver<'a> {
             self.log_error(AstErrorKind::AssignToImmutableVariable, span);
         }
 
-        let empty = vec![].into();
         let generics = match self.current.function {
             Some(id) => self
                 .declares
                 .get_function(id)
-                .map(|(signature, _)| &signature.generics)
-                .unwrap_or(&empty),
-            None => &empty,
+                .map(|(signature, _)| signature.generics.clone())
+                .unwrap_or_default(),
+            None => Default::default(),
         };
 
-        if is_generic_parameter(&left_ty, generics) {
+        if is_generic_parameter(self.declares, &left_ty, &generics) {
             return;
         }
 

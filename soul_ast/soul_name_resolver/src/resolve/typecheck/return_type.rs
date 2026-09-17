@@ -15,7 +15,7 @@ impl<'a> NameResolver<'a> {
         return_type: &SoulType,
         generics: &[Generic],
     ) {
-        if is_generic_parameter(return_type, generics) {
+        if is_generic_parameter(self.declares, return_type, generics) {
             return;
         }
         let Some(tail) = self.tail_position(block_id) else {
@@ -33,7 +33,7 @@ impl<'a> NameResolver<'a> {
                 return;
             };
             let generics = signature.generics.clone();
-            if is_generic_parameter(&return_type, &generics) {
+            if is_generic_parameter(self.declares, &return_type, &generics) {
                 return;
             }
             self.check_return_value(value, &return_type, &generics, span);

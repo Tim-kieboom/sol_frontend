@@ -1051,7 +1051,18 @@ that landing first, in order.
         uncached here, since it might still be a struct/enum/trait/generic that its own call site is
         responsible for caching — a no-op "alias" entry would have shadowed that. Proven by the same
         full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as every slice above.
-  - [ ] **Slice 6** — `TypeResolve::Generic`, `is_generic_parameter`/`generic_name_of` migrate.
+  - [x] **Slice 6** — `is_generic_parameter`/`generic_name_of` (`resolve/typecheck/function_call.rs`)
+        both gained a `declares: &mut DeclareStore` parameter (previously bare free functions with
+        no `DeclareStore` access at all) and now record `TypeResolve::Generic` whenever they
+        confirm a `Stub` names an in-scope generic. Widest call-site touch of any slice so far — 7
+        call sites across `function_call.rs`/`expression.rs`/`return_type.rs`/`statement.rs` — two
+        of which (`check_variable_declaration`/`check_assignment` in `statement.rs`) needed their
+        `generics` binding changed from a borrow into `self.declares` (`&signature.generics`) to an
+        owned clone first, since borrowing `self.declares` immutably for `generics` and mutably for
+        the `is_generic_parameter` call at the same time doesn't borrow-check — the same shape
+        `return_type.rs`'s `check_return_statement` already used, just not yet applied here. Proven
+        by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as every
+        slice above.
   - [ ] **Slice 7** — hard error (`UnresolvedTypeName`) at resolve time for a `Stub` occurrence that
         resolves to none of the above, once all five kinds correctly populate `type_resolves` first.
 - [x] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the

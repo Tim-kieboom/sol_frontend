@@ -85,7 +85,8 @@ impl<'a> NameResolver<'a> {
 
             let span = self.store.expressions.get(*value_id).map(|expr| expr.span);
 
-            if let Some(generic_name) = generic_name_of(field_ty, &struct_.generics) {
+            if let Some(generic_name) = generic_name_of(self.declares, field_ty, &struct_.generics)
+            {
                 let Some(value_ty) = self.expression_type(*value_id) else {
                     continue;
                 };
@@ -112,7 +113,7 @@ impl<'a> NameResolver<'a> {
                 continue;
             }
 
-            if is_generic_parameter(field_ty, &struct_.generics) {
+            if is_generic_parameter(self.declares, field_ty, &struct_.generics) {
                 continue;
             }
 

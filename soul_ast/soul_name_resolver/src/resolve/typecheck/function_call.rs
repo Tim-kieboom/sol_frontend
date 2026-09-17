@@ -1,5 +1,6 @@
 use ast_model::{
     CustomType, EnumVariant, ExpressionId, FunctionCall, Generic, SoulType, UnionKind,
+    declare_store::DeclareStore,
 };
 use ast_parser::fault::{AstErrorKind, EnumVariantArgumentTypeMismatch};
 use soul_utils::FunctionId;
@@ -52,7 +53,8 @@ impl<'a> NameResolver<'a> {
                     .map(|expr| expr.span)
                     .unwrap_or(call.name.span());
 
-                if let Some(generic_name) = generic_name_of(&parameter_ty, &generics) {
+                if let Some(generic_name) = generic_name_of(self.declares, &parameter_ty, &generics)
+                {
                     match generic_bindings
                         .iter()
                         .find(|(name, _)| *name == generic_name)
@@ -168,12 +170,25 @@ impl<'a> NameResolver<'a> {
     }
 }
 
-pub(crate) fn is_generic_parameter(ty: &SoulType, generics: &[Generic]) -> bool {
+pub(crate) fn is_generic_parameter(
+    declares: &mut DeclareStore,
+    ty: &SoulType,
+    generics: &[Generic],
+) -> bool {
     match ty {
         SoulType::ImplTrait(_) => true,
-        SoulType::Stub(stub) => generics
-            .iter()
-            .any(|generic| generic.name.as_str() == stub.name.as_str()),
+        SoulType::Stub(stub) => {
+            let is_generic = generics
+                .iter()
+                .any(|generic| generic.name.as_str() == stub.name.as_str());
+            if is_generic && let Some(occurrence) = declares.get_type_id(ty) {
+                declares.insert_type_resolve(
+                    occurrence,
+                    ast_model::declare_store::TypeResolve::Generic,
+                );
+            }
+            is_generic
+        }
         _ => false,
     }
 }
@@ -181,14 +196,21 @@ pub(crate) fn is_generic_parameter(ty: &SoulType, generics: &[Generic]) -> bool 
 /// The declared generic's name if `ty` is a bare reference to it (e.g. `T`
 /// in `foo<T>(a: T)`), so repeated uses of the same generic within one call
 /// can be checked against each other.
-pub(crate) fn generic_name_of<'g>(ty: &SoulType, generics: &'g [Generic]) -> Option<&'g str> {
+pub(crate) fn generic_name_of<'g>(
+    declares: &mut DeclareStore,
+    ty: &SoulType,
+    generics: &'g [Generic],
+) -> Option<&'g str> {
     let SoulType::Stub(stub) = ty else {
         return None;
     };
-    generics
+    let found = generics
         .iter()
-        .find(|generic| generic.name.as_str() == stub.name.as_str())
-        .map(|generic| generic.name.as_str())
+        .find(|generic| generic.name.as_str() == stub.name.as_str())?;
+    if let Some(occurrence) = declares.get_type_id(ty) {
+        declares.insert_type_resolve(occurrence, ast_model::declare_store::TypeResolve::Generic);
+    }
+    Some(found.name.as_str())
 }
 
 fn enum_variant_name(variant: &EnumVariant) -> &str {
