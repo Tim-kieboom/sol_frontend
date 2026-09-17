@@ -20,7 +20,7 @@ use crate::{
     fault::{CodegenErrorKind, CodegenResult},
     function::FunctionCodegen,
     llvm_err,
-    types::{const_float, const_int, expect_float, expect_int, is_signed},
+    types::{const_float, const_int, expect_float, expect_int},
 };
 
 impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
@@ -498,7 +498,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
                 matches!(
                     self.ctx.resolve_type(self.function.locals[place.local].ty),
-                    SoulType::Primitive(p) if is_signed(*p)
+                    SoulType::Primitive(p) if p.is_signed()
                 )
             }
             Operand::Constant(ConstValue::Int(_)) => true,

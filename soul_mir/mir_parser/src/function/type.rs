@@ -78,7 +78,7 @@ impl<'a> FunctionLowerer<'a> {
             .operand_type(left)
             .or_else(|| self.operand_type(right))
             .or_else(|| self.declares.get_expression_type(expr_id).cloned());
-        matches!(ty, Some(SoulType::Primitive(p)) if is_float_primitive(p))
+        matches!(ty, Some(SoulType::Primitive(p)) if p.is_float())
     }
 
     pub(super) fn expression_is_bool(&self, expr_id: ast::ExpressionId) -> bool {
@@ -126,7 +126,7 @@ pub(super) fn require_primitive(
     ty: &SoulType,
     span: Span,
 ) -> MirResult<()> {
-    if matches!(ty, SoulType::Primitive(_)) {
+    if ty.is_primitive() {
         Ok(())
     } else {
         Err(Fault::error_with_kind(
@@ -136,17 +136,4 @@ pub(super) fn require_primitive(
             Some(span),
         ))
     }
-}
-
-/// Mirrors `mir_codegen::types::is_float` one layer up (`SoulType` here,
-/// `PrimitiveTypes` there) — used by `is_float_operand` to keep floats out
-/// of the checked-arithmetic/checked-div lowering paths.
-fn is_float_primitive(prim: PrimitiveTypes) -> bool {
-    matches!(
-        prim,
-        PrimitiveTypes::Float16
-            | PrimitiveTypes::Float32
-            | PrimitiveTypes::Float64
-            | PrimitiveTypes::UntypedFloat
-    )
 }

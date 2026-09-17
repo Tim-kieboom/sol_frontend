@@ -118,6 +118,10 @@ impl SoulType {
     pub fn is_primitive_kind(&self, kind: PrimitiveTypes) -> bool {
         matches!(self, SoulType::Primitive(actual) if *actual == kind)
     }
+
+    pub fn is_primitive(&self) -> bool {
+        matches!(self, SoulType::Primitive(_))
+    }
 }
 
 /// Prints a `SoulType`, resolving any nested `TypeId` through `declares` —

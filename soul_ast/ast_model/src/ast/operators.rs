@@ -91,3 +91,42 @@ define_str_enum! {
         Arrow => "->", 9,
     }
 }
+
+impl BinaryOperatorKind {
+    /// Whether `mir_parser::lower_binary` currently knows how to lower this
+    /// operator at all — a pure classification of the operator itself, not
+    /// of any operand's type or lowering state.
+    pub fn is_supported(self) -> bool {
+        matches!(
+            self,
+            Self::Add
+                | Self::Sub
+                | Self::Mul
+                | Self::Div
+                | Self::Mod
+                | Self::Eq
+                | Self::NotEq
+                | Self::Lt
+                | Self::Gt
+                | Self::Le
+                | Self::Ge
+                | Self::LogAnd
+                | Self::LogOr
+        )
+    }
+
+    /// `Add`/`Sub`/`Mul` — the ops that trap on overflow via a
+    /// `CheckedBinaryOp` MIR rvalue. `Div`/`Mod` go through
+    /// `is_checked_div` instead: division has no `{s,u}*.with.overflow`-style
+    /// intrinsic to call, so it can't reuse the tuple-producing shape.
+    pub fn is_checked_arith(self) -> bool {
+        matches!(self, Self::Add | Self::Sub | Self::Mul)
+    }
+
+    /// `Div`/`Mod` — the ops guarded by explicit `Assert`s ahead of an
+    /// ordinary `BinaryOp` (division by zero for both; `MIN / -1`/`MIN % -1`
+    /// for a signed operand only).
+    pub fn is_checked_div(self) -> bool {
+        matches!(self, Self::Div | Self::Mod)
+    }
+}

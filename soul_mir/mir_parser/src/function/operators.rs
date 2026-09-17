@@ -5,10 +5,7 @@ use crate::{
 use ast_model as ast;
 use ast_model::{SoulType, TypeId, operators::BinaryOperatorKind};
 use mir_model as mir;
-use soul_utils::{
-    TypeModifier, compiler_options::PlatformInfo, fault::Fault, soul_names::PrimitiveTypes,
-    span::Span,
-};
+use soul_utils::{TypeModifier, fault::Fault, soul_names::PrimitiveTypes, span::Span};
 
 impl<'a> FunctionLowerer<'a> {
     /// `Add`/`Sub`/`Mul` trap on overflow via an ordinary MIR `Assert`
@@ -130,7 +127,7 @@ impl<'a> FunctionLowerer<'a> {
         let SoulType::Primitive(prim) = &operand_ty else {
             unreachable!("require_primitive already rejected anything else");
         };
-        if let Some(min_value) = signed_primitive_min(*prim, &self.options.platform) {
+        if let Some(min_value) = prim.signed_min(&self.options.platform) {
             let overflow_msg = match op {
                 BinaryOperatorKind::Div => "attempt to divide with overflow",
                 BinaryOperatorKind::Mod => "attempt to calculate the remainder with overflow",
@@ -196,38 +193,4 @@ impl<'a> FunctionLowerer<'a> {
             Some(next),
         );
     }
-}
-
-/// The minimum representable value of a signed primitive integer type, or
-/// `None` if `prim` isn't a signed integer at all — used only by
-/// `lower_checked_div` to build the `MIN`-comparison constant for a division
-/// overflow check. `Int`/`UntypedInt`/`CInt` are platform-sized (see
-/// `PlatformInfo`'s own doc comment on why nothing upstream of codegen is
-/// normally supposed to read it) — this is the one place in `mir_parser`
-/// that peeks it, since the *correct* `MIN` bit pattern genuinely depends on
-/// the concrete width, and there's no way to express "the minimum value of
-/// whatever width this ends up being" as a single width-agnostic MIR
-/// constant the way `0`/`-1` already are.
-fn signed_primitive_min(prim: PrimitiveTypes, platform: &PlatformInfo) -> Option<i128> {
-    use PrimitiveTypes::{CInt, Int, Int8, Int16, Int32, Int64, Int128, UntypedInt};
-    let bits = match prim {
-        Int8 => 8,
-        Int16 => 16,
-        Int32 => 32,
-        Int64 => 64,
-        Int128 => 128,
-        Int | UntypedInt => platform.pointer_bits,
-        CInt => platform.c_int_bits,
-        _ => return None,
-    };
-    Some(match bits {
-        8 => i8::MIN as i128,
-        16 => i16::MIN as i128,
-        32 => i32::MIN as i128,
-        64 => i64::MIN as i128,
-        128 => i128::MIN,
-        // PlatformInfo only ever produces 32/64-bit pointer/C-int widths
-        // today; this only exists so the match is exhaustive.
-        _ => i64::MIN as i128,
-    })
 }

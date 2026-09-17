@@ -2,10 +2,7 @@ use crate::{
     fault::{MirErrorKind, MirResult},
     function::{FunctionLowerer, r#type::require_primitive},
 };
-use ast_model::{
-    self as ast, SoulType,
-    operators::{BinaryOperatorKind, UnaryOperatorKind},
-};
+use ast_model::{self as ast, SoulType, operators::UnaryOperatorKind};
 use mir_model as mir;
 use soul_utils::{
     Mutable, TypeModifier, compiler_options::MirOptions, fault::Fault,
@@ -112,7 +109,7 @@ impl<'a> FunctionLowerer<'a> {
         let expr = &self.store.expressions[expr_id];
         match &expr.node {
             ast::ExpressionKind::Binary(binary) => {
-                if !is_supported_binary_op(binary.operator.value) {
+                if !binary.operator.value.is_supported() {
                     return Err(Fault::error_with_kind(
                         MirErrorKind::UnsupportedBinaryOperator,
                         Some(expr.span),
@@ -126,9 +123,7 @@ impl<'a> FunctionLowerer<'a> {
                 // are, and there's no `{s,u}*.with.overflow`-style intrinsic
                 // for floats for `lower_checked_binary_op` to call anyway.
                 let is_float = self.is_float_operand(&left, &right, expr_id);
-                if !is_float
-                    && is_checked_arith_op(binary.operator.value)
-                    && should_check_overflow()
+                if !is_float && binary.operator.value.is_checked_arith() && should_check_overflow()
                 {
                     return self.lower_checked_binary_op(
                         binary.operator.value,
@@ -138,8 +133,7 @@ impl<'a> FunctionLowerer<'a> {
                         expr.span,
                     );
                 }
-                if !is_float && is_checked_div_op(binary.operator.value) && should_check_overflow()
-                {
+                if !is_float && binary.operator.value.is_checked_div() && should_check_overflow() {
                     return self.lower_checked_div(
                         binary.operator.value,
                         left,
@@ -287,42 +281,4 @@ impl<'a> FunctionLowerer<'a> {
         }
         Ok(mir::Rvalue::Aggregate(mir::AggregateKind::Array, operands))
     }
-}
-
-fn is_supported_binary_op(op: BinaryOperatorKind) -> bool {
-    matches!(
-        op,
-        BinaryOperatorKind::Add
-            | BinaryOperatorKind::Sub
-            | BinaryOperatorKind::Mul
-            | BinaryOperatorKind::Div
-            | BinaryOperatorKind::Mod
-            | BinaryOperatorKind::Eq
-            | BinaryOperatorKind::NotEq
-            | BinaryOperatorKind::Lt
-            | BinaryOperatorKind::Gt
-            | BinaryOperatorKind::Le
-            | BinaryOperatorKind::Ge
-            | BinaryOperatorKind::LogAnd
-            | BinaryOperatorKind::LogOr
-    )
-}
-
-/// `Add`/`Sub`/`Mul` — the ops `lower_checked_binary_op` traps on overflow
-/// for. Div/Mod go through the separate `lower_checked_div` instead (see
-/// `is_checked_div_op`): division has no `{s,u}*.with.overflow`-style
-/// intrinsic to call, so it can't reuse the tuple-producing shape.
-fn is_checked_arith_op(op: BinaryOperatorKind) -> bool {
-    matches!(
-        op,
-        BinaryOperatorKind::Add | BinaryOperatorKind::Sub | BinaryOperatorKind::Mul
-    )
-}
-
-/// `Div`/`Mod` — the ops `lower_checked_div` guards with explicit `Assert`s
-/// ahead of an ordinary `BinaryOp` (division by zero for both; `MIN / -1`/
-/// `MIN % -1` for a signed operand only — the one case a signed division
-/// can't represent, since the mathematical result overflows the type).
-fn is_checked_div_op(op: BinaryOperatorKind) -> bool {
-    matches!(op, BinaryOperatorKind::Div | BinaryOperatorKind::Mod)
 }

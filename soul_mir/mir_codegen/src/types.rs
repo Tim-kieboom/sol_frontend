@@ -45,14 +45,6 @@ pub(crate) fn const_int<'ctx>(
     })
 }
 
-pub(crate) fn is_signed(prim: PrimitiveTypes) -> bool {
-    use PrimitiveTypes::*;
-    matches!(
-        prim,
-        CInt | UntypedInt | Int | Int8 | Int16 | Int32 | Int64 | Int128
-    )
-}
-
 /// Builds a float constant — the `const_int` of the float world. `Int`/
 /// `Uint` literals are accepted too (truncated to the destination's own
 /// precision) since an untyped int literal can unify with a float-typed

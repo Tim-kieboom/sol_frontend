@@ -751,7 +751,85 @@ that landing first, in order.
     reached only through a branch doesn't, yet). All 30 exe tests still pass unchanged — the actual
     proof this shipped with zero regressions, since the exe-test harness has no mechanism for an
     expected-to-fail-to-compile program (a separate, bigger tooling gap, not addressed here).
-- [ ] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the
+- [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
+      "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
+      (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
+      a HIR would cost a whole new crate + lowering pass + rewriting every `soul_name_resolver`/
+      `mir_parser` consumer to read it, for a problem that turned out to be about **where specific
+      logic lives**, not about missing a canonical desugared tree. Decision: **no HIR** — keep
+      `lexer → parser → AST → name/typecheck → MIR → LLVM` as-is, and instead separate two things
+      that had drifted into the wrong place:
+  - The real axis, generalized from this interview (mirrors why rustc type-checks on HIR but
+    borrow-checks on MIR): **flow-insensitive** logic (the answer only depends on a type/expression
+    *shape*, never on control-flow position — e.g. `is_auto_copy(ty)`) belongs in the
+    resolver/`DeclareStore`, computed once and cached per `TypeId`. **Flow-sensitive** logic (the
+    answer depends on *where in the CFG* you are — move-checking, drop-chain/scope tracking) is
+    correctly already in `mir_parser` and stays there.
+  - A full-pipeline scan (beyond the flow-insensitive audit below) also found a second, related
+    smell already precedented by the tail-return case (`soul_name_resolver`'s `check_tail_return_
+    type` vs. `mir_parser` having to "re-derive the same convention independently", per the
+    Implicit-return entry above): **convention drift** — the same rule reimplemented in two crates
+    with no shared source, kept in sync only by comment. `mir_codegen`'s own `resolve_struct`
+    (`types.rs`) admits this directly in its doc comment: *"mirrors `mir_parser`'s own
+    `resolve_struct`"*.
+  - [x] **Part A1** — pure, `DeclareStore`-independent classifiers moved to `ast_model`/`soul_utils`
+        as inherent methods (no caching needed, lowest risk — cheap to recompute, callers just no
+        longer duplicate the rule):
+    - `PrimitiveTypes::{is_signed, is_float, signed_min}` (`soul_utils::soul_names`) — absorbs
+      `mir_parser`'s former `is_float_primitive`/`signed_primitive_min` *and* `mir_codegen`'s own
+      independently-reimplemented `is_signed` (`types.rs`), found in the full-pipeline scan; both
+      crates' call sites (`operators.rs`'s `signed_primitive_min` call,
+      `rvalue.rs`'s `is_float_primitive` match, `mir_codegen::rvalue`'s `operand_is_signed`) now
+      call the one shared method instead of three independent copies of the same rule.
+    - `BinaryOperatorKind::{is_supported, is_checked_arith, is_checked_div}` (`ast_model::ast::
+      operators`) — absorbs `mir_parser`'s former `is_supported_binary_op`/`is_checked_arith_op`/
+      `is_checked_div_op` (`function/rvalue.rs`).
+    - `SoulType::is_primitive` (`ast_model::ast::soul_type`) — the pure shape-check half of
+      `require_primitive`; `require_primitive` itself stays in `mir_parser` (it constructs a
+      `MirErrorKind`-specific `Fault`, not reusable across crates) but now delegates the actual
+      classification instead of re-matching `SoulType::Primitive(_)` inline.
+    - Proven by the full `cargo test --workspace` (all crates green, zero warnings) + all 33 exe
+      tests (`scripts/run_codegen_tests.py`) passing unchanged — none of these were behavior
+      changes, purely relocations.
+  - [ ] **Part A2** — move `is_auto_copy`, `require_lowerable`, `resolve_struct` (all
+        `mir_parser::function::mod`/`type`) onto `DeclareStore` itself (not just
+        `soul_name_resolver` — `mir_codegen` needs the same facts, see Part C), with a per-`TypeId`
+        fact cache instead of re-deriving from `SoulType` shape on every call site. Directly
+        unblocks resuming the paused borrow-checker slice, since these are the most-recomputed.
+  - [ ] **Part A3** — move `is_type_boolean`/`expression_is_bool` and `is_float_operand`
+        (`mir_parser::function::type`) to the resolver the same way — both already read
+        `self.declares`, so this is closer to mechanical relocation than A2.
+  - [ ] **Part A4** — split `auto_deref` (`mir_parser::function::place`): extract the *type
+        decision* (is this `&T`/`*T`, what's the inner type) to a resolver-level helper; keep the
+        *side effect* (pushing `PlaceElem::Deref` onto a `mir::Place`) in `mir_parser`, since that's
+        MIR-only. This same helper is what closes the convention-drift half of this problem: the
+        resolver's own `expression_type`'s `Deref` arm and `struct_field_type`'s deref prelude
+        (`resolve/typecheck/expression.rs`) currently each carry a comment admitting they "mirror
+        `mir_parser::function::place::{resolve_deref_place,auto_deref}` one layer up" — i.e. the
+        same rule, already duplicated into the resolver by hand. Once the type-decision half is a
+        real shared helper, both resolver call sites call it instead of re-implementing it.
+  - [ ] **Part A5** — partial only (not a full move): extract the shared *projection rule* behind
+        `place_type`/`operand_type` (`mir_parser::function::type`) — "given a type + a
+        field-index/array/deref step, what's the resulting type" — as a helper both `mir_parser`
+        and `mir_codegen`'s own duplicate `operand_type` (`rvalue.rs`) can call; the traversal itself
+        (walking `mir::Place`/`LocalId`) stays in each crate since that's MIR-only structure.
+  - [ ] **Part C** — sequenced after A2/A5 land: retire `mir_codegen`'s own duplicated shape logic
+        (`operand_is_signed`, `operand_type`, `resolve_struct` in `rvalue.rs`/`types.rs`) in favor of
+        calling the same shared facts, instead of a second independent implementation kept in sync
+        by convention. `llvm_type`/`stub_type`/`array_type`'s struct-field-ordering and
+        array-kind-acceptance rules (comments there already say they "must match `mir_parser`'s own"
+        conventions) should pull from `require_lowerable`'s same accept-list rather than
+        re-encoding it.
+  - [ ] **Part B** — new `mir_parser::desugar` submodule owning the `foreach`/`while` → loop +
+        `SwitchInt` rewrite currently inlined in `control_flow.rs`. Explicitly *not* a new IR/tree
+        stage — no separate desugared AST gets built and handed off; `lower_for`/`lower_while` call
+        into `desugar::`-namespaced helpers that return a normalized shape instead of inlining the
+        rewrite into the same functions that also emit MIR blocks. Zero behavior change, proven by
+        the existing exe-test suite passing unchanged.
+  - [ ] Once A/B/C land: resume the paused borrow-checker slice — CFG traversal (back-edge/cycle
+        detection via DFS) + two-state definite/maybe dataflow for `if`/`else` move-checking (see
+        the borrow-checker entry above for the full scope of that slice).
+- [x] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the
       user asking whether `*int` gets a real `dealloc` at `Drop` yet (it didn't — `Drop` is a pure
       no-op for every type right now). `/grill-me`'d and sequenced into three slices, since it
       touches parsing, resolution, a brand-new MIR shape, and codegen all at once:
@@ -919,6 +997,15 @@ that landing first, in order.
       Explicitly out of scope: values escaping via return/longer-lived-container/capture (no
       arena — falls back to the ordinary allocator), and multi-frame/loop-iteration regions. Blocked
       on M2 (borrow/move checker) landing first.
+- [ ] `extern "rust"` — calling into Rust directly, not just C (idea, not designed — see
+      [soul-lang.md §11](soul-lang.md#11-ownership--borrowing)). The hope: since Soul's borrow
+      checker uses the same strict aliasing rule as Rust's (exactly one `&mut` or any number of
+      `&`), a Soul→Rust call could be checked against the callee's real `&`/`&mut`/owned signature
+      instead of trusted blindly the way `extern "C"` has to be (C has no aliasing info to check
+      against at all). Open, unscoped questions: whether Soul's and rustc's type/ABI
+      representations are compatible enough to avoid a translation layer, how a generic or
+      trait-object Rust signature maps to a Soul one, and whether the two checkers' rules are
+      close enough to actually trust each other or just look similar.
 - [ ] `async`/`await` + structured concurrency runtime — spec (§15) now also covers `task.block { }`,
       the sync-side blocking counterpart to `task { }` (plus brace-optional single-statement form
       for both), and disallows it from nested-async call sites; not implemented yet

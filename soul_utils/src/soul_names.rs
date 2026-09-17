@@ -143,7 +143,7 @@ define_str_enum!(
         Char64 => "char64", 64,
 
         /// a null terminated char pointer
-        CStr => "c_str", PrimitiveSize::IntAndPtrSize as u8,
+        CStr => "cstr", PrimitiveSize::IntAndPtrSize as u8,
 
         /// empty type (also known as `void` in c like languages)
         None => "none", 8,
@@ -151,7 +151,7 @@ define_str_enum!(
         Boolean => "bool", 8,
 
         /// c sized interger type
-        CInt => "c_int", PrimitiveSize::CIntSize as u8,
+        CInt => "cint", PrimitiveSize::CIntSize as u8,
         /// undecided integer type
         UntypedInt => "untypedInt", PrimitiveSize::IntAndPtrSize as u8,
         /// system-sizes integer type
@@ -168,7 +168,7 @@ define_str_enum!(
         Int128 => "i128", 128,
 
         /// c sized interger type
-        CUint => "c_uint", PrimitiveSize::CIntSize as u8,
+        CUint => "cuint", PrimitiveSize::CIntSize as u8,
         /// undecided unsigned integer type
         UntypedUint => "untypedUint", PrimitiveSize::IntAndPtrSize as u8,
         /// system-sized unsigned integer type
@@ -194,6 +194,56 @@ define_str_enum!(
         Float64 => "f64", 64,
     }
 );
+
+impl PrimitiveTypes {
+    /// Whether this primitive is a signed integer type — a pure classification
+    /// of the type's own shape, shared by both `mir_parser` (checked-arithmetic/
+    /// div lowering) and `mir_codegen` (choosing signed vs. unsigned LLVM
+    /// int predicates/ops), which each used to reimplement this identically.
+    pub fn is_signed(self) -> bool {
+        use PrimitiveTypes::*;
+        matches!(
+            self,
+            CInt | UntypedInt | Int | Int8 | Int16 | Int32 | Int64 | Int128
+        )
+    }
+
+    /// Whether this primitive is a floating-point type.
+    pub fn is_float(self) -> bool {
+        use PrimitiveTypes::*;
+        matches!(self, Float16 | Float32 | Float64 | UntypedFloat)
+    }
+
+    /// The minimum representable value of a signed integer primitive, or
+    /// `None` if this isn't a signed integer at all. `Int`/`UntypedInt`/`CInt`
+    /// are platform-sized (see `PlatformInfo`'s own doc comment on why nothing
+    /// upstream of codegen is normally supposed to read it) — computing the
+    /// correct `MIN` bit pattern genuinely needs the concrete width, so this
+    /// is the one place that peeks it ahead of codegen.
+    pub fn signed_min(self, platform: &crate::compiler_options::PlatformInfo) -> Option<i128> {
+        use PrimitiveTypes::{CInt, Int, Int8, Int16, Int32, Int64, Int128, UntypedInt};
+        let bits = match self {
+            Int8 => 8,
+            Int16 => 16,
+            Int32 => 32,
+            Int64 => 64,
+            Int128 => 128,
+            Int | UntypedInt => platform.pointer_bits,
+            CInt => platform.c_int_bits,
+            _ => return None,
+        };
+        Some(match bits {
+            8 => i8::MIN as i128,
+            16 => i16::MIN as i128,
+            32 => i32::MIN as i128,
+            64 => i64::MIN as i128,
+            128 => i128::MIN,
+            // Only 32/64-bit pointer/C-int widths are produced today; this
+            // only exists so the match is exhaustive.
+            _ => i64::MIN as i128,
+        })
+    }
+}
 
 define_symbols!(
     /// Binary and unary operators available in the Soul language.
