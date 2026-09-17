@@ -2264,7 +2264,7 @@ fn elaborate_drops_excludes_a_moved_out_local_from_its_own_scopes_drop_chain() {
     )
     .expect("expected successful lowering");
 
-    crate::move_check::elaborate_drops(&mut mir);
+    crate::borrow_checker::elaborate_drops(&mut mir);
 
     let has_drop = mir
         .blocks
@@ -2341,7 +2341,7 @@ fn a_conditional_move_in_only_one_if_branch_still_leaks_on_the_untaken_path() {
     )
     .expect("expected successful lowering");
 
-    crate::move_check::elaborate_drops(&mut mir);
+    crate::borrow_checker::elaborate_drops(&mut mir);
 
     let has_drop = mir
         .blocks
@@ -2376,7 +2376,7 @@ fn elaborate_drops_fixes_a_moved_taint_leaking_past_an_early_return() {
     )
     .expect("expected successful lowering");
 
-    crate::move_check::elaborate_drops(&mut mir);
+    crate::borrow_checker::elaborate_drops(&mut mir);
 
     let has_drop = mir
         .blocks
@@ -3000,7 +3000,7 @@ fn check_moves_flags_a_use_after_move_in_straight_line_code() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3018,7 +3018,7 @@ fn check_moves_allows_a_reassigned_local_to_be_used_again() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert!(
         faults.is_empty(),
         "expected no faults — s was reassigned before its second use, got {:#?}",
@@ -3038,7 +3038,7 @@ fn check_moves_allows_moving_the_same_local_in_each_arm_of_an_if_else() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert!(
         faults.is_empty(),
         "moving s once on every path with no reuse after the join should be accepted, got {:#?}",
@@ -3060,7 +3060,7 @@ fn check_moves_catches_a_move_then_reuse_reachable_only_through_a_branch() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3082,7 +3082,7 @@ fn check_moves_flags_a_use_after_a_move_on_only_one_branch() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3106,7 +3106,7 @@ fn check_moves_keeps_sibling_branch_state_independent() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3131,7 +3131,7 @@ fn check_moves_flags_a_loop_body_reusing_a_value_it_moved_last_iteration() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3153,7 +3153,7 @@ fn check_moves_allows_a_loop_body_that_reinitializes_before_every_use() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert!(
         faults.is_empty(),
         "reinitializing s before every use inside the loop should be accepted, got {:#?}",
@@ -3169,7 +3169,7 @@ fn check_moves_allows_autocopy_values_to_be_used_repeatedly() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert!(
         faults.is_empty(),
         "an AutoCopy primitive should never be flagged as moved, got {:#?}",
@@ -3185,7 +3185,7 @@ fn check_moves_flags_a_borrow_of_an_already_moved_value() {
     )
     .expect("expected successful lowering");
 
-    let faults = crate::move_check::check_moves(&mir);
+    let faults = crate::borrow_checker::check_moves(&mir);
     assert_eq!(
         faults.len(),
         1,
@@ -3285,7 +3285,7 @@ fn check_escapes_flags_a_direct_reference_to_a_body_local() {
     // to it is dangling on every call, unconditionally.
     let (mir, declares) = lower_source_with_declares("f(): &int {\n    x := 1\n    return &x\n}\n", "f");
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3305,7 +3305,7 @@ fn check_escapes_flags_a_reference_routed_through_an_intermediate_local() {
         "f",
     );
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3325,7 +3325,7 @@ fn check_escapes_allows_returning_a_received_reference_parameter_unchanged() {
     let (mir, declares) =
         lower_source_with_declares("f(p: &int): &int {\n    return p\n}\n", "f");
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
         "returning an already-received reference parameter should be accepted, got {:#?}",
@@ -3342,7 +3342,7 @@ fn check_escapes_allows_reborrowing_through_a_reference_parameter() {
     let (mir, declares) =
         lower_source_with_declares("f(p: &int): &int {\n    return &*p\n}\n", "f");
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
         "reborrowing through an existing reference should be accepted, got {:#?}",
@@ -3359,7 +3359,7 @@ fn check_escapes_allows_dereferencing_an_owning_heap_pointer() {
     let (mir, declares) =
         lower_source_with_declares("f(p: *int): &int {\n    return &*p\n}\n", "f");
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
         "dereferencing an owning heap pointer should be accepted, got {:#?}",
@@ -3377,7 +3377,7 @@ fn check_escapes_skips_functions_containing_a_branch() {
         "f",
     );
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
         "expected a branching function to be skipped entirely, got {:#?}",
@@ -3390,10 +3390,110 @@ fn check_escapes_ignores_functions_not_returning_a_reference() {
     let (mir, declares) =
         lower_source_with_declares("f(): int {\n    x := 1\n    return x\n}\n", "f");
 
-    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
         "a function not returning a reference has nothing to check, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
+    // The exact motivating example from scoping this slice: `mutRef` is
+    // created, `ref` is created and used while `mutRef` is still pending
+    // its own later use — their live ranges overlap, and one side is
+    // mutable.
+    let mir = lower_source(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    useMut(mutRef)\n    useRef(ref)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly one overlapping-borrow fault, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
+fn check_borrow_overlaps_allows_two_overlapping_shared_borrows() {
+    // Unlimited simultaneous shared borrows are always fine — neither side
+    // is mutable, so this must never be flagged regardless of overlap.
+    let mir = lower_source(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r1 := &var\n    r2 := &var\n    useRef(r1)\n    useRef(r2)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "two overlapping shared borrows should never be flagged, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_traces_a_reborrow_through_an_intermediate_local() {
+    // `r2 := r1` is just an alias of `r1`'s own value, not a fresh `&var` —
+    // the trace has to follow it back to `r1`'s own `Ref` to realize `r2`
+    // and `mutRef` actually conflict. `r1` itself (last used only by the
+    // `r2 := r1` read, before `mutRef` even exists) must NOT be flagged.
+    let mir = lower_source(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &var\n    r2 := r1\n    mutRef := &mut var\n    useRef(r2)\n    useMut(mutRef)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly the r2-vs-mutRef conflict (not r1, whose only use predates mutRef), got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
+fn check_borrow_overlaps_allows_sequential_non_overlapping_mutable_borrows() {
+    // Real (NLL-style) liveness, not a lexical-scope heuristic: `r1`'s last
+    // use is strictly before `r2` is even created, so their live ranges
+    // don't actually overlap even though both are `&mut` borrows of the
+    // same local within the same function.
+    let mir = lower_source(
+        "struct Obj {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &mut var\n    useMut(r1)\n    r2 := &mut var\n    useMut(r2)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "sequential, non-overlapping mutable borrows should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_skips_functions_containing_a_branch() {
+    // Straight-line only for now (see the module's own docs) — a real
+    // overlap reachable only after a branch isn't analyzed yet.
+    let mir = lower_source(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    if cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "expected a branching function to be skipped entirely, got {:#?}",
         faults
     );
 }

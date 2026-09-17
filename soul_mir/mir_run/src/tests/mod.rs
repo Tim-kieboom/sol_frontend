@@ -247,6 +247,33 @@ fn a_dangling_reference_return_is_flagged_through_the_full_pipeline() {
 }
 
 #[test]
+fn an_overlapping_mutable_borrow_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring for `mir_parser::borrow_checker::overlap_check`, not
+    // just `check_borrow_overlaps` in isolation: `mutRef` and `ref` both
+    // borrow `var`, and their live ranges overlap.
+    let mut ast = build_ast(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    useMut(mutRef)\n    useRef(ref)\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::OverlappingBorrows)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn mixed_program_lowers_what_it_can_and_faults_on_the_rest() {
     let mut ast = build_ast(
         "okFn(a: int, b: int): int {\n    return a + b\n}\nbadFn(a: []int): []int {\n    return a\n}\n",

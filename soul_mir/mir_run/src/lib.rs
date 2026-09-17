@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use ast_model::AstTree;
 use mir_model::MirProgram;
-use mir_parser::{MirLowerer, fault::MirErrorKind};
+use mir_parser::{MirLowerer, fault::MirErrorKind, borrow_checker};
 use soul_utils::{
     CrateContext, collections::benchmark::Benchmark, compiler_options::CompilerOptions,
 };
@@ -60,10 +60,10 @@ pub fn to_mir(
     // terminator's own shape, only `Operand`/`Assign` occurrences, which
     // `elaborate_drops` never touches.
     for function in functions.values_mut() {
-        mir_parser::move_check::elaborate_drops(function);
+        borrow_checker::elaborate_drops(function);
     }
     for function in functions.values() {
-        for fault in mir_parser::move_check::check_moves(function) {
+        for fault in borrow_checker::check_moves(function) {
             context.faults.push(fault);
         }
     }
@@ -74,7 +74,17 @@ pub fn to_mir(
     // `lowerer` has already been consumed above, freeing its `&mut
     // DeclareStore` borrow, so `ast.declares` can be read here.
     for function in functions.values() {
-        for fault in mir_parser::escape_check::check_escapes(function, &ast.declares) {
+        for fault in borrow_checker::check_escapes(function, &ast.declares) {
+            context.faults.push(fault);
+        }
+    }
+
+    // Overlap checking (see `mir_parser::borrow_checker::overlap_check`) —
+    // do two live borrows of the same local conflict (`&mut` vs anything
+    // else). A third, separate concern from move-checking and
+    // escape-checking; doesn't need `declares` at all.
+    for function in functions.values() {
+        for fault in borrow_checker::check_borrow_overlaps(function) {
             context.faults.push(fault);
         }
     }

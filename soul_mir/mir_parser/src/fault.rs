@@ -163,6 +163,15 @@ pub enum MirErrorKind {
     /// in (see `escape_check`'s own docs).
     #[error("returns a reference to a local that doesn't outlive this function")]
     DanglingReference,
+
+    /// The overlap checker's own violation (see
+    /// `mir_parser::borrow_checker::overlap_check`). Points at the
+    /// later-created borrow's own declaration span. Straight-line functions
+    /// only for now; whole-locals only (no per-field disjointness); and
+    /// reference-vs-reference only (a live borrow blocking a *move* of its
+    /// target isn't checked here — see that module's own docs).
+    #[error("a mutable borrow overlaps another live borrow of the same value")]
+    OverlappingBorrows,
 }
 
 impl From<UnclassifiedKind> for MirErrorKind {

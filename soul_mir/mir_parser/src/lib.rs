@@ -12,9 +12,8 @@
 //! resolved, well-typed input, so every fault here means "not supported by this
 //! slice yet," not "the input program is invalid."
 
-pub mod escape_check;
+pub mod borrow_checker;
 pub mod fault;
-pub mod move_check;
 #[cfg(test)]
 mod tests;
 

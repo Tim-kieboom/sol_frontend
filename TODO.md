@@ -933,10 +933,61 @@ that landing first, in order.
     proving the real `to_mir` wiring. Full `cargo test --workspace` (122 `mir_parser` tests, up from
     115) and all 33 exe tests pass unchanged (none of the 33 exe tests return a reference at all yet,
     so this is genuinely new, previously-unexercised territory, not a regression check).
+  - Reorganized around this point (outside a `/grill-me` pass, directly): `move_check`/`escape_check`
+    moved under a new `mir_parser::borrow_checker` module (`borrow_checker/{mod,move_check,
+    escape_check}.rs`), `mod.rs` `pub use`-ing each pass's own public entry point — a single home for
+    every M2 borrow-checker pass, `mir_run`/tests updated to call through `borrow_checker::` instead of
+    the two separate top-level module paths.
+  - [x] **Mutable/shared-borrow overlap checking** — do two *live* borrows of the same local conflict.
+        `/grill-me`'d at length before writing anything, working through the user's own two concrete
+        examples (an `if`/`else`-free straight-line `mutRef`/`ref` overlap, and a deferred
+        move-vs-borrow interaction case) to force real scope decisions:
+    - **Real NLL-accurate liveness confirmed as the bar**, same standard as move-checking — explicitly
+      not a lexical-scope heuristic (a borrow live "until its enclosing block ends" regardless of
+      whether it's used again), the exact approach real rustc abandoned pre-NLL for being too
+      conservative.
+    - **Whole-locals only**: two borrows of the same root local conflict regardless of which field
+      each touches (`&o.a` and `&mut o.b` are wrongly treated as conflicting) — real per-field
+      disjointness deferred to a later slice.
+    - **Reference-vs-reference only**: a live borrow blocking a *move* of its target (`cannot move out
+      of x because it is borrowed`) is a separate, later slice, not attempted here — confirmed
+      explicitly rather than assumed part of "overlap checking."
+    - **Straight-line functions only** for this slice too (any branch skips the whole function,
+      unanalyzed) — same precedent as every other M2 pass's own first slice.
+    - **Conflict matrix confirmed**: `&mut` vs `&mut` and `&mut` vs `&`, overlapping in time, reject;
+      `&` vs `&` overlapping — always fine (unlimited simultaneous shared borrows, same as real Rust).
+    - **Alias tracing confirmed as in-scope**: a reborrow (`r2 := r1`) must be traced back to the place
+      it ultimately aliases, reusing the same backward alias-chain walk built for `escape_check`, not
+      just locals with a *direct* `Ref{}` assignment.
+    - New `mir_parser::borrow_checker::overlap_check::check_borrow_overlaps(&Function) -> Vec<MirFault>`,
+      new `MirErrorKind::OverlappingBorrows`. Flattens a straight-line function into an ordered
+      timeline of program points (one per statement, plus one per operand-reading terminator — a
+      `Call`'s arguments, an `Assert`'s `cond`/`msg`), splits each local's history into **generations**
+      (the span between one whole-place assignment and the next, or function end), and classifies a
+      generation as an actual borrow only if its own assignment traces back — through the same
+      bare-local alias-chain walk `escape_check` uses — to a fresh, `Deref`-free `Rvalue::Ref { place,
+      mutable }` (a `Deref` anywhere in the place means borrowing *through* an existing reference/
+      pointer — external memory, out of scope here, mirroring `escape_check`'s own safe terminus for
+      exactly the same reason). Every found borrow's live range is `[its own def point, the last point
+      it's actually read]` (a never-reread borrow is live only at its own creation) — grouped by the
+      root local borrowed, every pair checked for an overlapping range where at least one side is
+      mutable.
+    - Wired into `mir_run::to_mir` as a third, independent pass (needs no `&DeclareStore` at all, unlike
+      `escape_check`).
+    - Proven via 5 new `mir_parser` unit tests (the exact `mutRef`/`ref` motivating example; two
+      overlapping shared borrows accepted; a reborrow traced through an intermediate local, correctly
+      flagging only the real conflict and not the reborrow's own now-dead source; two sequential
+      *non*-overlapping `&mut` borrows accepted — proving this is real liveness, not a lexical-scope
+      check; skipped when branching) — **all passed on the first implementation attempt**, matching
+      every case worked through in the interview beforehand — plus 1 new `mir_run` integration test.
+      Full `cargo test --workspace` (127 `mir_parser` tests, up from 122) and all 33 exe tests pass
+      unchanged (no exe test constructs two simultaneous borrows yet, so this is new territory, not a
+      regression check).
   - What's left for real borrow/lifetime-conflict checking: the deferred interprocedural call-site
-    tracing noted above (the user's own motivating example), mutable/shared-borrow overlap checking
-    (a fully separate analysis, not started), and extending escape-checking itself to `if`/`for` (same
-    CFG-join/fixed-point work move-checking already went through, not yet ported to this checker).
+    tracing (the user's own original motivating example for escape-checking), the deferred
+    move-vs-borrow interaction case just above, per-field disjointness for overlap-checking, and
+    extending both escape-checking and overlap-checking to `if`/`for` (the same CFG-join/fixed-point
+    work move-checking already went through, not yet ported to either of these two checkers).
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
