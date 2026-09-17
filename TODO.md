@@ -831,9 +831,21 @@ that landing first, in order.
         context — has run at all.
     - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests
       (`scripts/run_codegen_tests.py`) bar as A1 — pure relocation, no behavior change.
-  - [ ] **Part A3** — move `is_type_boolean`/`expression_is_bool` and `is_float_operand`
-        (`mir_parser::function::type`) to the resolver the same way — both already read
-        `self.declares`, so this is closer to mechanical relocation than A2.
+  - [x] **Part A3** — moved `is_type_boolean`/`expression_is_bool` (`mir_parser::function::type`)
+        to `ExpressionId::is_boolean` (`ast_model::ast::expression`, plus a private
+        `is_variable_boolean` helper) — not literally "into the `soul_name_resolver` crate" as
+        originally worded: `mir_parser` only depends on `ast_model`/`mir_model`/`soul_utils` in
+        production code (`soul_name_resolver` is a dev-dependency, tests only), so anything
+        `mir_parser` needs to call has to live somewhere both crates actually share — `ast_model`,
+        same destination as A2's `DeclareStore` methods, not the resolver crate itself.
+    - `is_float_operand` turned out to need **no further move**: its only flow-insensitive piece
+      (is this primitive float-typed) was already extracted in A1
+      (`PrimitiveTypes::is_float`) — what's left is walking `mir::Operand`/`mir::Place`
+      projections via `place_type`/`operand_type`, which is inherently MIR-only structure (doesn't
+      exist before MIR lowering) and belongs with A5's `place_type`/`operand_type` partial
+      extraction, not here.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
+      A1/A2 — pure relocation, no behavior change.
   - [ ] **Part A4** — split `auto_deref` (`mir_parser::function::place`): extract the *type
         decision* (is this `&T`/`*T`, what's the inner type) to a resolver-level helper; keep the
         *side effect* (pushing `PlaceElem::Deref` onto a `mir::Place`) in `mir_parser`, since that's

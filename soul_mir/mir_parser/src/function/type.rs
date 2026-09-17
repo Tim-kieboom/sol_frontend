@@ -2,9 +2,9 @@ use crate::{
     fault::{MirErrorKind, MirResult},
     function::FunctionLowerer,
 };
-use ast_model::{self as ast, SoulType, declare_store::DeclareStore, operators::UnaryOperatorKind};
+use ast_model::{self as ast, SoulType, declare_store::DeclareStore};
 use mir_model as mir;
-use soul_utils::{fault::Fault, soul_names::PrimitiveTypes, span::Span};
+use soul_utils::{fault::Fault, span::Span};
 
 impl<'a> FunctionLowerer<'a> {
     /// The Soul type held at `place`, walking its projection the same way
@@ -82,19 +82,7 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn expression_is_bool(&self, expr_id: ast::ExpressionId) -> bool {
-        let expr = &self.store.expressions[expr_id];
-        match &expr.node {
-            ast::ExpressionKind::Literal((_, ast::Literal::Bool(_))) => true,
-            ast::ExpressionKind::Variable(var) => self.is_type_boolean(var),
-            ast::ExpressionKind::Unary(unary) => {
-                matches!(unary.operator.value, UnaryOperatorKind::Not)
-            }
-            ast::ExpressionKind::Binary(_) => matches!(
-                self.declares.get_expression_type(expr_id),
-                Some(SoulType::Primitive(PrimitiveTypes::Boolean))
-            ),
-            _ => false,
-        }
+        expr_id.is_boolean(self.store, self.declares)
     }
 
     /// Resolves a struct-typed `SoulType::Stub`'s bare name back to its
@@ -102,18 +90,6 @@ impl<'a> FunctionLowerer<'a> {
     /// `DeclareStore::resolve_struct`, shared with `mir_codegen`.
     pub(super) fn resolve_struct(&self, ty: &SoulType) -> Option<&ast::Struct> {
         self.declares.resolve_struct(ty, self.module)
-    }
-
-    fn is_type_boolean(&self, var: &ast_model::VariableExpression) -> bool {
-        let Some(resolved) = self.declares.get_variable_resolve(var.id) else {
-            return false;
-        };
-
-        let Some((_, Some(ty), _)) = self.declares.get_variable_type(resolved) else {
-            return false;
-        };
-
-        ty.is_primitive_kind(PrimitiveTypes::Boolean)
     }
 }
 

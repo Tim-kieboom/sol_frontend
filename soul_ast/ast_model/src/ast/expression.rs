@@ -4,12 +4,14 @@ use soul_utils::{
     Ident, Mutable,
     collections::array::Arr,
     impl_soul_ids,
+    soul_names::PrimitiveTypes,
     span::{Span, Spanned},
 };
 
 use crate::{
     AstStore, BlockId, Literal, NodeId, SoulType, TypeId, VarPattern,
-    operators::{BinaryOperator, UnaryOperator},
+    declare_store::DeclareStore,
+    operators::{BinaryOperator, UnaryOperator, UnaryOperatorKind},
 };
 
 impl_soul_ids!(ExpressionId);
@@ -631,6 +633,39 @@ impl Expression {
             span,
         )
     }
+}
+
+impl ExpressionId {
+    /// Whether the expression at this id is boolean-typed — a pure function
+    /// of the expression's own AST shape plus already-resolved variable/
+    /// expression types, never of any later lowering state. Shared by
+    /// `mir_parser` (guarding `if`/`for` conditions), which used to carry an
+    /// independent copy of this same classification.
+    pub fn is_boolean(self, store: &AstStore, declares: &DeclareStore) -> bool {
+        let expr = &store.expressions[self];
+        match &expr.node {
+            ExpressionKind::Literal((_, Literal::Bool(_))) => true,
+            ExpressionKind::Variable(var) => is_variable_boolean(declares, var),
+            ExpressionKind::Unary(unary) => {
+                matches!(unary.operator.value, UnaryOperatorKind::Not)
+            }
+            ExpressionKind::Binary(_) => matches!(
+                declares.get_expression_type(self),
+                Some(SoulType::Primitive(PrimitiveTypes::Boolean))
+            ),
+            _ => false,
+        }
+    }
+}
+
+fn is_variable_boolean(declares: &DeclareStore, var: &VariableExpression) -> bool {
+    let Some(resolved) = declares.get_variable_resolve(var.id) else {
+        return false;
+    };
+    let Some((_, Some(ty), _)) = declares.get_variable_type(resolved) else {
+        return false;
+    };
+    ty.is_primitive_kind(PrimitiveTypes::Boolean)
 }
 
 impl AnyArray {
