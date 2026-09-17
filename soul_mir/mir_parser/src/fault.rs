@@ -153,6 +153,16 @@ pub enum MirErrorKind {
     /// checker gains real CFG join support — see `move_check`'s own docs).
     #[error("value may have already been moved out of")]
     UseAfterMove,
+
+    /// The escape checker's own violation (see `mir_parser::escape_check`).
+    /// Points at the referenced local's own declaration span, for the same
+    /// reason `UseAfterMove` does — MIR statements don't carry their own
+    /// per-statement spans yet. Straight-line functions only for now
+    /// (anything containing a branch is skipped, unchecked); only a
+    /// function's own return value is checked, not what its callers pass
+    /// in (see `escape_check`'s own docs).
+    #[error("returns a reference to a local that doesn't outlive this function")]
+    DanglingReference,
 }
 
 impl From<UnclassifiedKind> for MirErrorKind {

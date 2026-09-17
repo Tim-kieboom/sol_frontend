@@ -94,6 +94,17 @@ fn lower_source(source: &str, function_name: &str) -> MirResult<mir_model::Funct
     lower_function(&ast.crates.store, &mut ast.declares, function_id)
 }
 
+/// Like `lower_source`, but also hands back the `DeclareStore` — needed by
+/// anything (like `escape_check`) that has to resolve a `TypeId` back to a
+/// `SoulType` after lowering.
+fn lower_source_with_declares(source: &str, function_name: &str) -> (mir_model::Function, DeclareStore) {
+    let mut ast = resolve_source(source);
+    let function_id = find_function(&ast.crates.store, function_name);
+    let mir = lower_function(&ast.crates.store, &mut ast.declares, function_id)
+        .expect("expected successful lowering");
+    (mir, ast.declares)
+}
+
 fn assert_rejected_matching(
     result: &MirResult<mir_model::Function>,
     predicate: impl Fn(&MirErrorKind) -> bool,
@@ -3264,5 +3275,125 @@ fn new_expressions_bare_literal_argument_defaults_to_a_concrete_type() {
         ast.declares.get_type(heap_alloc_ty),
         Some(&SoulType::Primitive(PrimitiveTypes::Int)),
         "expected new(1)'s allocated element type to default to int, not stay untyped"
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_direct_reference_to_a_body_local() {
+    // The most basic case: `&x` where `x` is a body-declared local — `x`'s
+    // own storage dies at this function's own end, so returning a reference
+    // to it is dangling on every call, unconditionally.
+    let (mir, declares) = lower_source_with_declares("f(): &int {\n    x := 1\n    return &x\n}\n", "f");
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly one dangling-reference fault, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_reference_routed_through_an_intermediate_local() {
+    // Same bug as the direct case, but `&x` is stored into `p` first and
+    // `p` is what's actually returned — the trace has to follow `p`'s own
+    // backward alias chain to find the original `Ref` before it can tell.
+    let (mir, declares) = lower_source_with_declares(
+        "f(): &int {\n    x := 1\n    p := &x\n    return p\n}\n",
+        "f",
+    );
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the reference routed through p to still be caught, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_returning_a_received_reference_parameter_unchanged() {
+    // `p` is already a reference the caller handed in — this function never
+    // constructs a fresh one, it just passes the same value back. Whether
+    // that's actually sound depends on what the *caller* passed, which this
+    // slice deliberately doesn't check yet (see the module's own docs) — for
+    // this function's own body in isolation, it's accepted.
+    let (mir, declares) =
+        lower_source_with_declares("f(p: &int): &int {\n    return p\n}\n", "f");
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "returning an already-received reference parameter should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_reborrowing_through_a_reference_parameter() {
+    // `&*p` explicitly dereferences `p` (itself a reference) before
+    // re-referencing it — the resulting place's projection contains a
+    // `Deref`, so this points at whatever `p` points at (external to this
+    // function's own frame), not at `p`'s own local storage slot.
+    let (mir, declares) =
+        lower_source_with_declares("f(p: &int): &int {\n    return &*p\n}\n", "f");
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "reborrowing through an existing reference should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_dereferencing_an_owning_heap_pointer() {
+    // Same `Deref`-in-the-projection rule as the reborrow case above, but
+    // through an *owning* pointer instead of a reference — `p`'s heap
+    // allocation outlives this function's own stack frame regardless of who
+    // called it, so this is safe for a structurally identical reason.
+    let (mir, declares) =
+        lower_source_with_declares("f(p: *int): &int {\n    return &*p\n}\n", "f");
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "dereferencing an owning heap pointer should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_skips_functions_containing_a_branch() {
+    // Straight-line only for now (see the module's own docs) — a dangling
+    // return reachable only after a branch isn't analyzed yet, even though
+    // this is a real violation on every call.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool): &int {\n    x := 1\n    if cond {\n        y := 2\n    }\n    return &x\n}\n",
+        "f",
+    );
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "expected a branching function to be skipped entirely, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_ignores_functions_not_returning_a_reference() {
+    let (mir, declares) =
+        lower_source_with_declares("f(): int {\n    x := 1\n    return x\n}\n", "f");
+
+    let faults = crate::escape_check::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "a function not returning a reference has nothing to check, got {:#?}",
+        faults
     );
 }

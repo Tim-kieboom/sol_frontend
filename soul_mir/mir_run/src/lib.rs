@@ -68,5 +68,16 @@ pub fn to_mir(
         }
     }
 
+    // Escape checking (see `mir_parser::escape_check`) — does a function
+    // return a reference to storage that doesn't outlive it. A separate
+    // concern from move-checking (aliasing vs. lifetime), so its own pass;
+    // `lowerer` has already been consumed above, freeing its `&mut
+    // DeclareStore` borrow, so `ast.declares` can be read here.
+    for function in functions.values() {
+        for fault in mir_parser::escape_check::check_escapes(function, &ast.declares) {
+            context.faults.push(fault);
+        }
+    }
+
     MirProgram { functions, externs }
 }

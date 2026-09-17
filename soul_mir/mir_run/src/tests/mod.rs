@@ -222,6 +222,31 @@ fn a_looping_function_reusing_a_moved_value_is_flagged_through_the_full_pipeline
 }
 
 #[test]
+fn a_dangling_reference_return_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring for `mir_parser::escape_check`, not just
+    // `check_escapes` in isolation: `f` returns a reference to its own
+    // body-local `x`, routed through an intermediate local `p`.
+    let mut ast = build_ast("f(): &int {\n    x := 1\n    p := &x\n    return p\n}\n");
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::DanglingReference)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn mixed_program_lowers_what_it_can_and_faults_on_the_rest() {
     let mut ast = build_ast(
         "okFn(a: int, b: int): int {\n    return a + b\n}\nbadFn(a: []int): []int {\n    return a\n}\n",

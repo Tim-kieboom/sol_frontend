@@ -877,6 +877,66 @@ that landing first, in order.
     a conditionally-moved value's untaken path keeps its own `Drop`, per the still-open case
     documented just above) — a bigger, CFG-restructuring follow-up to the prune-only pass that shipped
     here.
+- [x] **Dangling-reference ("escape") checking** — the first slice of "real borrow/lifetime-conflict
+      analysis" (`/grill-me`'d at length before writing anything; settled scope by working through two
+      concrete motivating examples — an `if`/`else` mutable-vs-shared overlap, and a function handing
+      back a reference to a temporary that dies before the caller ever sees it):
+  - Split "real borrow/lifetime-conflict checking" into two genuinely separate problems up front:
+    mutable/shared-borrow **overlap** (two live borrows of the same place aliasing) and **dangling-
+    reference/escape** checking (a returned reference outliving what it points to). This slice is
+    escape-checking only — overlap checking is a fully separate, later slice, not attempted here.
+  - **No `'a` lifetime-parameter syntax** — confirmed explicitly, since the user's own second
+    motivating example used Rust-style `lifetime<'a>(obj: &'a Obj): &'a Obj` syntax that doesn't (and
+    won't) exist in this language at all. Mechanism instead: trace where a returned reference's
+    storage *actually* comes from, backward through the already-lowered MIR, rather than inferring
+    lifetime relationships the way Rust's elision rules do. This sidesteps elision's own dead end too
+    (a function with more than one reference parameter is normally "ambiguous, needs an explicit `'a`
+    annotation" in Rust — tracing finds the one true origin instead of ever needing to guess which
+    parameter an output might be tied to).
+  - **Scoped to straight-line functions only** (any branch — a `SwitchInt`, what both `if` and `for`
+    lower to — skips the whole function, unanalyzed), same precedent as move-checking's own first
+    slice: every local has exactly one reaching assignment in straight-line code, so tracing "where did
+    this value come from" is a simple backward walk with no CFG-join needed at all.
+  - **Only checks a function's own return value, not its callers** — confirmed as a deliberate,
+    named scope cut, not an oversight: a reference-typed parameter is trusted as safe the moment the
+    trace reaches it, without verifying what the caller actually passed in. This means the slice
+    provably does **not** catch the user's own second motivating example (`lifetime(obj: &Obj): &Obj
+    { return obj }` called as `lifetime(&Obj{})`) — that needs interprocedural call-site tracing (does
+    a function's own "safe, tied to a parameter" return actually get called with something that
+    itself dangles), explicitly logged as a separate, later slice, not assumed to be part of this one.
+  - New `mir_parser::escape_check::check_escapes(&Function, &DeclareStore) -> Vec<MirFault>`, new
+    `MirErrorKind::DanglingReference`. The backward trace (`trace_origin`) follows a bare-local alias
+    chain (`Use(Copy(place))`/`Use(Move(place))`, place unprojected) until it hits one of exactly two
+    termini: a local with **no recorded assignment at all** (must be a parameter, in straight-line
+    code — safe, per the interprocedural cut above) or a fresh `Rvalue::Ref { place, .. }` (a genuine
+    reference construction). The `Ref` case is classified by a single, unifying rule confirmed during
+    the interview: does `place`'s own projection contain a `Deref` step *anywhere* — if so, safe
+    (covers **both** agreed-safe cases at once: reborrowing through an already-received reference,
+    e.g. `&this.field` when `this: &T`, since `resolve_field_place`'s own `auto_deref` already inserts
+    the `Deref`; *and* dereferencing an owning heap pointer, `&*p` for `p: *T`, since the heap
+    allocation outlives this function's own frame regardless of who called it — both point at memory
+    outside this stack frame, for the same underlying reason). No `Deref` at all in the projection ⇒
+    dangling: `place.local`'s own storage (a body-declared local, or a parameter's own by-value slot)
+    belongs to this function's frame, gone the instant it returns. Any other shape the trace meets
+    (a *projected* alias, or a non-`Ref`/non-alias rvalue reaching a reference-typed local) isn't
+    analyzed at all — the trace just stops, nothing reported, same "unfamiliar shape ⇒ skip, don't
+    guess" discipline `move_check` itself uses.
+  - Wired into `mir_run::to_mir`, run over every function after lowering (needs `&ast.declares` — read
+    immutably only once `lowerer`/its `&mut DeclareStore` borrow has been consumed by
+    `into_functions_and_externs`).
+  - Proven via 7 new `mir_parser` unit tests (direct dangling return; dangling routed through an
+    intermediate local, the exact "trace through intermediate locals" case confirmed during the
+    interview; accepting a passed-through reference parameter; accepting a reborrow through a
+    reference parameter; accepting a heap-pointer deref; skipped when branching; ignored when the
+    return type isn't a reference at all) — all passed on the first implementation attempt, matching
+    every case worked through in the interview beforehand — plus 1 new `mir_run` integration test
+    proving the real `to_mir` wiring. Full `cargo test --workspace` (122 `mir_parser` tests, up from
+    115) and all 33 exe tests pass unchanged (none of the 33 exe tests return a reference at all yet,
+    so this is genuinely new, previously-unexercised territory, not a regression check).
+  - What's left for real borrow/lifetime-conflict checking: the deferred interprocedural call-site
+    tracing noted above (the user's own motivating example), mutable/shared-borrow overlap checking
+    (a fully separate analysis, not started), and extending escape-checking itself to `if`/`for` (same
+    CFG-join/fixed-point work move-checking already went through, not yet ported to this checker).
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
