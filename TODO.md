@@ -915,12 +915,17 @@ that landing first, in order.
       declared order, not a computed ordering rule; there's no function to share.
     - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
       every A-slice above.
-  - [ ] **Part B** — new `mir_parser::desugar` submodule owning the `foreach`/`while` → loop +
-        `SwitchInt` rewrite currently inlined in `control_flow.rs`. Explicitly *not* a new IR/tree
-        stage — no separate desugared AST gets built and handed off; `lower_for`/`lower_while` call
-        into `desugar::`-namespaced helpers that return a normalized shape instead of inlining the
-        rewrite into the same functions that also emit MIR blocks. Zero behavior change, proven by
-        the existing exe-test suite passing unchanged.
+  - [ ] **Part B** — checked, premise didn't hold, **not done, no scaffolding created**: there's no
+        `foreach`/`while` rewrite in `control_flow.rs` to relocate. `ast::ForCondition` has three
+        variants (`Loop`, `While(ExpressionId)`, `Foreach { index, element_kind, collection }`), but
+        `lower_for` only handles `While` — `Loop`/`Foreach` both fall straight through to
+        `UnsupportedLoopCondition`, unimplemented. And what *is* there for `While` isn't really
+        "desugaring" at all — it's a direct, single-step translation of an already-primitive
+        condition into MIR blocks (header/body/exit + `SwitchInt`), not a rewrite of one surface
+        form into a simpler one first. A real `mir_parser::desugar` submodule only earns its place
+        once `Foreach` lowering is actually implemented (`for x in xs { .. }` → an index variable +
+        a `While`-shaped loop + an increment, rewritten before/during lowering) — revisit this
+        bullet then, not before.
   - [ ] Once A/B/C land: resume the paused borrow-checker slice — CFG traversal (back-edge/cycle
         detection via DFS) + two-state definite/maybe dataflow for `if`/`else` move-checking (see
         the borrow-checker entry above for the full scope of that slice).
