@@ -109,6 +109,13 @@ impl<'a> NameResolver<'a> {
         let Some((CustomType::Enum(enum_), _)) = self.declares.get_custom_type(node_id) else {
             return;
         };
+        let enum_ = enum_.clone();
+
+        let occurrence = self.declares.intern_type(owner_type.clone());
+        self.declares.insert_type_resolve(
+            occurrence,
+            ast_model::declare_store::TypeResolve::Enum(node_id),
+        );
 
         let variant_name = call.name.as_str();
         let Some(EnumVariant::Union(UnionKind::Tuple { parameters, .. })) = enum_

@@ -358,7 +358,8 @@ impl<'a> NameResolver<'a> {
         match expr_node {
             ExpressionKind::Variable(VariableExpression { name, .. }) => {
                 if self.contains_type(name.as_str()) {
-                    return Some(SoulType::Stub(Stub::new(name.as_str())));
+                    let occurrence = self.node_generator.alloc();
+                    return Some(SoulType::Stub(Stub::new_at(name.as_str(), occurrence)));
                 }
                 if let Ok(prim) = PrimitiveTypes::from_str(name.as_str()) {
                     return Some(SoulType::Primitive(prim));
@@ -378,7 +379,9 @@ impl<'a> NameResolver<'a> {
         let ast_module = self.ast_modules.get(module_entry.module_id)?;
         let header_entry = ast_module.header.get(&field_name)?;
         let custom_type = header_entry.custom_type.as_ref()?;
-        Some(SoulType::Stub(Stub::new(custom_type.value.name().as_str())))
+        let name = custom_type.value.name().as_str().to_string();
+        let occurrence = self.node_generator.alloc();
+        Some(SoulType::Stub(Stub::new_at(name, occurrence)))
     }
 
     /// Walk a FieldAccess chain like `Std.Io.Stdout` to find the innermost

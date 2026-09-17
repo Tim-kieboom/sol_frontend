@@ -1016,7 +1016,25 @@ that landing first, in order.
       same-named structs, the cache correctly picks the one that was actually cached rather than
       whichever the name lookup happens to find; a plain round-trip test for
       `insert_type_resolve`/`get_type_resolve`.
-  - [ ] **Slice 3** — `TypeResolve::Enum`, `check_enum_variant_construction` migrates.
+  - [x] **Slice 3** — `check_enum_variant_construction` (`resolve/typecheck/function_call.rs`) now
+        interns its `owner_type` and populates `type_resolves` with `TypeResolve::Enum(node_id)`.
+        Unlike the struct case, there was no existing duplicate-resolution problem to fix here (only
+        one call site ever resolves an enum-typed `Stub` today) — this slice is purely "start
+        populating the cache," not "migrate a consumer off a duplicated lookup."
+    - Found and fixed a real gap while wiring this up: `owner_type`'s two production construction
+      sites (`parse_owner_type`, `parse_owner_from_field_access`, both in `resolve/function_call.rs`)
+      were still using the **test-fixture** `Stub::new(name)` (i.e. `occurrence: NodeId::ERROR`) —
+      the Slice-1 test-fixing pass had correctly left these alone as "production code, don't touch,"
+      but they genuinely needed the same fix production parsing sites already got: a real, unique
+      occurrence, via `Stub::new_at(name, self.node_generator.alloc())` (`NameResolver` already
+      carries its own `node_generator`, same allocator `collect_function` uses for `this`). Without
+      this fix, every enum/struct name reached through this synthetic-owner-type path (`EnumName.
+      Variant(..)`, `Std.Io.Stdout`-style module-qualified access) would have shared one placeholder
+      `TypeId`, silently reintroducing Slice 1's cross-module collision bug for exactly this path.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
+      every slice above (no new dedicated test added — the underlying `type_resolves`/
+      `insert_type_resolve` mechanism is already covered at the `ast_model` level by Slice 2's own
+      tests; this slice is a second, structurally identical producer of the same table).
   - [ ] **Slice 4** — `TypeResolve::Trait`, `check_impl_conformance` migrates.
   - [ ] **Slice 5** — `TypeResolve::Alias`, `resolve_type_alias` migrates.
   - [ ] **Slice 6** — `TypeResolve::Generic`, `is_generic_parameter`/`generic_name_of` migrate.
