@@ -1,7 +1,13 @@
-consume(v: *mut int) {}
+extern "C" printf(format: cstr, arg: cstr)
 
-main(): i32 {
-    num := new mut(1)
-    consume(num)
-    return 0
+print(message: cstr) {
+    printf(message)
+}
+
+println(message: cstr) {
+    printf(c"%s\n", message)
+}
+
+main() {
+    println(c"hello world")
 }

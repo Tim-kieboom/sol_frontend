@@ -539,6 +539,19 @@ but narrow — cheaper on allocation-heavy hot paths, near-zero elsewhere — so
 profiling-driven follow-up work, not a default. Depends on M2's move checker landing first; tracked
 in [TODO.md](TODO.md#m4--everything-else-not-sequenced).
 
+**Idea, not designed (`extern "rust"` — calling into Rust directly, not just C):** unlike
+`extern "C"` (which has to trust an arbitrary C callee blindly — C has no aliasing/ownership
+information to check against), Rust's own borrow checker enforces the same strict, static,
+exactly-one-`&mut`-or-any-number-of-`&` rule Soul does (above). The hope is that an `extern "rust"`
+boundary could therefore be checked, not just trusted — a Rust function's `&`/`&mut`/owned
+signature carries real aliasing info Soul's checker could verify against, in a way `extern "C"`
+fundamentally can't. Not designed at all yet: whether Soul's and rustc's in-memory
+type/calling-convention representations line up enough to do this without a translation layer, how
+a generic or trait-object Rust signature would even map to a Soul one, and whether "same rules" in
+spec is actually "same rules" in the two checkers' implementations, or just similar-looking ones
+that still need a trust boundary. Tracked in
+[TODO.md](TODO.md#m4--everything-else-not-sequenced).
+
 ---
 
 ## 12. Control Flow

@@ -846,15 +846,25 @@ that landing first, in order.
       extraction, not here.
     - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
       A1/A2 — pure relocation, no behavior change.
-  - [ ] **Part A4** — split `auto_deref` (`mir_parser::function::place`): extract the *type
-        decision* (is this `&T`/`*T`, what's the inner type) to a resolver-level helper; keep the
-        *side effect* (pushing `PlaceElem::Deref` onto a `mir::Place`) in `mir_parser`, since that's
-        MIR-only. This same helper is what closes the convention-drift half of this problem: the
-        resolver's own `expression_type`'s `Deref` arm and `struct_field_type`'s deref prelude
-        (`resolve/typecheck/expression.rs`) currently each carry a comment admitting they "mirror
-        `mir_parser::function::place::{resolve_deref_place,auto_deref}` one layer up" — i.e. the
-        same rule, already duplicated into the resolver by hand. Once the type-decision half is a
-        real shared helper, both resolver call sites call it instead of re-implementing it.
+  - [x] **Part A4** — new `SoulType::deref_once(&self, declares) -> Option<SoulType>`
+        (`ast_model::ast::soul_type`): the shared type decision (is this `&T`/`&mut T`/`*T`, what's
+        the inner type — `None` for anything else, no automatic pass-through). Three previously
+        independent copies of this exact match now all delegate to it:
+    - `mir_parser::function::place`'s `auto_deref` (free fn) — kept its `&mut mir::Place`
+      side-effect signature, but the match itself is now `match ty.deref_once(declares) { Some(inner)
+      => { push Deref; inner } None => ty }`.
+    - `mir_parser::function::place`'s `resolve_deref_place` (explicit `*ptr` lowering) — had its own
+      *third*, previously-unflagged copy of the same match (found while doing this slice, not
+      caught by the original scan since it fails instead of passing through) — now
+      `value_ty.deref_once(self.declares)`, faulting via `DerefTargetNotAReference` on `None`
+      instead of matching `Reference`/`Pointer` inline.
+    - `soul_name_resolver`'s `expression_type`'s `Deref` arm and `struct_field_type`'s auto-deref
+      prelude (`resolve/typecheck/expression.rs`) — previously the two comment-synced ("mirrors
+      `mir_parser::function::place::{resolve_deref_place,auto_deref}` one layer up") duplicates;
+      now both call `deref_once` directly instead of re-implementing the match.
+    - Proven by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as
+      every A-slice above — pure relocation, no behavior change. `29_deref_places.soul` specifically
+      exercises both `mir_parser` call sites end-to-end.
   - [ ] **Part A5** — partial only (not a full move): extract the shared *projection rule* behind
         `place_type`/`operand_type` (`mir_parser::function::type`) — "given a type + a
         field-index/array/deref step, what's the resulting type" — as a helper both `mir_parser`

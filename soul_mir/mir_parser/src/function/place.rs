@@ -170,7 +170,7 @@ impl<'a> FunctionLowerer<'a> {
         let value_span = self.store.expressions[deref.value].span;
         let (mut place, value_ty) = self.resolve_place_expression(deref.value, value_span)?;
 
-        let (SoulType::Reference(reference) | SoulType::Pointer(reference)) = value_ty else {
+        let Some(inner) = value_ty.deref_once(self.declares) else {
             return Err(Fault::error_with_kind(
                 MirErrorKind::DerefTargetNotAReference {
                     ty: self.print_ty(&value_ty).into(),
@@ -180,11 +180,6 @@ impl<'a> FunctionLowerer<'a> {
         };
 
         place.projection.push(mir::PlaceElem::Deref);
-        let inner = self
-            .declares
-            .get_type(reference.inner)
-            .cloned()
-            .expect("ReferenceType.inner is always an interned TypeId");
         Ok((place, inner))
     }
 
@@ -399,20 +394,18 @@ impl<'a> FunctionLowerer<'a> {
 /// `collection[i]` work the same whether `object`/`collection` is a value or
 /// a reference to one — this is what keeps `this.field` working once a
 /// `&this`/`&mut this` receiver becomes a real reference-typed place instead
-/// of today's by-value copy.
+/// of today's by-value copy. The type decision itself (`SoulType::deref_once`)
+/// is shared with the resolver — this only adds the MIR-specific side effect.
 fn auto_deref(
     declares: &ast_model::declare_store::DeclareStore,
     place: &mut mir::Place,
     ty: SoulType,
 ) -> SoulType {
-    match ty {
-        SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+    match ty.deref_once(declares) {
+        Some(inner) => {
             place.projection.push(mir::PlaceElem::Deref);
-            declares
-                .get_type(reference.inner)
-                .cloned()
-                .expect("ReferenceType.inner is always an interned TypeId")
+            inner
         }
-        other => other,
+        None => ty,
     }
 }

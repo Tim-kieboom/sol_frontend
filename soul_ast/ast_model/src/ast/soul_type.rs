@@ -122,6 +122,25 @@ impl SoulType {
     pub fn is_primitive(&self) -> bool {
         matches!(self, SoulType::Primitive(_))
     }
+
+    /// If this is a `&T`/`&mut T`/`*T`, returns the `T` it points at; `None`
+    /// for any other type (no automatic pass-through — callers that want
+    /// "unwrap one reference layer, or use the type as-is" do
+    /// `ty.deref_once(declares).unwrap_or_else(|| ty.clone())`). The one
+    /// "is this a reference, what's underneath it" rule shared by
+    /// `mir_parser`'s place-resolution (`auto_deref`, which additionally
+    /// pushes a `PlaceElem::Deref`), the resolver's own `*ptr` expression
+    /// typing, and its struct-field auto-deref prelude — previously three
+    /// independent copies of the same match, two of them only kept in sync
+    /// by a doc comment.
+    pub fn deref_once(&self, declares: &DeclareStore) -> Option<SoulType> {
+        match self {
+            SoulType::Reference(reference) | SoulType::Pointer(reference) => {
+                declares.get_type(reference.inner).cloned()
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Prints a `SoulType`, resolving any nested `TypeId` through `declares` —

@@ -30,7 +30,7 @@ impl<'a> NameResolver<'a> {
 
             ExpressionKind::New(value, mutable) => {
                 self.resolve_expression(*value);
-                self.check_new_expression(expression_id, *value, mutable.clone());
+                self.check_new_expression(expression_id, *value, *mutable);
             }
 
             ExpressionKind::Pass(value)
