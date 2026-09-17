@@ -990,9 +990,32 @@ that landing first, in order.
       helper that checks `name`/`generics` only.
     - Proven by full `cargo test --workspace` (zero warnings, including the new test) + all 33 exe
       tests (`scripts/run_codegen_tests.py`) passing unchanged.
-  - [ ] **Slice 2** — `type_resolves` table + `TypeResolve::Struct`, `DeclareStore::resolve_struct`
-        populates it, `mir_parser`/`mir_codegen`'s struct consumers migrate to read it instead of a
-        name+module lookup.
+  - [x] **Slice 2** — `type_resolves: VecMap<TypeId, TypeResolve>` + the `TypeResolve` enum (all
+        five variants defined now, only `Struct` ever produced this slice — the rest exist so
+        matches stay exhaustive against the shape later slices populate) landed on `DeclareStore`,
+        with `insert_type_resolve`/`get_type_resolve`.
+    - **Mechanism settled via a `/grill-me` detour**: the obvious hook — `NameResolver::collect_type`,
+      a pre-existing empty stub already wired into ~19 type-occurrence call sites — turned out
+      *unsafe* to populate eagerly from: `collect_module` is a single linear pass in file order
+      (confirmed by reading `collect_scopeless_block`), so a struct declared *after* the code
+      referencing it wouldn't be registered yet, silently breaking forward references that work
+      today (struct resolution normally happens later, in the resolve/typecheck phase, which only
+      runs after collection *fully* finishes). User chose the narrower, safe path: populate
+      `type_resolves` only at the two resolve-phase call sites that already resolve structs today
+      (`struct_field_type`, `check_struct_constructor` in `resolve/typecheck/expression.rs`) —
+      correct, zero regression risk, but **partial coverage by design**: a bare parameter/
+      return-type annotation never used in a field-access or constructor expression anywhere in
+      its function stays unresolved by this cache. `DeclareStore::resolve_struct` checks the cache
+      first, falling back to the existing `module`-scoped name lookup when absent — so every
+      existing caller (`mir_parser`, `mir_codegen`) transparently benefits without any call-site
+      changes, and correctness never depends on coverage being complete.
+    - Proven three ways: the existing struct-heavy exe tests (`09`–`11`, `25`, `26`, `28`) plus full
+      `cargo test --workspace` (zero warnings); a new `ast_model::declare_store_tests` case
+      (`resolve_struct_prefers_the_cached_resolution_over_the_name_lookup`) proving the cache
+      actually wins over the name lookup even when they'd disagree — two different modules'
+      same-named structs, the cache correctly picks the one that was actually cached rather than
+      whichever the name lookup happens to find; a plain round-trip test for
+      `insert_type_resolve`/`get_type_resolve`.
   - [ ] **Slice 3** — `TypeResolve::Enum`, `check_enum_variant_construction` migrates.
   - [ ] **Slice 4** — `TypeResolve::Trait`, `check_impl_conformance` migrates.
   - [ ] **Slice 5** — `TypeResolve::Alias`, `resolve_type_alias` migrates.

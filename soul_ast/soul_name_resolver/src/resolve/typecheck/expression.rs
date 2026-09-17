@@ -35,6 +35,11 @@ impl<'a> NameResolver<'a> {
         };
         let struct_ = struct_.clone();
 
+        self.declares.insert_type_resolve(
+            struct_constructor.struct_type,
+            ast_model::declare_store::TypeResolve::Struct(struct_.id),
+        );
+
         let faults = self.check_struct_fields(&struct_, &stub, struct_constructor);
         for fault in faults {
             self.context.faults.push(fault);
@@ -416,7 +421,7 @@ impl<'a> NameResolver<'a> {
         }
     }
 
-    fn struct_field_type(&self, ty: &SoulType, field_name: &str) -> Option<SoulType> {
+    fn struct_field_type(&mut self, ty: &SoulType, field_name: &str) -> Option<SoulType> {
         // Auto-deref: `object`'s type can be `&Struct`/`&mut Struct` (e.g. a
         // `&this`/`&mut this` receiver) as readily as a bare `Struct` value —
         // `SoulType::deref_once` is shared with
@@ -436,6 +441,15 @@ impl<'a> NameResolver<'a> {
         let (CustomType::Struct(struct_), _) = self.declares.get_custom_type(entry.node_id)? else {
             return None;
         };
+        let struct_ = struct_.clone();
+        let occurrence = self.declares.get_type_id(ty);
+
+        if let Some(occurrence) = occurrence {
+            self.declares.insert_type_resolve(
+                occurrence,
+                ast_model::declare_store::TypeResolve::Struct(struct_.id),
+            );
+        }
 
         struct_.fields.iter().find_map(|field| {
             let VarPattern::Simple { binding, .. } = &field.value.pattern else {

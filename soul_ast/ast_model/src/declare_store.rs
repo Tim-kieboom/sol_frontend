@@ -55,6 +55,42 @@ pub struct DeclareStore {
     /// Canonical `TypeId <-> SoulType` interning table — see [`Self::intern_type`].
     type_ids: BiMap<TypeId, SoulType>,
     type_id_alloc: IdGenerator<TypeId>,
+    /// A `Stub` occurrence's resolved meaning, keyed on that occurrence's own
+    /// (now per-occurrence-unique, see `Stub::occurrence`) `TypeId` — mirrors
+    /// `variable_resolves`/`function_resolves`'s "referencing id -> resolved
+    /// declaration id" shape, for types instead of variables/calls. Populated
+    /// lazily wherever a `Stub` is actually resolved during the resolve/
+    /// typecheck phase (`struct_field_type`, `check_struct_constructor`, ...)
+    /// — deliberately *not* eagerly during collection (`NameResolver::
+    /// collect_type`'s call sites run in file order within a single linear
+    /// pass, so a struct declared *after* the code referencing it wouldn't be
+    /// registered yet; typecheck-phase resolution runs only after collection
+    /// fully finishes, so it doesn't have that ordering hazard). Coverage is
+    /// therefore partial by design at this slice — see `resolve_struct`'s own
+    /// docs for the fallback this implies. See `TODO.md`'s `Stub`-redesign
+    /// entry for the full multi-slice plan this is part of.
+    type_resolves: VecMap<TypeId, TypeResolve>,
+}
+
+/// What a `Stub` occurrence turned out to name, once resolved. Only
+/// `Struct` is ever produced today (Slice 2 of the `Stub`-redesign); the
+/// other variants exist now so downstream matches are exhaustive against
+/// the shape the later slices will actually populate, not because anything
+/// constructs them yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TypeResolve {
+    /// The struct declaration's own `NodeId` (a `custom_types` key).
+    Struct(NodeId),
+    /// The enum declaration's own `NodeId`.
+    Enum(NodeId),
+    /// The trait declaration's own `NodeId`.
+    Trait(NodeId),
+    /// The already-interned underlying type of a non-`distinct`
+    /// `type X := Y` alias.
+    Alias(TypeId),
+    /// Confirmed to name an in-scope generic parameter — not an error, and
+    /// not a declaration; stays symbolic until monomorphization (M3).
+    Generic,
 }
 impl Default for DeclareStore {
     fn default() -> Self {
@@ -82,6 +118,7 @@ impl DeclareStore {
             receiver_bindings: VecMap::new(),
             type_ids: BiMap::new(),
             type_id_alloc: IdGenerator::new(),
+            type_resolves: VecMap::new(),
         };
         this.register_well_known_types();
         this
@@ -292,6 +329,27 @@ impl DeclareStore {
         }
     }
 
+    /// Records what a `Stub` occurrence (identified by its own, now
+    /// per-occurrence-unique `TypeId` — see `Stub::occurrence`) resolved to.
+    /// Returns the previous entry, if any (there normally shouldn't be one —
+    /// each occurrence is resolved at most once).
+    pub fn insert_type_resolve(&mut self, occurrence: TypeId, resolve: TypeResolve) -> Option<TypeResolve> {
+        self.type_resolves.insert(occurrence, resolve)
+    }
+
+    /// The previously-recorded resolution for a `Stub` occurrence, if any —
+    /// see `insert_type_resolve`. Coverage is partial (Slice 2 of the
+    /// `Stub`-redesign only populates this for occurrences the resolve/
+    /// typecheck phase actually visits, e.g. via `struct_field_type`/
+    /// `check_struct_constructor` — a bare parameter/return-type annotation
+    /// never used in a field access or constructor expression anywhere in
+    /// its function isn't covered yet), so callers should always fall back
+    /// to a name-based lookup when this returns `None` — `resolve_struct`
+    /// already does this.
+    pub fn get_type_resolve(&self, occurrence: TypeId) -> Option<TypeResolve> {
+        self.type_resolves.get(occurrence).copied()
+    }
+
     /// Resolves a struct-typed `SoulType::Stub`'s bare name back to its
     /// `Struct` declaration, scoped to `module`. `None` for anything that
     /// isn't a `Stub`, or a `Stub` that doesn't name a struct visible from
@@ -299,16 +357,25 @@ impl DeclareStore {
     /// `mir_parser` and `mir_codegen` — both used to carry an identical
     /// private copy of this same lookup.
     ///
-    /// Note: this takes `module` as an explicit parameter rather than being
-    /// cached per-`TypeId`, because `SoulType::Stub` only carries a bare name
-    /// (no module qualifier) — two different modules' same-named-but-
-    /// different structs intern to the *same* `TypeId`, so a `TypeId`-only
-    /// cache would silently return the wrong module's answer. See TODO.md's
-    /// pipeline-cleanup entry for the (deferred) fixes to that.
+    /// Checks `type_resolves` first (a `TypeId`-keyed cache, sound now that
+    /// `Stub` carries a per-occurrence identity — see `Stub::occurrence`),
+    /// falling back to the `module`-scoped name lookup when this occurrence
+    /// hasn't been resolved that way yet (`type_resolves`' coverage is
+    /// partial by design at this slice, see its own docs) — `module` stays
+    /// a required parameter for exactly that fallback, not because caching
+    /// is unsound any more.
     pub fn resolve_struct(&self, ty: &SoulType, module: Option<ModuleId>) -> Option<&Struct> {
         let SoulType::Stub(stub) = ty else {
             return None;
         };
+        if let Some(TypeResolve::Struct(node_id)) =
+            self.get_type_id(ty).and_then(|id| self.get_type_resolve(id))
+        {
+            return match self.custom_types.get(node_id) {
+                Some((CustomType::Struct(struct_), _)) => Some(struct_),
+                _ => None,
+            };
+        }
         self.get_struct_by_name(&stub.name, module?)
     }
 

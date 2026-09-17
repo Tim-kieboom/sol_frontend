@@ -1,5 +1,23 @@
-use crate::{ArrayKind, ArrayType, SoulType, Stub, TypeId, declare_store::DeclareStore};
-use soul_utils::soul_names::PrimitiveTypes;
+use crate::{
+    ArrayKind, ArrayType, NodeId, SoulType, Struct, Stub, TypeId,
+    declare_store::{DeclareStore, TypeResolve},
+};
+use soul_utils::{
+    Ident,
+    collections::{array::RcArr, vec_map::VecMapIndex},
+    soul_names::PrimitiveTypes,
+    span::{ModuleId, Span},
+};
+
+fn empty_struct(id: NodeId, name: &str) -> Struct {
+    Struct {
+        id,
+        name: Ident::new(name, Span::error()),
+        fields: RcArr::new(),
+        generics: RcArr::new(),
+        statements: RcArr::new(),
+    }
+}
 
 #[test]
 fn interning_the_same_type_twice_returns_the_same_id() {
@@ -90,4 +108,55 @@ fn interning_a_well_known_type_again_returns_its_comptime_constant() {
 
     let id = declares.intern_type(SoulType::None);
     assert_eq!(id, TypeId::NONE);
+}
+
+#[test]
+fn type_resolve_round_trips_through_insert_and_get() {
+    let mut declares = DeclareStore::new();
+    let occurrence = declares.intern_type(SoulType::Stub(Stub::new("Point")));
+    let struct_id = NodeId::new_index(1);
+
+    assert_eq!(declares.get_type_resolve(occurrence), None);
+    declares.insert_type_resolve(occurrence, TypeResolve::Struct(struct_id));
+    assert_eq!(
+        declares.get_type_resolve(occurrence),
+        Some(TypeResolve::Struct(struct_id))
+    );
+}
+
+/// The whole point of `type_resolves`: once an occurrence is resolved and
+/// cached, `resolve_struct` must prefer that cached answer over the
+/// module-scoped name lookup — this is what will let two different
+/// modules' same-named-but-different structs resolve correctly through the
+/// same API, once every occurrence is cached (later slices), instead of
+/// silently returning whichever module's struct the name lookup happens to
+/// find first.
+#[test]
+fn resolve_struct_prefers_the_cached_resolution_over_the_name_lookup() {
+    let mut declares = DeclareStore::new();
+    let module = ModuleId::new_index(0);
+
+    let name_lookup_struct = empty_struct(NodeId::new_index(1), "Point");
+    declares.try_insert_struct(name_lookup_struct.id, &name_lookup_struct, module);
+
+    let cached_struct = empty_struct(NodeId::new_index(2), "Point");
+    declares.try_insert_struct(cached_struct.id, &cached_struct, ModuleId::new_index(1));
+
+    let occurrence = declares.intern_type(SoulType::Stub(Stub::new("Point")));
+    let ty = declares.get_type(occurrence).cloned().unwrap();
+
+    // No cache entry yet: falls back to the module-scoped name lookup.
+    assert_eq!(
+        declares.resolve_struct(&ty, Some(module)).map(|s| s.id),
+        Some(name_lookup_struct.id)
+    );
+
+    declares.insert_type_resolve(occurrence, TypeResolve::Struct(cached_struct.id));
+
+    // Cached now: wins even though the name lookup would still find the
+    // other struct.
+    assert_eq!(
+        declares.resolve_struct(&ty, Some(module)).map(|s| s.id),
+        Some(cached_struct.id)
+    );
 }
