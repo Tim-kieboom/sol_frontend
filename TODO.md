@@ -929,7 +929,7 @@ that landing first, in order.
   - [ ] Once A/B/C land: resume the paused borrow-checker slice — CFG traversal (back-edge/cycle
         detection via DFS) + two-state definite/maybe dataflow for `if`/`else` move-checking (see
         the borrow-checker entry above for the full scope of that slice).
-- [ ] **Replace `SoulType::Stub` with resolved type references** — the "bigger, root-cause redesign"
+- [x] **Replace `SoulType::Stub` with resolved type references** — the "bigger, root-cause redesign"
       logged above, picked up on user request (`/grill-me`'d into a full plan first: 3 parallel
       Explore passes, then a 7-slice plan, `C:\Users\tim_k\.claude\plans\vast-wiggling-galaxy.md`).
       Scope turned out bigger than the earlier note implied: `Stub` isn't struct-only — it's the
@@ -1063,8 +1063,43 @@ that landing first, in order.
         `return_type.rs`'s `check_return_statement` already used, just not yet applied here. Proven
         by the same full `cargo test --workspace` (zero warnings) + all 33 exe tests bar as every
         slice above.
-  - [ ] **Slice 7** — hard error (`UnresolvedTypeName`) at resolve time for a `Stub` occurrence that
-        resolves to none of the above, once all five kinds correctly populate `type_resolves` first.
+  - [x] **Slice 7** — same fork as Slice 2, resolved the same way: the plan's original design ("walk
+        every `Stub` occurrence, error if `type_resolves` has no entry") doesn't work given `type_
+        resolves`'s deliberately partial coverage — a legitimate, never-cache-visited occurrence
+        (a bare parameter type never field-accessed) would false-positive. User chose the narrower
+        path again: turn each of the two *reachable* silent "nothing matched" fallbacks into a real
+        `AstErrorKind::UndefinedType { name }` error, scoped strictly to "the name resolves to
+        nothing at all" (not "resolved to something, but the wrong kind" — a separate, pre-existing,
+        out-of-scope gap).
+    - `check_struct_constructor`'s `lookup_type` failure — a genuine, live, previously-silent bug:
+      `struct_constructor.struct_type` is parsed from `Ident { .. }` syntax with no upfront
+      validity gate (unlike enum-variant construction's `owner_type`, see below), so `NoSuchStruct
+      { x: 1 }` was silently accepted, left to be rejected only if/when something downstream
+      happened to need it. `check_struct_constructor` gained a `span: Span` parameter (threaded
+      from `resolve_expression`'s own `expression.span` through `resolve_struct_contructor`, since
+      neither `StructConstructor` nor its caller previously carried one) to report at.
+    - `check_enum_variant_construction`'s `lookup_type` failure — added for defensive symmetry, but
+      turned out to be **currently unreachable**, not a live bug: both of `owner_type`'s production
+      construction sites (`parse_owner_type`, `parse_owner_from_field_access`) only ever build a
+      `Stub` from a name already confirmed to resolve (`contains_type` = `lookup_type(..).is_some()`,
+      or a module-header entry already found) — so `check_enum_variant_construction`'s own
+      `lookup_type` call can't actually fail given today's callers. Left in as defensive/consistent
+      with the struct case, not claimed as a fix for a reachable bug.
+    - New tests: `constructor_naming_an_undefined_type_reports_exactly_one_fault` /
+      `constructor_naming_a_real_struct_reports_no_undefined_type_fault`
+      (`struct_constructor_tests.rs`) — the live case. No test added for the enum path, since it's
+      unreachable via any current caller; writing one would either fail or prove nothing.
+    - Proven by the same full `cargo test --workspace` (zero warnings, 138 `soul_name_resolver`
+      tests including the 2 new ones) + all 33 exe tests bar as every slice above.
+    - **This closes out all 7 slices of the `Stub`-redesign.** `Stub` now carries a real
+      per-occurrence identity (Slice 1); all five kinds it can mean (struct/enum/trait/alias/
+      generic) populate a shared `type_resolves` cache at the point each is actually resolved
+      (Slices 2–6); and the two reachable "silently accepted an undefined name" gaps this surfaced
+      are now hard errors (Slice 7). `type_resolves`'s coverage remains deliberately partial (a
+      conscious, repeatedly-reconfirmed choice across Slices 2 and 7, not an oversight) — a future
+      pass that eagerly walks every AST type-occurrence with full scope context, discussed and
+      declined twice in this series, remains the way to close that gap completely, if it's ever
+      worth the cost.
 - [x] `new(expr)` heap allocation (`*T`, an owning pointer — Rust's `Box<T>`), motivated by the
       user asking whether `*int` gets a real `dealloc` at `Drop` yet (it didn't — `Drop` is a pure
       no-op for every type right now). `/grill-me`'d and sequenced into three slices, since it

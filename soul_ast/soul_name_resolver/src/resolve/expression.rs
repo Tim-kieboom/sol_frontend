@@ -5,7 +5,7 @@ use ast_model::{
 };
 use ast_parser::fault::AstErrorKind;
 use soul_tokenizer::model::types::Types;
-use soul_utils::soul_error_internal;
+use soul_utils::{soul_error_internal, span::Span};
 use std::str::FromStr;
 
 use crate::NameResolver;
@@ -88,16 +88,16 @@ impl<'a> NameResolver<'a> {
                 self.resolve_function_call(expression_id, function_call)
             }
             ExpressionKind::StructConstructor(struct_constructor) => {
-                self.resolve_struct_contructor(struct_constructor)
+                self.resolve_struct_contructor(expression.span, struct_constructor)
             }
         }
     }
 
-    fn resolve_struct_contructor(&mut self, struct_constructor: &StructConstructor) {
+    fn resolve_struct_contructor(&mut self, span: Span, struct_constructor: &StructConstructor) {
         for (_, value) in &struct_constructor.values {
             self.resolve_expression(*value);
         }
-        self.check_struct_constructor(struct_constructor);
+        self.check_struct_constructor(span, struct_constructor);
     }
 
     fn resolve_string_format(&mut self, string_format: &StringFormat) {

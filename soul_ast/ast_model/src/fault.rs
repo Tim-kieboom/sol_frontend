@@ -243,6 +243,9 @@ pub enum AstErrorKind {
     #[error("function '{name}' is undefined")]
     UndefinedFunction { name: SharedStr },
 
+    #[error("type '{name}' is undefined")]
+    UndefinedType { name: SharedStr },
+
     #[error("unknown intrinsic 'intrinsic.{path}'")]
     UnknownIntrinsic { path: Box<str> },
 

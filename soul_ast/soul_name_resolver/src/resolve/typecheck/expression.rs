@@ -14,7 +14,11 @@ use super::function_call::{generic_name_of, is_generic_parameter};
 use crate::NameResolver;
 
 impl<'a> NameResolver<'a> {
-    pub(crate) fn check_struct_constructor(&mut self, struct_constructor: &StructConstructor) {
+    pub(crate) fn check_struct_constructor(
+        &mut self,
+        span: Span,
+        struct_constructor: &StructConstructor,
+    ) {
         let Some(SoulType::Stub(stub)) = self.declares.get_type(struct_constructor.struct_type)
         else {
             return;
@@ -26,6 +30,19 @@ impl<'a> NameResolver<'a> {
         let stub = stub.clone();
 
         let Some(entry) = self.lookup_type(&stub.name, self.current.module) else {
+            // Slice 7 of the `Stub`-redesign: a name that resolves to
+            // nothing at all (as opposed to resolving to something that
+            // just isn't a struct — a separate, pre-existing gap, out of
+            // scope here) used to be silently accepted, only ever rejected
+            // later in MIR lowering if anything downstream happened to need
+            // it. Scoped narrowly to exactly this case, matching every
+            // other slice's "fail loudly only where already checked" choice.
+            self.log_error(
+                AstErrorKind::UndefinedType {
+                    name: stub.name.clone(),
+                },
+                Some(span),
+            );
             return;
         };
 

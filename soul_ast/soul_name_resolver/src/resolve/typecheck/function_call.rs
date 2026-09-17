@@ -104,6 +104,19 @@ impl<'a> NameResolver<'a> {
         };
 
         let Some(entry) = self.lookup_type(&stub.name, self.current.module) else {
+            // Slice 7 of the `Stub`-redesign: a name resolving to nothing at
+            // all — as opposed to resolving to something that just isn't an
+            // enum (a separate, pre-existing gap, out of scope here) —
+            // reaches this function only as a last resort, after ordinary
+            // function/method resolution already failed; without this, a
+            // call shaped like `X.Y(..)` where `X` isn't any known name at
+            // all was silently accepted with no diagnostic at all.
+            self.log_error(
+                AstErrorKind::UndefinedType {
+                    name: stub.name.clone(),
+                },
+                Some(call.name.span()),
+            );
             return;
         };
 
