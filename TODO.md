@@ -751,6 +751,132 @@ that landing first, in order.
     reached only through a branch doesn't, yet). All 30 exe tests still pass unchanged — the actual
     proof this shipped with zero regressions, since the exe-test harness has no mechanism for an
     expected-to-fail-to-compile program (a separate, bigger tooling gap, not addressed here).
+  - [x] **Extended to `if`/`else`** (resumed once the pipeline-architecture-cleanup entry below's
+        A/C landed and B was confirmed unnecessary) — `/grill-me`'d first, at length: settled on
+        rustc's actual architecture (MIR build stays coarse/unconditional; a real dataflow pass runs
+        over the *already-built* MIR CFG; a later, still-unbuilt drop-chain-patching pass would
+        consume its results) rather than folding precise tracking into the AST-walking lowerer
+        itself, specifically to make loop fixed-point tractable later without re-lowering.
+    - `check_moves` is no longer a single linear walk that bails out on any `SwitchInt`. New
+      `reverse_postorder` does one combined DFS: detects a back edge (any `for` loop — the only way
+      this compiler's CFG becomes cyclic) and returns `None` (still skip the whole function, same as
+      before) or returns the reachable blocks in an order where every predecessor precedes its
+      successors. `check_moves` then walks blocks in that order exactly once, joining each block's
+      incoming "moved" state as the **union** of its predecessors' outgoing state before checking
+      that block's own statements/terminator — `if`/`else`'s two branches naturally get independent
+      state (each has only its own header as a predecessor) while a join point after the branches
+      correctly sees the union.
+    - **Scope call made during implementation, narrower than the plan's literal wording**: only a
+      single "maybe moved" set is tracked (reject a use if the local was moved on *any* incoming
+      path), not the full rustc-style definite/maybe *pair*. The "maybe" side is the sound, complete
+      answer this slice's own job (is this use legal) actually needs; "definite" (every path) only
+      matters for deciding whether a `Drop` can skip a runtime check entirely at some later
+      elaborate-drops-style pass — which doesn't exist yet and consumes nothing today. Documented
+      in `move_check`'s own module docs as a deliberate, not accidental, narrowing.
+    - `for` loops are still skipped entirely, same as before — `reverse_postorder` returning `None`
+      is the only gate now (replacing the old "any `SwitchInt` at all" gate), so `if`/`else` no
+      longer disables checking for the rest of the function it appears in.
+    - Proven via 3 new falsifying `mir_parser` unit tests, chosen specifically to distinguish the
+      new behavior from the old rather than just re-describe it: (1)
+      `check_moves_catches_a_move_then_reuse_reachable_only_through_a_branch` — a straight-line
+      move-then-reuse bug that the *old* blanket "skip if any `SwitchInt`" rule silently missed
+      entirely just because an unrelated `if` existed in the same function; (2)
+      `check_moves_flags_a_use_after_a_move_on_only_one_branch` — a use after the join that's unsafe
+      on only one incoming path, proving the union-join (not a "definitely moved on every path"
+      check, which would wrongly accept this); (3) `check_moves_keeps_sibling_branch_state_independent`
+      — one arm's own internal double-move must not poison the sibling arm's legitimate read. Plus
+      2 rewritten `mir_run` integration tests exercising the same distinction through the real
+      `to_mir` wiring, and a new loop-skip test to prove that gate still holds. Full
+      `cargo test --workspace` and all 33 exe tests pass unchanged.
+  - [x] **Extended to `for` loops** — the deferred half of the slice above. Explained the plan to the
+        user before writing anything, confirmed, then implemented it as described:
+    - The old "skip the whole function if a back edge exists" gate is gone entirely — a back edge
+      (any `for` loop) is no longer special-cased as an error, it's the thing this slice handles.
+      `reverse_postorder` (which used to return `Option<Vec<BlockId>>`, `None` on a cycle) is now a
+      plain `postorder` that always succeeds — a `visited` set just stops it from re-descending into
+      an already-seen block, cyclic or not; the result (reversed) is only used as a *reasonable
+      initial* worklist order now, not something correctness depends on.
+    - New `fixed_point`: a real worklist algorithm (Kildall's), not a single pass. Every block starts
+      at "nothing moved"; a block is reprocessed whenever a predecessor's outgoing state changes,
+      and the pass ends once the worklist empties. Terminates because a block's own move/
+      reassignment statements are a fixed, deterministic function of whatever comes in, so its
+      outgoing state can only grow across reprocessings (never shrink) — bounded by the (finite)
+      number of locals.
+    - **Faults are only ever collected in a separate final pass, after `fixed_point` fully
+      converges** — not, as first drafted internally, during convergence itself. An
+      intermediate/not-yet-settled state can look safe when it isn't (a loop body's own move hasn't
+      propagated back to the header yet on an early pass), so checking mid-convergence risks both
+      false negatives and duplicate reports as a block gets reprocessed. `fixed_point` itself now
+      always calls `check_block` with a throwaway, discarded `Vec` — chosen over threading an
+      `Option<&mut Vec<MirFault>>` through every helper (`check_block`/`check_rvalue`/
+      `check_operand`/`check_place`) to make fault-collection optional, since the state-only call
+      already happens on the compiler's own tiny, non-hot-path functions — not worth the signature
+      churn for a cost that doesn't matter here.
+    - Proven via 2 new falsifying `mir_parser` unit tests plus 1 rewritten `mir_run` integration
+      test: `check_moves_flags_a_loop_body_reusing_a_value_it_moved_last_iteration` (`s` moved inside
+      the loop body with no reinitialization, reused every iteration — the case the old skip-on-cycle
+      gate silently let through entirely) and
+      `check_moves_allows_a_loop_body_that_reinitializes_before_every_use` (proving the fixed point
+      doesn't just conservatively reject anything touching a loop — a reassignment at the top of the
+      body clears the back edge's incoming state before the same iteration's own use). Full
+      `cargo test --workspace` (113 `mir_parser` tests, up from 112) and all 33 exe tests pass
+      unchanged.
+  - [x] **Wired into the lowerer's own drop-chain decisions** — a real `elaborate_drops` pass
+        (mirrors rustc's own, minus its runtime drop-flag machinery — see below), consuming the exact
+        same fixed-point dataflow `check_moves` computes.
+    - `FunctionLowerer`'s own inline `moved: HashSet<LocalId>` (Slice 3b/3c, a single flag threaded
+      through the *entire* lowering pass in AST-visitation order, never reset per-branch) is gone
+      entirely — `drop_chain` now emits an unconditional `Drop` for every tracked local, every time,
+      with no move-awareness at lowering time at all. This is deliberately coarse, mirroring how
+      rustc's own MIR building over-approximates drops too (see the earlier "explain rustc's
+      pipeline" discussion this session) — precision now comes from a separate pass over the
+      *finished* MIR, not from a heuristic baked into lowering itself.
+    - New `mir_parser::move_check::elaborate_drops(&mut Function)`: runs the identical "maybe moved"
+      worklist `check_moves` uses (factored out into a shared private `analyze` helper, so there's
+      exactly one dataflow computation, not two independently-maintained copies), then rewrites every
+      `Terminator::Drop { place, target }` into a no-op `Terminator::Goto(target)` wherever `place`'s
+      local is maybe-moved by the time that particular `Drop` would run. Wired into `mir_run::to_mir`,
+      run over every function right after lowering (order relative to `check_moves` doesn't matter —
+      `check_moves` never reads a `Drop` terminator's own shape).
+    - **Verified empirically, not just by construction, exactly which leak this does and doesn't
+      fix** — the two are genuinely different bugs, both previously described under the same "known
+      conditional-move leak" heading:
+      - **Fixed**: a moved-taint leaking *past an early return* into unrelated code. The old flag was
+        a single value threaded through lowering in *textual* order, not control-flow order — a
+        branch that moves a value *and* returns early left the flag set for everything lowered
+        afterward, even code reachable **only** through the sibling path that never executed the
+        move (a real, silent leak on the only path that ever reaches that code). The real per-path
+        join correctly sees that code's only live predecessor as never having moved the value. Proven
+        by reverting-and-confirming: `elaborate_drops_fixes_a_moved_taint_leaking_past_an_early_return`
+        fails without the new pass, passes with it.
+      - **Still open, not fixed by this pass**: a value conditionally moved in a bodyless-`if` (no
+        `else`) still leaks on the untaken path — `a_conditional_move_in_only_one_if_branch_still_
+        leaks_on_the_untaken_path` (renamed from the old, now-inaccurate `..._leaks_on_the_untaken_
+        path_but_never_double_frees` test, kept and updated rather than deleted, since the imprecision
+        it documents is still real). Root cause: both the moved and not-moved edges converge on the
+        *same single* `Drop` site (the frame's one shared scope-exit) — "maybe moved" reaching that
+        one shared point is `true` either way, so there's nothing for a pure prune-existing-`Drop`s
+        pass to fix. Genuinely closing this needs a *different* `Drop` per incoming edge (splitting
+        control flow so the untaken path keeps its own, still-live `Drop`) — real
+        elaborate-drops-with-CFG-splitting, a materially bigger follow-up than what shipped here, not
+        attempted in this pass.
+    - Proven via 2 new/rewritten `mir_parser` unit tests exercising `elaborate_drops` directly
+      (`elaborate_drops_excludes_a_moved_out_local_from_its_own_scopes_drop_chain`, the early-return
+      one above) plus a renamed test now asserting `lower_source` itself emits the *unconditional*
+      Drop `elaborate_drops` is responsible for pruning
+      (`lowering_still_emits_an_unconditional_drop_for_a_moved_out_local` — the old
+      `a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain` tested the wrong layer once
+      lowering itself stopped being move-aware). Full `cargo test --workspace` (115 `mir_parser`
+      tests) and all 33 exe tests — including `32_free_at_drop.soul`/`33_owning_parameter_dropped.
+      soul`, which specifically exercise the old Slice 3b/3c mechanism this replaced — pass unchanged.
+  - Both slices above complete "move-checking only" over the full concrete (M1) CFG shape
+    (straight-line, `if`/`else`, `for`), now wired into real drop decisions too. What's left for M2:
+    real borrow/lifetime-conflict analysis (do two live borrows of the same place overlap — a
+    fundamentally bigger algorithm needing actual liveness tracking, nothing in the MIR records borrow
+    lifetimes at all yet), and, separately, real per-edge drop elaboration (splitting control flow so
+    a conditionally-moved value's untaken path keeps its own `Drop`, per the still-open case
+    documented just above) — a bigger, CFG-restructuring follow-up to the prune-only pass that shipped
+    here.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
@@ -926,9 +1052,10 @@ that landing first, in order.
         once `Foreach` lowering is actually implemented (`for x in xs { .. }` → an index variable +
         a `While`-shaped loop + an increment, rewritten before/during lowering) — revisit this
         bullet then, not before.
-  - [ ] Once A/B/C land: resume the paused borrow-checker slice — CFG traversal (back-edge/cycle
-        detection via DFS) + two-state definite/maybe dataflow for `if`/`else` move-checking (see
-        the borrow-checker entry above for the full scope of that slice).
+  - [x] A and C landed, B confirmed unnecessary — resumed the paused borrow-checker slice. See the
+        "Extended to `if`/`else`" entry under the borrow-checker bullet above for what shipped
+        (narrowed to a single "maybe moved" set, not the full definite/maybe pair — see that entry
+        for why).
 - [x] **Replace `SoulType::Stub` with resolved type references** — the "bigger, root-cause redesign"
       logged above, picked up on user request (`/grill-me`'d into a full plan first: 3 parallel
       Explore passes, then a 7-slice plan, `C:\Users\tim_k\.claude\plans\vast-wiggling-galaxy.md`).

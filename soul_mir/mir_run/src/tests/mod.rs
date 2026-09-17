@@ -168,12 +168,10 @@ fn use_after_move_in_straight_line_code_faults_through_the_full_pipeline() {
 }
 
 #[test]
-fn a_branching_function_with_a_move_violation_is_not_yet_flagged() {
-    // Straight-line only for now (see `move_check`'s own docs) — a
-    // use-after-move reachable only through an `if`/`for` isn't analyzed
-    // yet, so this must NOT fault, even though the underlying pattern (using
-    // `s` again after moving it) is exactly as wrong as the straight-line
-    // case above.
+fn an_if_branch_with_a_move_violation_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring, not just `move_check::check_moves` in isolation: an
+    // `if`/`else` is now real CFG dataflow, not skipped — `s` is
+    // double-moved inside the `if` arm alone.
     let mut ast = build_ast(
         "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n        consume(s)\n    }\n}\n",
     );
@@ -181,9 +179,44 @@ fn a_branching_function_with_a_move_violation_is_not_yet_flagged() {
     let (_, context) = create_mir(&mut ast);
 
     assert_eq!(
-        context.faults.iter().count(),
-        0,
-        "a branching function shouldn't be move-checked yet: {:#?}",
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::UseAfterMove)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_looping_function_reusing_a_moved_value_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring for the fixed-point-over-a-cyclic-CFG slice, not
+    // just `move_check::check_moves` in isolation: `s` is moved inside the
+    // loop body and reused on every later iteration.
+    let mut ast = build_ast(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    for cond {\n        consume(s)\n    }\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::UseAfterMove)),
+        "{:#?}",
         context.faults.iter().collect::<Vec<_>>()
     );
 }

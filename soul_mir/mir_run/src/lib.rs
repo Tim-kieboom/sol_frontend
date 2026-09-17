@@ -45,14 +45,23 @@ pub fn to_mir(
     }
 
     benchmark.add_benchmark("mir", time.elapsed());
-    let (functions, externs) = lowerer.into_functions_and_externs();
+    let (mut functions, externs) = lowerer.into_functions_and_externs();
 
-    // Move checking (see `mir_parser::move_check`) is its own pass over
-    // already-lowered MIR, not part of lowering itself — a function that
-    // fails to lower never reaches here at all, so this only ever runs on
-    // functions that already lowered successfully. Straight-line only for
-    // now: a function containing any `if`/`for` is silently skipped
-    // (`check_moves` itself decides that), not rejected or force-analyzed.
+    // Move checking and drop-elaboration (see `mir_parser::move_check`) are
+    // their own passes over already-lowered MIR, not part of lowering
+    // itself — a function that fails to lower never reaches here at all, so
+    // these only ever run on functions that already lowered successfully.
+    // `elaborate_drops` runs first: `mir_parser::function`'s own lowering
+    // always emits an unconditional `Drop` for every tracked owning local,
+    // move-unaware by design (see that module's own docs) — this is what
+    // turns some of those into a no-op once the real, whole-function
+    // dataflow proves the value might already be gone. Order relative to
+    // `check_moves` doesn't matter: `check_moves` never reads a `Drop`
+    // terminator's own shape, only `Operand`/`Assign` occurrences, which
+    // `elaborate_drops` never touches.
+    for function in functions.values_mut() {
+        mir_parser::move_check::elaborate_drops(function);
+    }
     for function in functions.values() {
         for fault in mir_parser::move_check::check_moves(function) {
             context.faults.push(fault);

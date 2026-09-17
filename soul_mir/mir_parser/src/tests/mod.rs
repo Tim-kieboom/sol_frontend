@@ -2217,12 +2217,12 @@ fn a_move_only_struct_argument_is_moved_not_copied() {
 }
 
 #[test]
-fn a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain() {
-    // `s` is moved into `consume(s)` — its own scope's `Drop` chain (the
-    // function's own top-level frame, unwound at the implicit end-of-body
-    // `return`) must skip it: once `Terminator::Drop` actually frees an
-    // owning `*T` (see M2's TODO.md entry), dropping an already-moved local
-    // would double-free it.
+fn lowering_still_emits_an_unconditional_drop_for_a_moved_out_local() {
+    // Lowering itself is now deliberately move-unaware (see `drop_chain`'s
+    // own docs) — every tracked local gets a `Drop`, moved or not. It's
+    // `move_check::elaborate_drops`, a separate pass over the finished MIR,
+    // that's responsible for pruning one down to a `Goto`; see the test
+    // right below for that half.
     let mir = lower_source(
         "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n}\n",
         "f",
@@ -2234,8 +2234,34 @@ fn a_moved_body_local_is_excluded_from_its_own_scopes_drop_chain() {
         .entries()
         .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
     assert!(
+        has_drop,
+        "expected lowering to still emit an unconditional Drop for s, got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn elaborate_drops_excludes_a_moved_out_local_from_its_own_scopes_drop_chain() {
+    // `s` is moved into `consume(s)` — its own scope's `Drop` (the
+    // function's own top-level frame, unwound at the implicit end-of-body
+    // `return`) must be pruned to a no-op `Goto` by `elaborate_drops`: once
+    // `Terminator::Drop` actually frees an owning `*T` (see M2's TODO.md
+    // entry), dropping an already-moved local would double-free it.
+    let mut mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf() {\n    s := Session{n: 1}\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    crate::move_check::elaborate_drops(&mut mir);
+
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(
         !has_drop,
-        "expected the moved-out s to have no Drop terminator at all, got {:#?}",
+        "expected the moved-out s to have no Drop terminator left after elaborate_drops, got {:#?}",
         mir.blocks
     );
 }
@@ -2283,25 +2309,28 @@ fn an_owning_pointer_parameter_is_dropped_at_its_own_functions_end() {
 }
 
 #[test]
-fn a_conditional_move_in_only_one_if_branch_leaks_on_the_untaken_path_but_never_double_frees() {
+fn a_conditional_move_in_only_one_if_branch_still_leaks_on_the_untaken_path() {
     // `p` is declared *outside* the `if`, and moved into `consume(p)` in
     // only the `then` branch — the `else` branch (here, simply absent)
-    // never touches it. `moved` isn't saved/restored per branch (see its
-    // own docs on `FunctionLowerer`): lowering the `then` branch marks `p`
-    // moved, and that state is never reset before `f`'s own top-level frame
-    // (which is what actually owns `p`) unwinds at the end-of-body return.
-    // So `p` gets **no** `Drop` at all, regardless of which branch actually
-    // ran at runtime — correct (no double free) on the `cond == true` path,
-    // where `consume` already owns `p`, but a real leak on the `cond ==
-    // false` path, where `p` was never moved and nothing ever frees it.
-    // This is the documented, accepted imprecision of Slice 3b (see
-    // `TODO.md`'s M2 entry) — full per-path precision needs real dataflow,
-    // not implemented yet.
-    let mir = lower_source(
+    // never touches it. Both the `then` and `otherwise` edges converge on
+    // the *same* single `Drop` site (the function's own top-level frame,
+    // unwound once at the end-of-body return) — `elaborate_drops`'s
+    // "maybe moved" analysis correctly sees `p` as maybe-moved reaching that
+    // shared site (it genuinely was, on the `cond == true` path) and prunes
+    // it, same outcome as before this pass existed. This is *not* the bug
+    // `elaborate_drops` fixes (see the test below for the case it does fix)
+    // — genuinely eliminating this leak needs a *different* `Drop` per
+    // incoming edge (splitting control flow so the `cond == false` path gets
+    // its own, still-live `Drop`), which nothing in this compiler does yet.
+    // Still a real, accepted imprecision (never a double free) — not
+    // implemented further here.
+    let mut mir = lower_source(
         "consume(p: *int) {}\nf(cond: bool) {\n    p := new(1)\n    if cond {\n        consume(p)\n    }\n}\n",
         "f",
     )
     .expect("expected successful lowering");
+
+    crate::move_check::elaborate_drops(&mut mir);
 
     let has_drop = mir
         .blocks
@@ -2309,8 +2338,42 @@ fn a_conditional_move_in_only_one_if_branch_leaks_on_the_untaken_path_but_never_
         .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
     assert!(
         !has_drop,
-        "expected p to have no Drop at all (the documented leak-not-crash \
-         imprecision for a conditionally-moved outer-scope local), got {:#?}",
+        "expected p to still have no Drop at all (the still-open leak-not-crash \
+         imprecision for a conditionally-moved outer-scope local sharing one exit), got {:#?}",
+        mir.blocks
+    );
+}
+
+#[test]
+fn elaborate_drops_fixes_a_moved_taint_leaking_past_an_early_return() {
+    // The bug the old lowering-order-only `moved` flag actually had, that a
+    // real per-path dataflow fixes: the `then` branch moves `p` *and*
+    // returns early, so it never reaches any code after the `if` at all —
+    // but the crude flag was a single value threaded through the *entire*
+    // lowering pass in AST-visitation order, so once set it stayed set for
+    // every statement lowered afterward, including code reachable *only*
+    // through the `cond == false` path (where `p` was never moved). That
+    // code's own `Drop` of `p` (at its own `return`) used to be silently
+    // skipped — a real leak on the only path that ever reaches it. The real
+    // dataflow's join correctly sees this block's only live predecessor (the
+    // `otherwise` edge, since `then` diverged via `return` and never reaches
+    // here) as never having moved `p`, so `elaborate_drops` must leave this
+    // `Drop` in place.
+    let mut mir = lower_source(
+        "consume(p: *int): int {\n    return 1\n}\nf(cond: bool): int {\n    p := new(1)\n    if cond {\n        consume(p)\n        return 5\n    }\n    x := *p\n    return x\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    crate::move_check::elaborate_drops(&mut mir);
+
+    let has_drop = mir
+        .blocks
+        .entries()
+        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
+    assert!(
+        has_drop,
+        "expected p to still be Dropped on the cond == false path, got {:#?}",
         mir.blocks
     );
 }
@@ -2953,11 +3016,11 @@ fn check_moves_allows_a_reassigned_local_to_be_used_again() {
 }
 
 #[test]
-fn check_moves_skips_functions_containing_a_branch() {
-    // Straight-line only for now — a branching function isn't analyzed at
-    // all yet (see `move_check`'s own docs), so even a pattern that would be
-    // a real violation on some individual path is silently unchecked here,
-    // rather than incorrectly flagged or crashed on.
+fn check_moves_allows_moving_the_same_local_in_each_arm_of_an_if_else() {
+    // The exact case flow-insensitive "moved anywhere ⇒ reject" scans get
+    // wrong: `s` is moved once on every path (both arms), never reused after
+    // the join — a real dataflow join (union of predecessor states, but each
+    // arm's own state independent of its sibling) must accept this.
     let mir = lower_source(
         "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n    } else {\n        consume(s)\n    }\n}\n",
         "f",
@@ -2967,7 +3030,122 @@ fn check_moves_skips_functions_containing_a_branch() {
     let faults = crate::move_check::check_moves(&mir);
     assert!(
         faults.is_empty(),
-        "expected a branching function to be skipped entirely, got {:#?}",
+        "moving s once on every path with no reuse after the join should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_moves_catches_a_move_then_reuse_reachable_only_through_a_branch() {
+    // Before the CFG-dataflow slice, any function containing a `SwitchInt`
+    // was skipped *entirely* — so this straight-line-shaped bug (nothing to
+    // do with branch precision at all) was silently missed just because an
+    // unrelated `if` existed somewhere in the same function. Proves that
+    // regression is fixed: `s` is moved, then moved again unconditionally
+    // inside the `if`, on every call.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    consume(s)\n    if cond {\n        consume(s)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the straight-line move-then-reuse inside the if to be caught, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn check_moves_flags_a_use_after_a_move_on_only_one_branch() {
+    // `s` is moved only on the `cond == true` path; the unconditional use
+    // after the join is unsafe on exactly that path — the "maybe moved"
+    // join (union of predecessor states) must reject it, even though a
+    // "definitely moved on every path" check would wrongly accept it.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n    }\n    consume(s)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the post-join use to be flagged as maybe-moved, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn check_moves_keeps_sibling_branch_state_independent() {
+    // The `if` arm double-moves `s` — a real, self-contained bug in that arm
+    // alone. The `else` arm reads `s` once, never moved on its own path. A
+    // single shared "moved" flag (instead of per-branch state joined only at
+    // the join point) would wrongly poison the `else` arm's legitimate read
+    // too — exactly one fault (the `if` arm's own double-move) proves the
+    // two arms are tracked independently.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    if cond {\n        consume(s)\n        consume(s)\n    } else {\n        consume(s)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly the if arm's own double-move, not the else arm's independent read, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn check_moves_flags_a_loop_body_reusing_a_value_it_moved_last_iteration() {
+    // A real fixed-point-over-a-cyclic-CFG case: `s` is moved by `consume`
+    // inside the loop body, never reinitialized, and the body reuses it
+    // unconditionally — safe (or rather, un-checked at all) on a single
+    // reverse-postorder pass that never sees the back edge's own effect
+    // propagate back to the header, but a genuine violation on the second
+    // and every later iteration. Proves the worklist actually reprocesses
+    // the loop header/body until the back edge's state is folded in.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    s := Session{n: 1}\n    for cond {\n        consume(s)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the loop body's own repeated move to be caught, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
+}
+
+#[test]
+fn check_moves_allows_a_loop_body_that_reinitializes_before_every_use() {
+    // The fixed point must not just conservatively reject anything touching
+    // a loop: `s` is reassigned at the top of the body before `consume`
+    // reads it, every single iteration — the reassignment's kill clears
+    // whatever the back edge fed in, so this is genuinely safe.
+    let mir = lower_source(
+        "struct Session {\n    n: int\n}\nconsume(s: Session) {}\nf(cond: bool) {\n    mut s := Session{n: 1}\n    for cond {\n        s = Session{n: 2}\n        consume(s)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::move_check::check_moves(&mir);
+    assert!(
+        faults.is_empty(),
+        "reinitializing s before every use inside the loop should be accepted, got {:#?}",
         faults
     );
 }
