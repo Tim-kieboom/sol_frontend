@@ -288,37 +288,41 @@ pub(crate) fn generic_name_of<'g>(
 }
 
 /// The fixed whitelist of types allowed as a `varargs.[...]` element (rule 4
-/// of the `varargs` design): `cstr`, `bool`, and the built-in integer/float
-/// types — no structs, no nested `varargs`, no other aggregates. Untyped int/
-/// float literals are included since they still default to an allowed
-/// concrete type (rule 6) before ever reaching codegen.
+/// of the `varargs` design): `cstr`, `bool`, the built-in integer/float
+/// types, and raw pointers — no structs, no nested `varargs`, no other
+/// aggregates. Untyped int/float literals are included since they still
+/// default to an allowed concrete type (rule 6) before ever reaching
+/// codegen. Raw pointers need no promotion (C's default argument
+/// promotions never touch pointers — they're already word-sized) and are
+/// emitted as-is by `codegen_variadic_argument`.
 fn is_varargs_allowed_type(ty: &SoulType) -> bool {
     use PrimitiveTypes::*;
     matches!(
         ty,
-        SoulType::Primitive(
-            CStr | Boolean
-                | CInt
-                | CUint
-                | UntypedInt
-                | UntypedUint
-                | UntypedFloat
-                | Int
-                | Int8
-                | Int16
-                | Int32
-                | Int64
-                | Int128
-                | Uint
-                | Uint8
-                | Uint16
-                | Uint32
-                | Uint64
-                | Uint128
-                | Float16
-                | Float32
-                | Float64
-        )
+        SoulType::RawPtr(_)
+            | SoulType::Primitive(
+                CStr | Boolean
+                    | CInt
+                    | CUint
+                    | UntypedInt
+                    | UntypedUint
+                    | UntypedFloat
+                    | Int
+                    | Int8
+                    | Int16
+                    | Int32
+                    | Int64
+                    | Int128
+                    | Uint
+                    | Uint8
+                    | Uint16
+                    | Uint32
+                    | Uint64
+                    | Uint128
+                    | Float16
+                    | Float32
+                    | Float64
+            )
     )
 }
 

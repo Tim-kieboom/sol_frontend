@@ -1,13 +1,9 @@
-extern "C" printf(format: cstr, arg: cstr)
+extern "C" printf(format: cstr, arg: varargs)
 
-print(message: cstr) {
-    printf(message)
-}
-
-println(message: cstr) {
-    printf(c"%s\n", message)
+printStr(string: &str) {
+    printf(c"%.*s", varargs.[string.len(), string.asRawPtr()])
 }
 
 main() {
-    println(c"hello world")
+    printf(c"%.*s", varargs.[4, c"test"])
 }
