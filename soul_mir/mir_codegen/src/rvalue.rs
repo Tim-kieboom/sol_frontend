@@ -414,7 +414,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
     /// retyped (see `operand_local`), so it isn't necessarily already that
     /// width. A negative signed index sign-extends to a huge unsigned value,
     /// so it's still caught by the same unsigned compare as an over-long one.
-    fn codegen_cast(
+    pub(crate) fn codegen_cast(
         &mut self,
         operand: &Operand,
         result_ty: BasicTypeEnum<'ctx>,
@@ -484,7 +484,7 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
 
     /// The LLVM type a place-backed operand is stored as, if it is one — a
     /// bare constant operand carries no type of its own (see the module docs).
-    fn operand_type(&self, operand: &Operand) -> Option<BasicTypeEnum<'ctx>> {
+    pub(crate) fn operand_type(&self, operand: &Operand) -> Option<BasicTypeEnum<'ctx>> {
         match operand {
             Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => {
                 self.local_type(place.local).ok()

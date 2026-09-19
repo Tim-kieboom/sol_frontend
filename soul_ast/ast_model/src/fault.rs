@@ -204,6 +204,19 @@ pub enum AstErrorKind {
     #[error("keyword '{keyword}' can not be type")]
     KeywordUsedAsType { keyword: KeyWord },
 
+    #[error(
+        "'varargs' is only allowed as the last parameter of an `extern \"C\"` function signature"
+    )]
+    VarargsNotAllowedHere,
+
+    #[error(
+        "the argument for a `varargs` parameter must be written explicitly as `varargs.[...]` (use `varargs.[]` for none)"
+    )]
+    VarargsArgumentRequired,
+
+    #[error("type `{found}` is not allowed inside `varargs.[...]`")]
+    VarargsElementTypeNotAllowed { found: Box<str> },
+
     // ----------------------------------------------------------------
     //  Name resolution (soul_name_resolver shares this CrateContext)
     // ----------------------------------------------------------------

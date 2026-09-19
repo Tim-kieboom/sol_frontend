@@ -31,6 +31,10 @@ use crate::{
 };
 const CONTRUCTOR_STR: &str = "This__ctor";
 const ARRAY_CONTRUCTOR_STR: &str = "This__arrayCtor";
+/// The special marker identifier recognized in parameter-type position
+/// (`name: varargs`) to mark an `extern "C"` function's trailing C variadic
+/// parameter. It is never resolved as a real type.
+const VARARGS_IDENT: &str = "varargs";
 
 pub struct FuncError {
     pub ident: Ident,
@@ -288,10 +292,11 @@ impl<'a, 'f> Parser<'a, 'f> {
 
     pub(crate) fn try_parse_parameters(
         &mut self,
+        external: Option<ExternLanguage>,
     ) -> AstTryResult<(Vec<Parameter>, FunctionThisKind), AstFault> {
         let begin = self.tokens.current_position();
 
-        let result = self.inner_parameters();
+        let result = self.inner_parameters(external);
         if result.is_err() {
             self.goto(begin);
         }
@@ -452,6 +457,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 ty: self.intern_type(array_type),
                 id: arg_id,
                 mutable: Mutable::Immut,
+                is_variadic: false,
             }]
             .into(),
             generics: vec![].into(),
@@ -492,7 +498,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             return TryErr(self.get_expect_error(&ROUND_OPEN));
         }
 
-        let (parameters, function_kind) = match self.try_parse_parameters() {
+        let (parameters, function_kind) = match self.try_parse_parameters(external) {
             Ok(val) => val,
             Err(TryError::IsErr(err)) => return TryErr(err),
             Err(TryError::IsNotValue(err)) => {
@@ -627,7 +633,10 @@ impl<'a, 'f> Parser<'a, 'f> {
         ))
     }
 
-    fn inner_parameters(&mut self) -> AstTryResult<(Vec<Parameter>, FunctionThisKind), AstFault> {
+    fn inner_parameters(
+        &mut self,
+        external: Option<ExternLanguage>,
+    ) -> AstTryResult<(Vec<Parameter>, FunctionThisKind), AstFault> {
         self.expect(&ROUND_OPEN).try_err()?;
 
         let mut types = vec![];
@@ -654,6 +663,48 @@ impl<'a, 'f> Parser<'a, 'f> {
                 return Err(TryError::IsNotValue(self.get_expect_error(&COLON)));
             }
             self.bump();
+
+            // The `varargs` marker is recognized directly off the raw
+            // identifier, before `try_parse_type` runs — it is not a real
+            // type name and must never be interned/resolved as a `Stub`
+            // (that would later hard-error as an unresolved type name).
+            let next_ends_param = {
+                let peek_kind = self.peek().kind;
+                peek_kind == COMMA || peek_kind == ROUND_CLOSE
+            };
+            if self.current_is_ident(VARARGS_IDENT) && next_ends_param {
+                let varargs_span = self.token().span;
+                self.bump();
+
+                if external != Some(ExternLanguage::C) {
+                    return TryErr(Fault::error_with_kind(
+                        crate::fault::AstErrorKind::VarargsNotAllowedHere,
+                        Some(varargs_span),
+                    ));
+                }
+
+                let ty = self.intern_type(SoulType::None);
+                types.push(Parameter {
+                    id: self.alloc_node(),
+                    ty,
+                    name,
+                    default: None,
+                    mutable: modifier.to_mutable(),
+                    is_variadic: true,
+                });
+
+                self.skip_end_lines();
+                if self.current_is(&ROUND_CLOSE) {
+                    break;
+                }
+
+                // `varargs` was followed by more parameters — only legal as
+                // the very last one.
+                return TryErr(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::VarargsNotAllowedHere,
+                    Some(varargs_span),
+                ));
+            }
 
             // if not value is probably named_tuple expression
             let ty = match self.try_parse_type() {
@@ -686,6 +737,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 name,
                 default,
                 mutable: modifier.to_mutable(),
+                is_variadic: false,
             });
 
             self.skip_end_lines();
@@ -750,6 +802,7 @@ impl<'a, 'f> Parser<'a, 'f> {
                 name,
                 default: None,
                 mutable,
+                is_variadic: false,
             });
 
             self.skip_end_lines();

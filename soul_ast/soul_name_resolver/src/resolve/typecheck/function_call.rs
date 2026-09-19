@@ -1,9 +1,9 @@
 use ast_model::{
-    CustomType, EnumVariant, ExpressionId, FunctionCall, Generic, SoulType, UnionKind,
-    declare_store::DeclareStore,
+    AnyArray, CustomType, EnumVariant, ExpressionId, ExpressionKind, FunctionCall, Generic,
+    SoulType, UnionKind, declare_store::DeclareStore,
 };
 use ast_parser::fault::{AstErrorKind, EnumVariantArgumentTypeMismatch};
-use soul_utils::FunctionId;
+use soul_utils::{FunctionId, soul_names::PrimitiveTypes};
 
 use crate::NameResolver;
 
@@ -34,6 +34,17 @@ impl<'a> NameResolver<'a> {
             let mut generic_bindings: Vec<(&str, SoulType)> = Vec::new();
 
             for (argument, parameter) in call.arguments.iter().zip(&parameters) {
+                // The `varargs` marker parameter has no real declared type
+                // (`parameter.ty` is a meaningless placeholder — see
+                // `ast_parser::parse::function`) and its argument is never
+                // typechecked against it positionally; it's checked
+                // element-by-element instead (rule 2/3/4/5/6 of the
+                // `varargs` design).
+                if parameter.is_variadic {
+                    self.check_varargs_argument(argument.value);
+                    continue;
+                }
+
                 let Some(parameter_ty) = self.declares.get_type(parameter.ty).cloned() else {
                     continue;
                 };
@@ -92,6 +103,56 @@ impl<'a> NameResolver<'a> {
 
         self.declares
             .insert_expression_type(expression_id, return_type);
+    }
+
+    /// Checks a `varargs` parameter's argument — which the grammar requires
+    /// to always be written explicitly as `varargs.[elem, ...]` (rule 2 of
+    /// the `varargs` design; parses as a plain array literal whose
+    /// `collection_type` names the `varargs` marker, same shape as any other
+    /// `Type.[...]` collection literal — see `ast_parser`'s expression
+    /// access parsing). Each element is checked against the fixed primitive
+    /// whitelist (rule 4); C default-argument promotion (`f32` -> `f64`,
+    /// narrower-than-`int` -> `int`) and untyped-literal defaulting (rule 6)
+    /// are purely a lowering/codegen concern (`mir_parser`/`mir_codegen`),
+    /// not something this check needs to rewrite the AST for.
+    fn check_varargs_argument(&mut self, argument: ExpressionId) {
+        let span = self
+            .store
+            .expressions
+            .get(argument)
+            .map(|expr| expr.span);
+
+        let Some(expr) = self.store.expressions.get(argument) else {
+            return;
+        };
+        let ExpressionKind::Array(AnyArray::Array(array)) = &expr.node else {
+            self.log_error(AstErrorKind::VarargsArgumentRequired, span);
+            return;
+        };
+        let is_varargs_literal = array
+            .collection_type
+            .and_then(|id| self.declares.get_type(id))
+            .is_some_and(|ty| matches!(ty, SoulType::Stub(stub) if stub.name.as_ref() == "varargs"));
+        if !is_varargs_literal {
+            self.log_error(AstErrorKind::VarargsArgumentRequired, span);
+            return;
+        }
+
+        let values = array.values.clone();
+        for value in values.iter() {
+            let elem_span = self.store.expressions.get(*value).map(|e| e.span);
+            let Some(elem_ty) = self.expression_type(*value) else {
+                continue;
+            };
+            if !is_varargs_allowed_type(&elem_ty) {
+                self.log_error(
+                    AstErrorKind::VarargsElementTypeNotAllowed {
+                        found: self.print_ty(&elem_ty).into(),
+                    },
+                    elem_span,
+                );
+            }
+        }
     }
 
     pub(crate) fn check_enum_variant_construction(
@@ -224,6 +285,41 @@ pub(crate) fn generic_name_of<'g>(
         declares.insert_type_resolve(occurrence, ast_model::declare_store::TypeResolve::Generic);
     }
     Some(found.name.as_str())
+}
+
+/// The fixed whitelist of types allowed as a `varargs.[...]` element (rule 4
+/// of the `varargs` design): `cstr`, `bool`, and the built-in integer/float
+/// types — no structs, no nested `varargs`, no other aggregates. Untyped int/
+/// float literals are included since they still default to an allowed
+/// concrete type (rule 6) before ever reaching codegen.
+fn is_varargs_allowed_type(ty: &SoulType) -> bool {
+    use PrimitiveTypes::*;
+    matches!(
+        ty,
+        SoulType::Primitive(
+            CStr | Boolean
+                | CInt
+                | CUint
+                | UntypedInt
+                | UntypedUint
+                | UntypedFloat
+                | Int
+                | Int8
+                | Int16
+                | Int32
+                | Int64
+                | Int128
+                | Uint
+                | Uint8
+                | Uint16
+                | Uint32
+                | Uint64
+                | Uint128
+                | Float16
+                | Float32
+                | Float64
+        )
+    )
 }
 
 fn enum_variant_name(variant: &EnumVariant) -> &str {

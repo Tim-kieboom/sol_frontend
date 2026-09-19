@@ -358,6 +358,11 @@ pub struct Parameter {
     pub ty: TypeId,
     pub mutable: Mutable,
     pub default: Option<ExpressionId>,
+    /// True only for the special `varargs` marker parameter (`name: varargs`),
+    /// legal only as the last parameter of an `extern "C"` function. It is
+    /// not a real typed parameter — `ty` is a meaningless placeholder for it
+    /// and lowering must exclude it from the real parameter list.
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]

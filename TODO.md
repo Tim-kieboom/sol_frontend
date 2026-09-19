@@ -1506,6 +1506,37 @@ that landing first, in order.
       Explicitly out of scope: values escaping via return/longer-lived-container/capture (no
       arena — falls back to the ordinary allocator), and multi-frame/loop-iteration regions. Blocked
       on M2 (borrow/move checker) landing first.
+- [x] `extern "C"` variadic functions (`name: varargs` as an extern's last parameter, called as
+      `f(fixed_args, varargs.[a, b, c])` — arity always exact-positional, `varargs.[]` for none).
+      `varargs` is a purely compile-time marker/list: `ast_model::Parameter.is_variadic` +
+      `ast_parser::parse::function::inner_parameters` reject it anywhere but the last parameter of
+      an `extern "C"` signature; `mir_model::ExternFunction.is_variadic` (set by
+      `mir_parser::lower_extern_signature`, which also excludes the marker from `parameters`) drives
+      `mir_codegen::module::declare_all_functions`'s LLVM `is_var_arg`. A call's `varargs.[...]`
+      argument parses for free as an ordinary `Type.[...]` array literal (collection type = the bare
+      `varargs` stub) — `soul_name_resolver`'s `finish_call_resolution`/`check_varargs_argument`
+      special-cases a `varargs`-marked parameter to whitelist-check each element instead of unifying
+      against a declared type, and `mir_parser`'s `lower_call`/`lower_varargs_argument` flattens the
+      list into extra trailing `Operand`s (never a runtime array/slice) rather than one aggregate
+      argument. C's default argument promotions (`f32`→`f64`; narrower-than-`int`→`int`; untyped
+      literal defaults to `i32`/`f64`) are applied in `mir_codegen::terminator`'s
+      `codegen_variadic_argument`/`variadic_operand_soul_type`, purely at the LLVM-operand level —
+      never a user-visible cast. Proven via real exes: `34_extern_variadic_printf_fixed.soul`,
+      `35_extern_varargs_feature.soul`.
+      - Prerequisite bug fixed along the way: `declare_all_functions` hardcoded `is_var_arg = false`
+        for every extern, so a call into a genuinely C-variadic function (real `printf`) mis-passed
+        `f64` args under the Windows x64 calling convention (a variadic call must also duplicate a
+        float arg into the matching integer register, which only a variadic-declared LLVM
+        `FunctionType` gets) — silently printed `0.000000` instead of the real value. Fixed by wiring
+        `is_variadic` through as above. Note this only fixes a call declared *as* `varargs` in Soul —
+        a fixed-arity Soul declaration of a function that happens to be variadic in the real C
+        library (e.g. `printf(format: cstr, arg: f64)` with no `varargs` marker) is unfixable in
+        principle: Soul has no way to know the real callee is variadic unless told via `varargs`, so
+        that shape is still expected to mis-print; `varargs` is now the correct/sanctioned way to
+        declare a real C variadic function.
+      - Not yet done: the whitelist rejection (cstr/bool/int*/float* only, no structs/nested
+        `varargs`) has real element type-checking but no polished per-kind error message; only a
+        generic `VarargsElementTypeNotAllowed`.
 - [ ] `extern "rust"` — calling into Rust directly, not just C (idea, not designed — see
       [soul-lang.md §11](soul-lang.md#11-ownership--borrowing)). The hope: since Soul's borrow
       checker uses the same strict aliasing rule as Rust's (exactly one `&mut` or any number of

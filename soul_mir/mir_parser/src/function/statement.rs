@@ -210,6 +210,19 @@ impl<'a> FunctionLowerer<'a> {
             ));
         };
         let return_type_id = signature.return_type;
+        // The `varargs` marker is always the last declared parameter (see
+        // `ast_parser::parse::function`) — its corresponding call argument
+        // is never a plain value but the compile-time-only `varargs.[...]`
+        // list (rules 2/3 of the `varargs` design, enforced by the
+        // resolver's own `check_varargs_argument`), which flattens into zero
+        // or more extra trailing operands rather than a single argument.
+        // Computed up front, before `signature`'s borrow of `self.declares`
+        // would otherwise conflict with the `&mut self` calls below.
+        let variadic_arg_index = signature
+            .parameters
+            .last()
+            .is_some_and(|p| p.is_variadic)
+            .then(|| call.arguments.len().saturating_sub(1));
         // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
         // declares its receiver as: `&this`/`&mut this` borrow the receiver
         // (matching the callee's own `Reference`-typed local set up in
@@ -251,14 +264,18 @@ impl<'a> FunctionLowerer<'a> {
             };
             args.push(receiver_operand);
         }
-        for argument in &call.arguments {
+        for (index, argument) in call.arguments.iter().enumerate() {
             if argument.name.is_some() {
                 return Err(Fault::error_with_kind(
                     MirErrorKind::UnsupportedCallShape,
                     Some(span),
                 ));
             }
-            args.push(self.lower_move_aware_operand(argument.value)?);
+            if Some(index) == variadic_arg_index {
+                self.lower_varargs_argument(argument.value, span, &mut args)?;
+            } else {
+                args.push(self.lower_move_aware_operand(argument.value)?);
+            }
         }
 
         let is_none_return = return_type_id == TypeId::NONE;
@@ -282,6 +299,41 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         Ok(destination_local.map(|local| mir::Operand::Copy(mir::Place::local(local))))
+    }
+
+    /// Flattens `varargs.[a, b, c]` into zero or more extra trailing
+    /// operands pushed straight onto `args` — never a single aggregate
+    /// operand (rule 3 of the `varargs` design: this is a purely compile-
+    /// time construct, not a runtime array/slice). Each element is lowered
+    /// exactly like any other call argument; C default-argument promotion
+    /// (`f32` -> `f64`, narrower-than-`int` -> `int`) and untyped-literal
+    /// defaulting happen later, in `mir_codegen`'s own trailing-argument
+    /// codegen (`codegen_variadic_argument`) — not here, since that's purely
+    /// about the LLVM operand's own type, not the MIR shape.
+    ///
+    /// The resolver's `check_varargs_argument` already guarantees `expr_id`
+    /// has exactly this `Array` shape for a `varargs` parameter's argument
+    /// (rule 2: always written explicitly as `varargs.[...]`) — the error
+    /// path here is defensive, same as elsewhere in this lowerer.
+    fn lower_varargs_argument(
+        &mut self,
+        expr_id: ast::ExpressionId,
+        span: Span,
+        args: &mut Vec<mir::Operand>,
+    ) -> MirResult<()> {
+        let expr = &self.store.expressions[expr_id];
+        let ast::ExpressionKind::Array(ast::AnyArray::Array(array)) = &expr.node else {
+            return Err(Fault::error_with_kind(
+                MirErrorKind::UnsupportedCallShape,
+                Some(span),
+            ));
+        };
+
+        let values = array.values.clone();
+        for value in values.iter() {
+            args.push(self.lower_move_aware_operand(*value)?);
+        }
+        Ok(())
     }
 
     /// Lowers `expr_id` to an `Operand`, choosing `Move` over `Copy` when

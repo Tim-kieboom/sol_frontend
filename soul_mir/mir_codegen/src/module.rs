@@ -113,7 +113,7 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
             // type — `build_entry_point_return` widens to match whenever
             // this differs from the natural return type.
             let force_i32_return = name == "main";
-            let fn_type = self.build_fn_type(&param_types, return_type, force_i32_return);
+            let fn_type = self.build_fn_type(&param_types, return_type, force_i32_return, false);
 
             let fn_value = self.ctx.module.add_function(name, fn_type, None);
             self.function_values.insert(id, fn_value);
@@ -134,7 +134,8 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
                 .map(|ty| self.ctx.llvm_type(module, self.ctx.resolve_type(ty), None))
                 .transpose()?;
 
-            let fn_type = self.build_fn_type(&param_types, return_type, false);
+            let fn_type =
+                self.build_fn_type(&param_types, return_type, false, extern_fn.is_variadic);
 
             let fn_value = self
                 .ctx
@@ -155,6 +156,7 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
         param_types: &[BasicTypeEnum<'ctx>],
         return_type: Option<BasicTypeEnum<'ctx>>,
         force_i32_return: bool,
+        is_var_arg: bool,
     ) -> FunctionType<'ctx> {
         let param_metadata_types = param_metadata(param_types);
         if force_i32_return {
@@ -162,15 +164,15 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
                 .ctx
                 .context
                 .i32_type()
-                .fn_type(&param_metadata_types, false);
+                .fn_type(&param_metadata_types, is_var_arg);
         }
         match return_type {
-            Some(ty) => ty.fn_type(&param_metadata_types, false),
+            Some(ty) => ty.fn_type(&param_metadata_types, is_var_arg),
             None => self
                 .ctx
                 .context
                 .void_type()
-                .fn_type(&param_metadata_types, false),
+                .fn_type(&param_metadata_types, is_var_arg),
         }
     }
 }

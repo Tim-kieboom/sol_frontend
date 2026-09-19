@@ -6,18 +6,18 @@ use ast_model::SoulType;
 use inkwell::{
     AddressSpace, IntPredicate,
     module::Linkage,
-    types::{BasicMetadataTypeEnum, IntType},
+    types::{BasicMetadataTypeEnum, BasicTypeEnum, IntType},
     values::{BasicValueEnum, FunctionValue, PointerValue},
 };
 use mir_model::{BlockId, ConstValue, LocalId, Operand, Place, Terminator};
-use soul_utils::{FunctionId, compiler_options::PanicMode, span::Span};
+use soul_utils::{FunctionId, compiler_options::PanicMode, soul_names::PrimitiveTypes, span::Span};
 
 use crate::{
     err,
     fault::{CodegenErrorKind, CodegenResult},
     function::FunctionCodegen,
     llvm_err,
-    types::{expect_int, platform_int_type},
+    types::{expect_float, expect_int, platform_int_type},
 };
 
 impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
@@ -271,13 +271,23 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             .get(id)
             .ok_or_else(|| err(CodegenErrorKind::CallNeverDeclared { id }))?;
 
-        if arguments.len() > param_types.len() {
+        // A genuine C variadic extern (`is_variadic`) is the only callee
+        // allowed extra trailing arguments beyond its declared fixed
+        // parameters — those trailing operands are `varargs.[...]`'s
+        // flattened elements (see `mir_parser`'s call lowering), each
+        // appended as its own LLVM call operand per the C variadic ABI
+        // (never packed into a collection).
+        let is_variadic_extern = self.externs.get(id).is_some_and(|e| e.is_variadic);
+        if arguments.len() > param_types.len() && !is_variadic_extern {
             return Err(err(CodegenErrorKind::CallArgumentCountMismatch { id }));
         }
 
         let mut args = Vec::with_capacity(arguments.len());
         for (arg, param_ty) in arguments.iter().zip(param_types.iter()) {
             args.push(self.codegen_operand(arg, *param_ty)?.into());
+        }
+        for arg in arguments.iter().skip(param_types.len()) {
+            args.push(self.codegen_variadic_argument(arg)?.into());
         }
 
         let call = self
@@ -312,6 +322,70 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         }
 
         Ok(())
+    }
+
+    /// A trailing `varargs.[...]` element, appended straight onto the LLVM
+    /// `call` as its own operand (never a pointer to a collection — see the
+    /// module-level design note in `mir_parser`'s call lowering). Applies C's
+    /// default argument promotions, which are never user-visible and never
+    /// need an explicit cast at the source level: `f32` -> `f64`, and any
+    /// integer type narrower than the C ABI's `int` width -> that `int`
+    /// width (sign/zero-extended per the source type's own signedness).
+    /// Every other type (already-`int`-or-wider integers, `bool`, `cstr`, an
+    /// untyped literal already defaulted to `i32`/`f64` by
+    /// `variadic_operand_soul_type`) is emitted as-is.
+    fn codegen_variadic_argument(&mut self, operand: &Operand) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let natural = self.variadic_operand_soul_type(operand);
+
+        if matches!(natural, SoulType::Primitive(PrimitiveTypes::Float32)) {
+            let f32_ty = self.ctx.context.f32_type().into();
+            let value = expect_float(self.codegen_operand(operand, f32_ty)?)?;
+            let f64_ty = self.ctx.context.f64_type();
+            return Ok(self
+                .builder
+                .build_float_ext(value, f64_ty, "vararg_f64_promote")
+                .map_err(llvm_err)?
+                .into());
+        }
+
+        let natural_llvm_ty = self.ctx.llvm_type(None, &natural, None)?;
+        if let BasicTypeEnum::IntType(int_ty) = natural_llvm_ty {
+            let c_int_bits = self.ctx.options.platform.c_int_bits;
+            let is_bool = matches!(natural, SoulType::Primitive(PrimitiveTypes::Boolean));
+            if !is_bool && int_ty.get_bit_width() < c_int_bits {
+                let target = platform_int_type(self.ctx.context, c_int_bits);
+                return self.codegen_cast(operand, target.into());
+            }
+        }
+
+        self.codegen_operand(operand, natural_llvm_ty)
+    }
+
+    /// The Soul type a `varargs.[...]` element operand is naturally typed
+    /// as, before any C default-argument promotion: a place-backed operand
+    /// keeps its declared local type; a bare constant defaults per rule 6
+    /// (an untyped int literal -> `i32`, an untyped float literal -> `f64`)
+    /// since it has no declared/expected type of its own to coerce against
+    /// inside `varargs.[...]` (unlike an ordinary typed parameter slot).
+    fn variadic_operand_soul_type(&self, operand: &Operand) -> SoulType {
+        match operand {
+            Operand::Copy(place) | Operand::Move(place) if place.projection.is_empty() => self
+                .ctx
+                .resolve_type(self.function.locals[place.local].ty)
+                .clone(),
+            Operand::Constant(ConstValue::Uint(_)) => {
+                SoulType::Primitive(PrimitiveTypes::Uint32)
+            }
+            Operand::Constant(ConstValue::Float(_)) => {
+                SoulType::Primitive(PrimitiveTypes::Float64)
+            }
+            Operand::Constant(ConstValue::Bool(_)) => SoulType::Primitive(PrimitiveTypes::Boolean),
+            Operand::Constant(ConstValue::Cstr(_)) => SoulType::Primitive(PrimitiveTypes::CStr),
+            Operand::Constant(ConstValue::Str(_)) => SoulType::String,
+            // `Int`, `Char`, and any other/place-with-projection shape this
+            // first slice doesn't otherwise special-case.
+            _ => SoulType::Primitive(PrimitiveTypes::Int32),
+        }
     }
 
     fn codegen_switchint(

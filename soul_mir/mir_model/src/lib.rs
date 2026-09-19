@@ -58,10 +58,17 @@ impl MirProgram {
 #[derive(Debug, serde::Serialize)]
 pub struct ExternFunction {
     pub id: FunctionId,
+    /// Only the FIXED (non-variadic) parameters — the `varargs` marker
+    /// parameter, if the AST signature had one, is not a real typed
+    /// parameter and is excluded here.
     pub parameters: Arr<Type>,
     /// `None` for a `none`(void)-returning extern function — same convention
     /// as `Function::return_local`.
     pub return_type: Option<Type>,
+    /// True when the AST signature's last parameter was the `varargs`
+    /// marker — this extern is a genuine C variadic function and its LLVM
+    /// `FunctionType` must be declared with `is_var_arg = true`.
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
