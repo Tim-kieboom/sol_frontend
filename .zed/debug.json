@@ -1,54 +1,54 @@
 [
   {
-    "label": "Debug soul_tester",
+    "label": "Debug sol_tester",
     "adapter": "CodeLLDB",
     "request": "launch",
-    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/debug/soul_tester.exe",
+    "program": "${ZED_WORKTREE_ROOT}/sol_tester/target/debug/sol_tester.exe",
     "cwd": "${ZED_WORKTREE_ROOT}",
     "args": [],
     "build": {
-      "label": "Build soul_tester",
+      "label": "Build sol_tester",
       "command": "cargo",
-      "args": ["build", "-p", "soul_tester"]
+      "args": ["build", "-p", "sol_tester"]
     }
   },
   {
-    "label": "Debug soul_tester backtrace",
+    "label": "Debug sol_tester backtrace",
     "adapter": "CodeLLDB",
     "request": "launch",
-    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/debug/soul_tester.exe",
+    "program": "${ZED_WORKTREE_ROOT}/sol_tester/target/debug/sol_tester.exe",
     "cwd": "${ZED_WORKTREE_ROOT}",
     "args": [],
     "build": {
-      "label": "Build soul_tester backtrace",
+      "label": "Build sol_tester backtrace",
       "command": "cargo",
-      "args": ["build", "-p", "soul_tester", "--features", "error_backtrace"]
+      "args": ["build", "-p", "sol_tester", "--features", "error_backtrace"]
     }
   },
   {
-    "label": "Debug soul_tester release",
+    "label": "Debug sol_tester release",
     "adapter": "CodeLLDB",
     "request": "launch",
-    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/release/soul_tester.exe",
+    "program": "${ZED_WORKTREE_ROOT}/sol_tester/target/release/sol_tester.exe",
     "cwd": "${ZED_WORKTREE_ROOT}",
     "args": [],
     "build": {
-      "label": "Build soul_tester release",
+      "label": "Build sol_tester release",
       "command": "cargo",
-      "args": ["build", "-p", "soul_tester", "--release"]
+      "args": ["build", "-p", "sol_tester", "--release"]
     }
   },
   {
-    "label": "Debug soul_tester release backtrace",
+    "label": "Debug sol_tester release backtrace",
     "adapter": "CodeLLDB",
     "request": "launch",
-    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/release/soul_tester.exe",
+    "program": "${ZED_WORKTREE_ROOT}/sol_tester/target/release/sol_tester.exe",
     "cwd": "${ZED_WORKTREE_ROOT}",
     "args": [],
     "build": {
-      "label": "Build soul_tester release backtrace",
+      "label": "Build sol_tester release backtrace",
       "command": "cargo",
-      "args": ["build", "-p", "soul_tester", "--release", "--features", "error_backtrace"]
+      "args": ["build", "-p", "sol_tester", "--release", "--features", "error_backtrace"]
     }
   }
 ]

@@ -1,0 +1,7 @@
+// expect: 3221226505
+// expect_stdout: panic: assertion failed
+// expect_stdout: 15_assert_panic_message.sol:5:
+main(): i32 {
+    assert(1 == 2)
+    return 0
+}

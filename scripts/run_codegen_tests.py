@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Codegen exe-correctness test runner.
 
-Builds `soul_tester` once up front, then for each `.soul` file under
-`soul_tester/soul/src/codegen_tests/`:
-  1. point soul_tester's config.json at it and run the already-built
-     soul_tester exe directly (soul -> MIR -> LLVM IR, written to
-     soul_tester/soul/output/codegen/module.ll)
+Builds `sol_tester` once up front, then for each `.sol` file under
+`sol_tester/sol/src/codegen_tests/`:
+  1. point sol_tester's config.json at it and run the already-built
+     sol_tester exe directly (sol -> MIR -> LLVM IR, written to
+     sol_tester/sol/output/codegen/module.ll)
   2. invoke clang (LLVM 16, matching mir_codegen's target) to compile+link
      module.ll into a native exe
   3. run the exe and compare its process exit code against the `// expect: N`
@@ -19,14 +19,14 @@ real produced machine code.
 Runs the built exe directly rather than `cargo run` per test: profiling
 showed `cargo run` cost ~2.2s per invocation (vs a ~0.24s baseline with no
 source change) because rewriting config.json used to force a recompile —
-`config.json` is now read at runtime (see `soul_tester::config::config_path`)
+`config.json` is now read at runtime (see `sol_tester::config::config_path`)
 specifically so this script can build once and invoke the exe 20+ times
 without paying that cost each time.
 
-Pass `--panic-mode abort|exit` to forward that flag to every `soul_tester.exe`
-invocation (see `soul_utils::compiler_options::PanicMode`) — e.g. to confirm
+Pass `--panic-mode abort|exit` to forward that flag to every `sol_tester.exe`
+invocation (see `sol_utils::compiler_options::PanicMode`) — e.g. to confirm
 the exit-code assertions (`// expect: N`) hold under both panic modes, not
-just soul_tester's own default.
+just sol_tester's own default.
 """
 
 import argparse
@@ -37,38 +37,38 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOUL_TESTER_DIR = REPO_ROOT / "soul_tester"
-CONFIG_PATH = SOUL_TESTER_DIR / "config.json"
-TESTS_DIR = SOUL_TESTER_DIR / "soul" / "src" / "codegen_tests"
-LL_PATH = SOUL_TESTER_DIR / "soul" / "output" / "codegen" / "module.ll"
-SOUL_TESTER_EXE = REPO_ROOT / "target" / "debug" / "soul_tester.exe"
+SOL_TESTER_DIR = REPO_ROOT / "sol_tester"
+CONFIG_PATH = SOL_TESTER_DIR / "config.json"
+TESTS_DIR = SOL_TESTER_DIR / "sol" / "src" / "codegen_tests"
+LL_PATH = SOL_TESTER_DIR / "sol" / "output" / "codegen" / "module.ll"
+SOL_TESTER_EXE = REPO_ROOT / "target" / "debug" / "sol_tester.exe"
 CLANG = Path(r"C:\llvm-16\bin\clang.exe")
 
 EXPECT_RE = re.compile(r"//\s*expect:\s*(\d+)")
 EXPECT_STDOUT_RE = re.compile(r"//\s*expect_stdout:\s*(.+)")
 
 
-def _leading_comment_lines(soul_file: Path) -> list[str]:
+def _leading_comment_lines(sol_file: Path) -> list[str]:
     lines = []
-    for line in soul_file.read_text(encoding="utf-8").splitlines():
+    for line in sol_file.read_text(encoding="utf-8").splitlines():
         if not line.strip().startswith("//"):
             break
         lines.append(line)
     return lines
 
 
-def read_expected(soul_file: Path) -> int:
-    for line in _leading_comment_lines(soul_file):
+def read_expected(sol_file: Path) -> int:
+    for line in _leading_comment_lines(sol_file):
         match = EXPECT_RE.search(line)
         if match:
             return int(match.group(1))
-    raise ValueError(f"{soul_file}: missing a leading '// expect: N' comment")
+    raise ValueError(f"{sol_file}: missing a leading '// expect: N' comment")
 
 
-def read_expected_stdout(soul_file: Path) -> list[str]:
+def read_expected_stdout(sol_file: Path) -> list[str]:
     return [
         match.group(1).strip()
-        for line in _leading_comment_lines(soul_file)
+        for line in _leading_comment_lines(sol_file)
         if (match := EXPECT_STDOUT_RE.search(line))
     ]
 
@@ -79,26 +79,26 @@ def set_main_path(relative_path: str) -> None:
     CONFIG_PATH.write_text(json.dumps(config, indent=4) + "\n", encoding="utf-8")
 
 
-def build_soul_tester() -> None:
-    """Builds soul_tester once, up front — an explicit, hard-stop step
+def build_sol_tester() -> None:
+    """Builds sol_tester once, up front — an explicit, hard-stop step
     rather than letting a compile failure surface 20+ times as a confusing
     per-test error once the loop starts invoking the (nonexistent/stale)
     exe directly."""
     result = subprocess.run(
-        ["cargo", "build", "-p", "soul_tester"],
+        ["cargo", "build", "-p", "sol_tester"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        print("soul_tester failed to build:", file=sys.stderr)
+        print("sol_tester failed to build:", file=sys.stderr)
         print(result.stdout, file=sys.stderr)
         print(result.stderr, file=sys.stderr)
         raise SystemExit(1)
 
 
-def run_soul_tester(panic_mode: str | None) -> None:
-    args = [str(SOUL_TESTER_EXE)]
+def run_sol_tester(panic_mode: str | None) -> None:
+    args = [str(SOL_TESTER_EXE)]
     if panic_mode is not None:
         args.append(f"--panic-mode={panic_mode}")
     result = subprocess.run(
@@ -109,7 +109,7 @@ def run_soul_tester(panic_mode: str | None) -> None:
     )
     if result.returncode != 0 or "success" not in result.stdout:
         raise RuntimeError(
-            f"soul_tester did not report success:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"sol_tester did not report success:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     if "codegen skipped" in result.stderr:
         raise RuntimeError(f"codegen was skipped:\n{result.stderr}")
@@ -136,8 +136,8 @@ def parse_args() -> argparse.Namespace:
         "--panic-mode",
         choices=["abort", "exit"],
         default=None,
-        help="forwarded to soul_tester.exe's own --panic-mode flag for every "
-        "test run; omit to use soul_tester's own default (exit)",
+        help="forwarded to sol_tester.exe's own --panic-mode flag for every "
+        "test run; omit to use sol_tester's own default (exit)",
     )
     return parser.parse_args()
 
@@ -145,27 +145,27 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    test_files = sorted(TESTS_DIR.glob("*.soul"))
+    test_files = sorted(TESTS_DIR.glob("*.sol"))
     if not test_files:
         print(f"no test files found under {TESTS_DIR}", file=sys.stderr)
         return 1
 
-    build_soul_tester()
+    build_sol_tester()
 
     original_config = CONFIG_PATH.read_text(encoding="utf-8")
     failures = []
     try:
-        for soul_file in test_files:
-            name = soul_file.name
-            expected = read_expected(soul_file)
+        for sol_file in test_files:
+            name = sol_file.name
+            expected = read_expected(sol_file)
             relative_path = f"codegen_tests/{name}"
 
-            expected_stdout = read_expected_stdout(soul_file)
+            expected_stdout = read_expected_stdout(sol_file)
 
             try:
                 set_main_path(relative_path)
-                run_soul_tester(args.panic_mode)
-                exe_path = soul_file.with_suffix(".exe")
+                run_sol_tester(args.panic_mode)
+                exe_path = sol_file.with_suffix(".exe")
                 actual, stdout = build_and_run_exe(exe_path)
                 exe_path.unlink(missing_ok=True)
 

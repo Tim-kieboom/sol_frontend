@@ -1,0 +1,497 @@
+use ast_model::{self as ast, SolType, TypeId, declare_store::DeclareStore};
+use mir_model as mir;
+use sol_utils::{
+    TypeModifier,
+    collections::vec_map::VecMap,
+    compiler_options::CompilerOptions,
+    fault::Fault,
+    ids::IdGenerator,
+    span::{ModuleId, Span},
+};
+
+use crate::fault::{MirErrorKind, MirResult};
+mod control_flow;
+mod operators;
+mod place;
+mod rvalue;
+mod statement;
+mod r#type;
+
+/// The `(header, exit)` block pair of an enclosing loop, so a nested `break`/
+/// `continue` can find its target regardless of how deep inside `if`s it is.
+/// Sol has no labeled break/continue, so this is a plain stack: `break`/
+/// `continue` always target the innermost entry.
+struct LoopTargets {
+    header: mir::BlockId,
+    exit: mir::BlockId,
+    /// `self.scopes.len()` at the moment this loop's own body frame was
+    /// pushed — i.e. the index that frame occupies. `break`/`continue`
+    /// unwind `scopes[loop_frame_index..]` (the loop's own frame plus
+    /// whatever `if`-branch frames are nested inside it at the break/
+    /// continue site), never anything below that — locals declared outside
+    /// the loop stay alive, `break`/`continue` only exit the loop itself,
+    /// not the enclosing function. Recorded per-loop (not just read off
+    /// `self.scopes.len()` fresh each time) so a `break`/`continue` inside a
+    /// nested loop unwinds to *that* loop's own boundary, not an outer one.
+    loop_frame_index: usize,
+}
+
+pub struct FunctionLowerer<'a> {
+    store: &'a ast::AstStore,
+    declares: &'a mut DeclareStore,
+    module: Option<ModuleId>,
+    local_alloc: IdGenerator<mir::LocalId>,
+    node_to_local: VecMap<ast::NodeId, mir::LocalId>,
+    locals: VecMap<mir::LocalId, mir::LocalDecl>,
+
+    block_alloc: IdGenerator<mir::BlockId>,
+    blocks: VecMap<mir::BlockId, mir::BasicBlock>,
+
+    current: Option<mir::BlockId>,
+    statements: Vec<mir::Statement>,
+    loops: Vec<LoopTargets>,
+    /// A stack of lexical scope frames, each holding the locals whose own
+    /// `Drop` this function is responsible for — every explicit,
+    /// user-written `x := ..`/`x: T = ..` body declaration (via
+    /// `lower_variable`), *plus* an owning (move-only, `is_auto_copy ==
+    /// false`) parameter or by-value receiver, pushed onto frame `0`
+    /// directly in `lower` right after it's allocated: a parameter this
+    /// function owns is exactly as much its responsibility to drop as a
+    /// body local, once nothing later moves it out (a return, another
+    /// consuming call, ...) — otherwise an owning `*T` handed in as a plain
+    /// "use it, don't return it" argument would never get freed at all (see
+    /// M2's TODO.md entry). An `AutoCopy` parameter/receiver (a primitive, a
+    /// `&T`/`&mut T`) and the return local are still never tracked —
+    /// mirrors `docs/mir-design.md`'s own worked example (`add(a, b)`'s
+    /// `Drop(_3)` covers only `c`, never `_0`/`_1`, both `int`), and every
+    /// compiler-internal temp (checked-overflow tuples, bounds-check
+    /// bookkeeping, ref/deref temps, ...) stays excluded too. Frame `0` is
+    /// the function's own top level, always present; `lower_if` pushes one
+    /// fresh frame per branch body it lowers (see `seal_scope_exit`) and
+    /// pops it again once that branch is done, whether it fell through or
+    /// returned early — so at any point during lowering, `scopes` holds
+    /// exactly the frames for every scope currently open, innermost last.
+    /// `lower_for` pushes one frame per loop body too, popped the same way
+    /// (see `seal_scope_exit`, used for a loop body's normal per-iteration
+    /// fallthrough back to its header, exactly like an `if`-branch falling
+    /// through to its join).
+    scopes: Vec<Vec<mir::LocalId>>,
+
+    options: &'a CompilerOptions,
+}
+impl<'a> FunctionLowerer<'a> {
+    pub(crate) fn new(
+        store: &'a ast::AstStore,
+        declares: &'a mut DeclareStore,
+        options: &'a CompilerOptions,
+    ) -> Self {
+        Self {
+            store,
+            options,
+            declares,
+            module: None,
+            current: None,
+            loops: vec![],
+            statements: vec![],
+            scopes: vec![Vec::new()],
+            locals: VecMap::new(),
+            blocks: VecMap::new(),
+            node_to_local: VecMap::new(),
+            local_alloc: IdGenerator::new(),
+            block_alloc: IdGenerator::new(),
+        }
+    }
+
+    pub(crate) fn lower(&mut self, function: &ast::Function) -> MirResult<mir::Function> {
+        self.reset();
+
+        let signature = &function.signature.value;
+        let fn_span = function.signature.span;
+        self.module = self
+            .declares
+            .get_function(signature.id)
+            .map(|(_, module)| *module);
+
+        // `this` — when present — is always argument 0: `lower_call` prepends
+        // the receiver operand ahead of the explicit call arguments, so the
+        // callee's own locals need it first too (`locals[0..arg_count]` are
+        // parameters *by position*, see `mir::Function::arg_count`). Not a
+        // real `Parameter` in the AST (`this` is a synthetic scope binding —
+        // see `collect_function`), so it's looked up via
+        // `get_receiver_binding` instead of `signature.parameters`.
+        // `&this`/`&mut this` receive an actual reference — the local itself
+        // is `Reference(method_type)`, so `this.field` auto-derefs through it
+        // via `auto_deref`, same as any other reference-typed place (see
+        // `resolve_field_place`/`resolve_index_place`). `this` (by value)
+        // keeps the bare `method_type` local, matching `lower_call`'s
+        // corresponding by-value-copy branch.
+        let expects_receiver = !matches!(
+            signature.function_kind,
+            ast::FunctionThisKind::Static
+                | ast::FunctionThisKind::Ctor
+                | ast::FunctionThisKind::ArrayCtor
+        );
+        let mut has_receiver_local = false;
+        if expects_receiver
+            && let Some(this_node) = self.declares.get_receiver_binding(signature.id)
+        {
+            let span = signature.name.span();
+            let method_type = signature.method_type;
+            self.require_lowerable(method_type, span)?;
+            let receiver_ty = match signature.function_kind {
+                ast::FunctionThisKind::MutRef => {
+                    self.declares
+                        .intern_type(SolType::Reference(ast::ReferenceType {
+                            inner: method_type,
+                            lifetime: None,
+                            mutable: sol_utils::Mutable::Mut,
+                        }))
+                }
+                ast::FunctionThisKind::ConstRef => {
+                    self.declares
+                        .intern_type(SolType::Reference(ast::ReferenceType {
+                            inner: method_type,
+                            lifetime: None,
+                            mutable: sol_utils::Mutable::Immut,
+                        }))
+                }
+                _ => method_type,
+            };
+            let local = self.alloc_local(receiver_ty, TypeModifier::Mut, span);
+            self.node_to_local.insert(this_node, local);
+            has_receiver_local = true;
+            // A by-value `this` (`FunctionThisKind::Consume`) owns
+            // `method_type` exactly as much as an owning parameter does —
+            // tracked the same way, so it gets dropped (freed, for a `*T`)
+            // at this function's own end unless moved out first. `&this`/
+            // `&mut this` are `Reference`s, always `AutoCopy`, so this is a
+            // no-op for those.
+            if !self.is_auto_copy(receiver_ty, span)? {
+                self.scopes[0].push(local);
+            }
+        }
+
+        for parameter in &signature.parameters {
+            let span = parameter.name.span();
+            let ty = parameter.ty;
+            self.require_lowerable(ty, span)?;
+            let modifier = parameter.mutable.to_type_modifier();
+            let local = self.alloc_local(ty, modifier, span);
+            self.node_to_local.insert(parameter.id, local);
+            // See `scopes`'s own docs: an owning parameter is this
+            // function's responsibility to drop, exactly like a body local
+            // — otherwise a `*T` argument that's used but never returned or
+            // moved elsewhere would never get freed at all.
+            if !self.is_auto_copy(ty, span)? {
+                self.scopes[0].push(local);
+            }
+        }
+
+        let arg_count = signature.parameters.len() + has_receiver_local as usize;
+        // A `none`(void)-returning function has nothing to hold a return value
+        // in, so it gets no `return_local` at all — see `Function::return_local`.
+        // Checked via the comptime `TypeId::NONE` first, so the common non-none
+        // case still resolves the actual `SolType` exactly once, and the
+        // none case skips that lookup entirely.
+        let is_none_return = signature.return_type == TypeId::NONE;
+        let return_local = if is_none_return {
+            None
+        } else {
+            let return_type = signature.return_type;
+            self.require_lowerable(return_type, signature.name.span())?;
+            Some(self.alloc_local(return_type, TypeModifier::Mut, signature.name.span()))
+        };
+
+        let entry = self.new_block();
+        self.current = Some(entry);
+
+        let statement_ids = self.store.blocks[function.block].statements.clone();
+        // The function body itself is the root of tail-position recursion —
+        // its own last (non-`;`-terminated) statement is an implicit
+        // `return`, same as an `=>` single-expression body (which the parser
+        // desugars into a one-statement block with no trailing `;`).
+        const IN_TAIL_POSITION: bool = true;
+        self.lower_body(return_local, &statement_ids, IN_TAIL_POSITION)?;
+
+        if self.current.is_some() {
+            if is_none_return {
+                // Falling off the end of a `none`-returning function is valid
+                // (an implicit `return`) — unlike every other return type,
+                // where it's `MissingReturnStatement`.
+                self.seal_return();
+            } else {
+                return Err(Fault::error_with_kind(
+                    MirErrorKind::MissingReturnStatement,
+                    Some(fn_span),
+                ));
+            }
+        }
+
+        Ok(mir::Function {
+            id: signature.id,
+            locals: std::mem::take(&mut self.locals),
+            blocks: std::mem::take(&mut self.blocks),
+            arg_count,
+            return_local,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.loops.clear();
+        self.current = None;
+        self.module = None;
+        self.blocks.clear();
+        self.locals.clear();
+        self.statements.clear();
+        self.node_to_local.clear();
+        self.local_alloc = IdGenerator::new();
+        self.block_alloc = IdGenerator::new();
+        self.scopes.clear();
+        self.scopes.push(Vec::new());
+    }
+
+    /// Pushes an `Assign`, followed by `SetDropFlag(place.local, true)` when
+    /// `place.local` is a tracked `scopes` entry (any currently-open frame,
+    /// not just the innermost) *and* this is a whole-place write — i.e. this
+    /// write (re)initializes a user-declared variable, or reassigns an
+    /// owning parameter/receiver (both are pushed onto frame `0` directly in
+    /// `lower`, see `scopes`'s own docs), per `docs/mir-design.md`'s
+    /// move/drop rules ("every place written via Assign emits
+    /// `SetDropFlag(place.local, true)`" — read as "every *whole-place*
+    /// write," the same reading `moved`'s own reinit-clearing uses: a
+    /// projected write like `x.field = ..` doesn't reinitialize the rest of
+    /// `x`, so it shouldn't toggle `x`'s own drop flag either). A write into
+    /// anything else (an `AutoCopy` parameter/receiver, the return local, or
+    /// a compiler-internal temp — none of which are ever added to `scopes`)
+    /// gets no drop-flag bookkeeping, mirroring `docs/mir-design.md`'s own
+    /// worked example (`_2 = Use(Copy(_3))`'s write into the *return* local
+    /// gets no `SetDropFlag` either).
+    pub(super) fn push_assign(&mut self, place: mir::Place, rvalue: mir::Rvalue) {
+        let local = place.local;
+        let is_whole_place = place.projection.is_empty();
+        self.statements.push(mir::Statement::Assign(place, rvalue));
+        if is_whole_place && self.scopes.iter().any(|frame| frame.contains(&local)) {
+            self.statements
+                .push(mir::Statement::SetDropFlag(local, true));
+        }
+    }
+
+    /// Seals the current block on a `return` — reached from any depth of
+    /// nested `if`/`else`/`for` scopes, or the true end of a straight-line
+    /// function. Unwinds the *entire* `scopes` stack (`unwind_from(0)`):
+    /// every tracked local in every currently-open frame gets a `Drop`
+    /// terminator, innermost frame first and reverse declaration order
+    /// within each frame, chained through fresh blocks ahead of the final
+    /// `Return`. A `for` body's own frame is walked exactly like an
+    /// `if`-branch's — a `return` diverges straight out of the function, so
+    /// there's no per-iteration re-drop/rebuild concern the way `break`/
+    /// `continue` have (see `seal_loop_exit`). Deliberately doesn't touch
+    /// `self.scopes` itself (no popping) — `scopes` is one stack shared
+    /// across the whole function, and a `return` reached from inside one
+    /// branch must leave it exactly as-is for whichever sibling branch or
+    /// enclosing code lowers next (`lower_if`/`lower_for` are what actually
+    /// pop the frame each one pushed, once its own body is fully done — see
+    /// `seal_scope_exit`).
+    pub(super) fn seal_return(&mut self) {
+        let locals = self.unwind_from(0);
+        self.drop_chain(locals);
+        self.seal(mir::Terminator::Return, None);
+    }
+
+    /// Pops the innermost `scopes` frame and seals the current block with a
+    /// `Drop` chain over just that frame's own locals (reverse declaration
+    /// order), finally sealing with `Terminator::Goto(target)` — the normal,
+    /// non-early-exit way an `if`/`else` branch or a `for` body's own scope
+    /// ends: falling through to the join block (an `if`/`else`) or looping
+    /// back to the header for the next iteration (a `for` body) — same
+    /// shape either way, since a loop's own back-edge is exactly "this
+    /// scope's locals go out of scope, then control returns to wherever
+    /// comes next."
+    pub(super) fn seal_scope_exit(&mut self, target: mir::BlockId) {
+        let frame = self.scopes.pop().expect(
+            "seal_scope_exit is only ever called for a frame lower_if/lower_for itself just pushed",
+        );
+        self.drop_chain(frame);
+        // `next: None`, not `Some(target)` — the caller (`lower_if`/
+        // `lower_for`) doesn't necessarily want `target` current yet (e.g.
+        // `lower_if` still has the *other* branch left to lower, with its
+        // own `self.current` set independently) and sets `self.current`
+        // itself, once, after all its own bookkeeping is done. Setting it
+        // here too could make a caller's later step silently continue
+        // inside `target` instead of its own intended block.
+        self.seal(mir::Terminator::Goto(target), None);
+    }
+
+    /// Seals the current block on a `break`/`continue`: unwinds
+    /// `scopes[from_index..]` (the loop's own frame, plus whatever
+    /// `if`-branch frames are nested inside it at the break/continue site —
+    /// see `LoopTargets::loop_frame_index`) and seals with
+    /// `Terminator::Goto(target)` (the loop's `exit` for `break`, its
+    /// `header` for `continue` — the only difference between the two).
+    /// Unlike `seal_scope_exit`, never pops `scopes` itself, for the same
+    /// reason `seal_return` doesn't: a `break`/`continue` reached from
+    /// inside a nested `if`-branch must leave the shared stack intact for
+    /// whatever sibling branch lowers next.
+    pub(super) fn seal_loop_exit(&mut self, from_index: usize, target: mir::BlockId) {
+        let locals = self.unwind_from(from_index);
+        self.drop_chain(locals);
+        self.seal(mir::Terminator::Goto(target), None);
+    }
+
+    /// Every tracked local in `scopes[from_index..]`, flattened in forward
+    /// declaration order (frame `from_index`'s locals, then the next
+    /// frame's, ...) — `drop_chain` is what turns this into the actual drop
+    /// order (innermost frame first, reverse declaration order within each
+    /// frame) by reversing the whole thing once: reversing
+    /// `[f0_a, f0_b, f1_c, f1_d]` gives `[f1_d, f1_c, f0_b, f0_a]`, exactly
+    /// frame `f1` (innermost) before `f0`, each frame's own locals in
+    /// reverse-declaration order.
+    fn unwind_from(&self, from_index: usize) -> Vec<mir::LocalId> {
+        self.scopes[from_index..]
+            .iter()
+            .flatten()
+            .copied()
+            .collect()
+    }
+
+    /// Chains one `Drop` terminator per local in `locals`, *in reverse*,
+    /// each through a fresh block — shared by `seal_return`/`seal_loop_exit`
+    /// (an `unwind_from`-flattened multi-frame unwind ending in
+    /// `Return`/`Goto`) and `seal_scope_exit` (one frame's own locals, in
+    /// declaration order — reversing here gives the same "last-declared-
+    /// first" result). Leaves `self.current` set to the last fresh block the
+    /// chain opened (or unchanged if `locals` is empty) — it's the caller's
+    /// job to `seal` that final block with whatever terminator actually
+    /// ends the scope exit.
+    ///
+    /// Emits an unconditional `Drop` for *every* local here, with no
+    /// move-awareness at all — deliberately coarse, mirroring how rustc's
+    /// own MIR building over-approximates drops too. A local this function
+    /// already knows was just moved (its own `moved` HashSet used to skip
+    /// emitting a `Drop` here entirely) is no longer special-cased at
+    /// lowering time: that decision needs the *whole function's* real
+    /// control-flow shape to get right on every path (a single lowering-order
+    /// flag couldn't tell an actual moved-on-every-path local from a
+    /// completely unrelated sibling `if`-branch that never touched it at
+    /// all — see M2's TODO.md entry on the leak this used to under-drop
+    /// from), so it's `move_check::elaborate_drops` — a real dataflow pass
+    /// over the finished MIR, run right after lowering — that turns some of
+    /// these `Drop`s into a no-op `Goto` instead.
+    fn drop_chain(&mut self, locals: Vec<mir::LocalId>) {
+        for local in locals.into_iter().rev() {
+            let next = self.new_block();
+            self.seal(
+                mir::Terminator::Drop {
+                    place: mir::Place::local(local),
+                    target: next,
+                },
+                Some(next),
+            );
+        }
+    }
+
+    /// Pretty-prints `ty` for a fault message — `SolType`'s own `Debug` is
+    /// the plain derived one (its internal fields are bare `TypeId`s), so
+    /// every fault-message site that used to do `format!("{ty:?}")` goes
+    /// through here instead.
+    fn print_ty(&self, ty: &SolType) -> String {
+        ast::print_type(ty, self.declares).to_string()
+    }
+
+    fn alloc_local(&mut self, ty: mir::Type, mutability: TypeModifier, span: Span) -> mir::LocalId {
+        let id = self.local_alloc.alloc();
+        self.locals.insert(
+            id,
+            mir::LocalDecl {
+                ty,
+                mutability,
+                span,
+            },
+        );
+        id
+    }
+
+    /// Faults with a diagnostic when `ty` isn't one MIR lowering can turn
+    /// into a local — see `DeclareStore::is_lowerable` for the actual accept
+    /// list (shared with `mir_codegen`, which needs the same classification).
+    fn require_lowerable(&self, ty: mir::Type, span: Span) -> MirResult<()> {
+        let resolved = self
+            .declares
+            .get_type(ty)
+            .expect("mir::Type is always an interned TypeId");
+        if self.declares.is_lowerable(resolved, self.module) {
+            return Ok(());
+        }
+        Err(Fault::error_with_kind(
+            MirErrorKind::NonPrimitiveType {
+                ty: self.print_ty(resolved).into(),
+            },
+            Some(span),
+        ))
+    }
+
+    /// Classifies `ty` as `AutoCopy` (`Operand::Copy` is safe) or move-only
+    /// (`Operand::Move` needed — see `docs/mir-design.md`'s move/drop
+    /// section), for `Move`/`MarkMoved` lowering. Faults first via
+    /// `require_lowerable` — see `DeclareStore::is_auto_copy` for the actual
+    /// classification, shared with `mir_codegen`.
+    pub(crate) fn is_auto_copy(&self, ty: mir::Type, span: Span) -> MirResult<bool> {
+        self.require_lowerable(ty, span)?;
+        let resolved = self
+            .declares
+            .get_type(ty)
+            .expect("mir::Type is always an interned TypeId");
+        Ok(self.declares.is_auto_copy(resolved))
+    }
+
+    fn new_block(&mut self) -> mir::BlockId {
+        self.block_alloc.alloc()
+    }
+
+    fn is_terminated(&self) -> bool {
+        self.current.is_none()
+    }
+
+    fn seal(&mut self, terminator: mir::Terminator, next: Option<mir::BlockId>) {
+        if let Some(current) = self.current.take() {
+            let statements = std::mem::take(&mut self.statements).into();
+            self.blocks.insert(
+                current,
+                mir::BasicBlock {
+                    terminator,
+                    statements,
+                },
+            );
+        }
+        self.current = next;
+    }
+
+    fn resolve_local(&self, var: &ast::VariableExpression, span: Span) -> MirResult<mir::LocalId> {
+        let Some(resolved) = self.declares.get_variable_resolve(var.id) else {
+            return Err(Fault::error_with_kind(
+                MirErrorKind::VariableHasNoResolvedBinding,
+                Some(span),
+            ));
+        };
+
+        let Some(local) = self.node_to_local.get(resolved) else {
+            return Err(Fault::error_with_kind(
+                MirErrorKind::VariableNotBoundToLocal,
+                Some(span),
+            ));
+        };
+
+        Ok(*local)
+    }
+
+    fn lower_bool_condition(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Operand> {
+        if !self.expression_is_bool(expr_id) {
+            let span = self.store.expressions[expr_id].span;
+            return Err(Fault::error_with_kind(
+                MirErrorKind::UnsupportedConditionExpression,
+                Some(span),
+            ));
+        }
+        self.lower_operand(expr_id)
+    }
+}

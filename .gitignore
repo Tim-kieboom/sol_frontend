@@ -1,7 +1,8 @@
-# soul compiler outputs
+# sol compiler outputs
 *.VSCodeCounter
-*.soulc
+*.solc
 *.ll
 /docs
 Cargo.lock
 /target
+/sol_ast/ast_model/target

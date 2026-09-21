@@ -1,0 +1,755 @@
+use std::{fmt::Display, rc::Rc};
+
+use sol_utils::{
+    Ident, Mutable,
+    collections::array::Arr,
+    impl_sol_ids,
+    sol_names::PrimitiveTypes,
+    span::{Span, Spanned},
+};
+
+use crate::{
+    AstStore, BlockId, Literal, NodeId, SolType, TypeId, VarPattern,
+    declare_store::DeclareStore,
+    operators::{BinaryOperator, UnaryOperator, UnaryOperatorKind},
+};
+
+impl_sol_ids!(ExpressionId);
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Expression {
+    pub node: ExpressionKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ExpressionKind {
+    /// `undefined`
+    Undefined(NodeId),
+    /// `null`
+    Null(NodeId),
+    /// none as expression e.g., '()'.
+    None(NodeId),
+    /// A literal value (number, string, etc.).
+    Literal((NodeId, Literal)),
+    StringFormat(StringFormat),
+
+    /// Indexing into a collection, e.g., `arr[i]`.
+    Index(Index),
+    /// access field `object.field`
+    FieldAccess(FieldAccess),
+    /// A function call, e.g., `foo(x, y)`.
+    FunctionCall(FunctionCall),
+    /// a constructor/typeCast, e.g. `int.(1)`, `Struct.(1, 2, "foo")`
+    Constructor(Constructor),
+    /// An struct literal, e.g., `Struct{field: 1, field2: 2}`.
+    StructConstructor(StructConstructor),
+
+    /// Referring to a variable `var`.
+    Variable(VariableExpression),
+    /// An array, e.g., `[1, 2, 3]`, `[for 2 => 1]`.
+    Array(AnyArray),
+    /// An tuple, e.g., `.(1, "text")`
+    Tuple(Arr<ExpressionId>),
+    /// An namedTuple, e.g., `.{number: 1, text: "text"}`.
+    NamedTuple(Arr<(Ident, ExpressionId)>),
+
+    /// `i32.sizeof // returns 4`
+    Sizeof(ExpressionId),
+    /// `"text".copy // copys &str into str`
+    Copy(ExpressionId),
+    /// `expr.pass // returns is null or Err()`
+    Pass(ExpressionId),
+
+    /// `new(expr)`/`new mut(expr)` — heap-allocate and initialize a single
+    /// value, returns `*T`/`*mut T`.
+    New(ExpressionId, Mutable),
+    /// `new[1, 2, 3]`, `new[for N => init]` — heap-allocate an array, returns `[]T`.
+    NewArray(AnyArray),
+
+    /// A unary operation (negation, increment, etc.) `-1`.
+    Unary(Unary),
+    /// A binary operation (addition, multiplication, comparison, etc.) `1 + 2`.
+    Binary(Binary),
+
+    /// reference, e.g., `&x` or `&mut x`.
+    Ref(Ref),
+    /// A dereference, e.g., `*ptr`.
+    Deref(Deref),
+
+    /// An `if` expression `if true {Println("is true")} else {Println("is else")}`.
+    If(If),
+    /// A match expression `match x { 1 => "one", _ => "other" }`.
+    Match(Match),
+    /// A match-method expression: `expr.Variant{body}` or `expr.Variant{param => body}`.
+    /// Chained calls are flattened into multiple arms: `expr.V1{...}.V2{...}`.
+    MatchMethod(MatchMethod),
+    /// A loop `for true {Println("loop")}` or conditional loop `for true {Println("loop")}` or iterator `for el in [1, 2, 3] {Println(el)}`.
+    For(For),
+
+    /// a scope, e.g. `{}`
+    Block(BlockId),
+    /// `expr typeof Type.Variant` — type check a union value
+    /// When `binding` is `Some`, the variant value is extracted and stored in the bound variable.
+    /// `binding_id` is the NodeId of the bound variable (set by name resolver).
+    TypeOf(TypeOf),
+
+    /// A lambda expression: `params => body`.
+    Lambda(Lambda),
+
+    Break,
+    Continue,
+    Return(Option<ExpressionId>),
+}
+
+/// A lambda expression: `params => body`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Lambda {
+    pub id: NodeId,
+    pub body: BlockId,
+    /// The parameter patterns (one or more, from a tuple-like param list).
+    pub parameters: Arr<VarPattern>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StringFormat {
+    pub to_string: bool,
+    pub trailing: String,
+    pub parts: Arr<(String, ExpressionId)>,
+}
+
+/// `expr typeof Type.Variant` — type check a union value
+/// When `binding` is `Some`, the variant value is extracted and stored in the bound variable.
+/// `binding_id` is the NodeId of the bound variable (set by name resolver).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TypeOf {
+    pub value: ExpressionId,
+    pub kind: TypeofKind,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TypeofKind {
+    Null,
+    NotNull,
+    /// `expr.typeof` — runtime type of an expression.
+    Value,
+    Union {
+        type_name: Ident,
+        variant_name: Ident,
+    },
+}
+
+/// A match-method expression `expr.Variant{body}` or chained `expr.V1{...}.V2{...}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MatchMethod {
+    /// The scrutinee expression (left side of the dot).
+    pub scrutinee: ExpressionId,
+    /// The match arms, one per `.Variant{...}` segment.
+    pub arms: Vec<MatchMethodArm>,
+    pub optional_map: bool,
+}
+
+/// A single arm in a match-method expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MatchMethodArm {
+    /// The variant name (e.g., `Err` in `ok.Err{-1}`).
+    pub variant: MatchMethodVariant,
+    /// Optional binding parameter (e.g., `msg` in `err.Err{msg => body}`).
+    pub binding: Option<Binding>,
+    /// The body block.
+    pub body: BlockId,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MatchMethodVariant {
+    Null,
+    Else,
+    NotNull,
+    Name(Ident),
+}
+impl MatchMethodVariant {
+    pub fn as_str(&self) -> &str {
+        match self {
+            MatchMethodVariant::Null => "null",
+            MatchMethodVariant::Else => "else",
+            MatchMethodVariant::NotNull => "!null",
+            MatchMethodVariant::Name(name) => name.as_str(),
+        }
+    }
+}
+
+/// An struct literal, e.g., `Struct{field: 1, field2: 2}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructConstructor {
+    pub struct_type: TypeId,
+    pub values: Arr<(Ident, ExpressionId)>,
+    pub defaults: bool,
+}
+
+/// A `match` expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Match {
+    /// The expression to match on.
+    pub scrutinee: ExpressionId,
+    /// The match arms.
+    pub arms: Arr<MatchArm>,
+}
+
+/// A single arm in a match expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MatchArm {
+    /// The pattern to match against.
+    pub pattern: MatchPattern,
+    /// The block to execute if this arm matches.
+    pub body: BlockId,
+}
+
+/// A pattern in a match arm.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum MatchPattern {
+    /// `1 | 2 | 3 => ()`
+    Fallthrough(Arr<MatchPattern>),
+    /// A literal value pattern.
+    Literal(Literal),
+    /// A wildcard (default) pattern.
+    Wildcard,
+    /// optional is null `null => ()`.
+    Null,
+    /// optional is not null `!null(binding) => ()`.
+    NotNull(Binding),
+    /// A binding pattern: `name` binds the scrutinee to a variable.
+    Binding(Binding),
+    /// `pattern if condition => ()`
+    If {
+        pattern: Box<MatchPattern>,
+        if_condition: ExpressionId,
+    },
+    /// An array pattern: [elem1, elem2, ...]
+    Array(Arr<MatchPattern>),
+    /// A union constructor pattern: `Type.Variant(binding)`.
+    Constructor(MatchContructor),
+    /// A tuple pattern: `(a, b, ..)`.
+    Tuple(TupleMatchPattern),
+    /// A named tuple / record pattern: `{field1, field2: alias, ..}`.
+    NamedTuple(NamedTupleMatchPattern),
+    /// A struct constructor pattern: `Struct{a, b: alias, ..}`.
+    ConstructorStruct(ConstructorStructPattern),
+    /// A rest pattern: `..` matches remaining elements/fields.
+    Rest,
+}
+
+/// A tuple pattern: `(a, b, ..)`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TupleMatchPattern {
+    pub elements: Arr<MatchPattern>,
+    pub rest: bool,
+}
+
+/// A named tuple / record pattern: `{field1, field2: alias, ..}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NamedTupleMatchPattern {
+    pub fields: Arr<NamedMatchPattern>,
+    pub rest: bool,
+}
+
+/// A single field in a named tuple / constructor pattern.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NamedMatchPattern {
+    /// The field name being matched.
+    pub field: Ident,
+    /// Optional binding: `None` = wildcard/ignore, `Some` = bind value to this name.
+    pub binding: Option<Binding>,
+}
+
+/// A struct constructor pattern: `Struct{a, b: alias, ..}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConstructorStructPattern {
+    pub type_name: Ident,
+    pub fields: Arr<NamedMatchPattern>,
+    pub rest: bool,
+}
+
+/// A union constructor pattern: `Type.Variant(binding)`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MatchContructor {
+    pub type_name: Ident,
+    pub variant_name: Ident,
+    pub binding: Option<Binding>,
+}
+
+/// A binding pattern: `name` binds the scrutinee to a variable.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Binding {
+    pub id: NodeId,
+    pub ident: Ident,
+}
+
+/// An `if` statement or expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct If {
+    pub condition: IfCondition,
+    pub block: BlockId,
+    pub branch: Option<IfBranch>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum IfCondition {
+    /// `if <ExpressionId> { .. }`
+    Expression(ExpressionId),
+    /// `if type <pattern> := <scrutinee> { ... }`
+    MatchType {
+        pattern: MatchPattern,
+        scrutinee: ExpressionId,
+    },
+    /// `if type <name>: <ty> := <scrutinee> { ... }`
+    CastType {
+        binding: Binding,
+        ty: SolType,
+        scrutinee: ExpressionId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum IfBranch {
+    If(Box<If>),
+    Else(BlockId),
+}
+impl IfBranch {
+    pub fn new_if(if_: If) -> Self {
+        Self::If(Box::new(if_))
+    }
+
+    pub fn new_else(block: BlockId) -> Self {
+        Self::Else(block)
+    }
+}
+
+/// A loop `for true {Println("loop")}` or conditional loop `for true {Println("loop")}` or iterator `for el in [1, 2, 3] {Println(el)}`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct For {
+    pub block: BlockId,
+    pub condition: ForCondition,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ForCondition {
+    Loop,
+    While(ExpressionId),
+    Foreach {
+        index: Option<Binding>,
+        element_kind: VarPattern,
+        collection: ExpressionId,
+    },
+}
+
+/// reference, e.g., `&x`(mut) or `@x`(const).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Ref {
+    pub id: NodeId,
+
+    pub is_mutable: bool,
+    pub value: ExpressionId,
+}
+
+/// A dereference, e.g., `*ptr`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Deref {
+    pub id: NodeId,
+    pub value: ExpressionId,
+}
+
+/// A unary operation expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Unary {
+    pub id: NodeId,
+
+    /// The unary operator.
+    pub operator: UnaryOperator,
+    /// The operand expression.
+    pub value: ExpressionId,
+}
+
+/// A binary operation expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Binary {
+    pub id: NodeId,
+
+    /// The left-hand side expression.
+    pub left: ExpressionId,
+    /// The binary operator.
+    pub operator: BinaryOperator,
+    /// The right-hand side expression.
+    pub right: ExpressionId,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum AnyArray {
+    Array(Array),
+    ArrayFiller(ArrayFiller),
+}
+
+/// An array literal, e.g., `[1, 2, 3]`, `List.[1, 2, 3]`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Array {
+    pub id: NodeId,
+
+    pub values: Arr<ExpressionId>,
+    pub element_type: Option<TypeId>,
+    pub collection_type: Option<TypeId>,
+}
+
+/// An array filler, e.g., `[for 3 => 0] //creates [0, 0, 0]`, `int.[for 1 => 1]`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArrayFiller {
+    pub id: NodeId,
+
+    pub amount: ExpressionId,
+    pub element: ExpressionId,
+    pub for_index: Option<Binding>,
+    pub element_type: Option<TypeId>,
+    pub collection_type: Option<TypeId>,
+}
+
+/// a contructor/typeCast, e.g. `int.(1)`, `Struct.(1, 2, "foo")`
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Constructor {
+    pub id: NodeId,
+
+    pub ty: SolType,
+    pub arguments: Arr<Argument>,
+}
+
+/// Referring to a variable `var`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VariableExpression {
+    pub id: NodeId,
+    pub name: Ident,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Index {
+    pub id: NodeId,
+    pub index: ExpressionId,
+    pub collection: ExpressionId,
+    pub optional_map: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FieldAccess {
+    pub id: NodeId,
+    pub field: Ident,
+    pub optional_map: bool,
+    pub object: ExpressionId,
+    pub is_enum_variant: bool,
+}
+
+/// A function call expression.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FunctionCall {
+    pub id: NodeId,
+    pub optional_map: bool,
+
+    /// The name of the function being called.
+    pub name: Ident,
+    pub generics: Arr<TypeId>,
+    /// Optional callee expression (for method calls).
+    pub callee: Option<FunctionCallee>,
+    /// Function arguments.
+    pub arguments: Arr<Argument>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FunctionCallee {
+    pub kind: FunctionCalleeKind,
+    pub optional_map: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum FunctionCalleeKind {
+    Type(TypeId),
+    Expression(ExpressionId),
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Argument {
+    pub name: Option<Ident>,
+    pub value: ExpressionId,
+}
+
+impl Expression {
+    pub const fn error() -> Self {
+        Self {
+            node: ExpressionKind::Null(NodeId::ERROR),
+            span: Span::error(),
+        }
+    }
+
+    pub const fn new(node: ExpressionKind, span: Span) -> Self {
+        Self { node, span }
+    }
+
+    pub fn new_id(store: &mut AstStore, node: ExpressionKind, span: Span) -> ExpressionId {
+        let this = Self { node, span };
+        store.insert_expression(this)
+    }
+
+    pub const fn new_block(block: BlockId, span: Span) -> Expression {
+        Expression::new(ExpressionKind::Block(block), span)
+    }
+
+    pub const fn new_literal(id: NodeId, literal: Literal, span: Span) -> Expression {
+        Expression::new(ExpressionKind::Literal((id, literal)), span)
+    }
+
+    pub fn new_variable(id: NodeId, name: Ident) -> Expression {
+        let span = name.span();
+        Expression::new(
+            ExpressionKind::Variable(VariableExpression { id, name }),
+            span,
+        )
+    }
+
+    pub fn from_lambda(lambda: Lambda, span: Span) -> Self {
+        Self {
+            node: ExpressionKind::Lambda(lambda),
+            span,
+        }
+    }
+
+    pub fn new_binary(
+        id: NodeId,
+        left: ExpressionId,
+        operator: BinaryOperator,
+        right: ExpressionId,
+        span: Span,
+    ) -> Expression {
+        let binary = Binary {
+            id,
+            left,
+            operator,
+            right,
+        };
+        Expression::new(ExpressionKind::Binary(binary), span)
+    }
+
+    pub fn from_for(array: Spanned<For>) -> Expression {
+        let Spanned { value, span } = array;
+        Expression::new(ExpressionKind::For(value), span)
+    }
+
+    pub fn from_array(array: Spanned<Array>) -> Expression {
+        let Spanned { value, span } = array;
+        Expression::new(ExpressionKind::Array(AnyArray::Array(value)), span)
+    }
+
+    pub fn from_array_filler(array: Spanned<ArrayFiller>) -> Expression {
+        let Spanned { value, span } = array;
+        Expression::new(ExpressionKind::Array(AnyArray::ArrayFiller(value)), span)
+    }
+
+    pub fn from_any_array(array: Spanned<AnyArray>) -> Expression {
+        let Spanned { value, span } = array;
+        Expression::new(ExpressionKind::Array(value), span)
+    }
+
+    pub fn from_function_call(call: Spanned<FunctionCall>) -> Expression {
+        let Spanned { value, span } = call;
+        Self {
+            node: ExpressionKind::FunctionCall(value),
+            span,
+        }
+    }
+
+    pub fn from_struct_contructor(ctor: Spanned<StructConstructor>) -> Expression {
+        let Spanned { value, span } = ctor;
+        Self {
+            node: ExpressionKind::StructConstructor(value),
+            span,
+        }
+    }
+
+    pub fn new_unary(id: NodeId, op: UnaryOperator, value: ExpressionId, span: Span) -> Expression {
+        let unary = Unary {
+            id,
+            value,
+            operator: op,
+        };
+        Expression::new(ExpressionKind::Unary(unary), span)
+    }
+
+    pub fn new_ref(
+        id: NodeId,
+        is_mutable: bool,
+        value: ExpressionId,
+        new_span: Span,
+    ) -> Expression {
+        let new_ref = ExpressionKind::Ref(Ref {
+            id,
+            value,
+            is_mutable,
+        });
+        Expression::new(new_ref, new_span)
+    }
+
+    pub fn new_deref(id: NodeId, value: ExpressionId, new_span: Span) -> Expression {
+        let deref = ExpressionKind::Deref(Deref { value, id });
+        Expression::new(deref, new_span)
+    }
+
+    pub fn new_index(
+        id: NodeId,
+        collection: ExpressionId,
+        index: ExpressionId,
+        span: Span,
+        optional_map: bool,
+    ) -> Expression {
+        Expression::new(
+            ExpressionKind::Index(Index {
+                id,
+                index,
+                collection,
+                optional_map,
+            }),
+            span,
+        )
+    }
+
+    pub fn new_field(
+        id: NodeId,
+        store: &AstStore,
+        object: ExpressionId,
+        field: Ident,
+        optional_map: bool,
+    ) -> Expression {
+        let span = store.expressions[object].span.combine(field.span());
+        Expression::new(
+            ExpressionKind::FieldAccess(FieldAccess {
+                id,
+                object,
+                field,
+                optional_map,
+                is_enum_variant: false,
+            }),
+            span,
+        )
+    }
+}
+
+impl ExpressionId {
+    /// Whether the expression at this id is boolean-typed — a pure function
+    /// of the expression's own AST shape plus already-resolved variable/
+    /// expression types, never of any later lowering state. Shared by
+    /// `mir_parser` (guarding `if`/`for` conditions), which used to carry an
+    /// independent copy of this same classification.
+    pub fn is_boolean(self, store: &AstStore, declares: &DeclareStore) -> bool {
+        let expr = &store.expressions[self];
+        match &expr.node {
+            ExpressionKind::Literal((_, Literal::Bool(_))) => true,
+            ExpressionKind::Variable(var) => is_variable_boolean(declares, var),
+            ExpressionKind::Unary(unary) => {
+                matches!(unary.operator.value, UnaryOperatorKind::Not)
+            }
+            ExpressionKind::Binary(_) => matches!(
+                declares.get_expression_type(self),
+                Some(SolType::Primitive(PrimitiveTypes::Boolean))
+            ),
+            _ => false,
+        }
+    }
+}
+
+fn is_variable_boolean(declares: &DeclareStore, var: &VariableExpression) -> bool {
+    let Some(resolved) = declares.get_variable_resolve(var.id) else {
+        return false;
+    };
+    let Some((_, Some(ty), _)) = declares.get_variable_type(resolved) else {
+        return false;
+    };
+    ty.is_primitive_kind(PrimitiveTypes::Boolean)
+}
+
+impl AnyArray {
+    pub fn from_array(arr: Spanned<Array>) -> Spanned<Self> {
+        let Spanned { value, span } = arr;
+        Spanned {
+            value: AnyArray::Array(value),
+            span,
+        }
+    }
+
+    pub fn from_array_filler(arr: Spanned<ArrayFiller>) -> Spanned<Self> {
+        let Spanned { value, span } = arr;
+        Spanned {
+            value: AnyArray::ArrayFiller(value),
+            span,
+        }
+    }
+}
+impl Array {
+    pub fn new(id: NodeId, collection_type: Option<TypeId>) -> Self {
+        Self {
+            id,
+            values: Arr::new(),
+            element_type: None,
+            collection_type,
+        }
+    }
+}
+
+impl Binding {
+    pub fn from_text(id: NodeId, text: impl Into<Rc<str>>, span: Span) -> Self {
+        Self {
+            id,
+            ident: Ident::new(text, span),
+        }
+    }
+
+    pub fn new(id: NodeId, ident: Ident) -> Self {
+        Self { ident, id }
+    }
+}
+impl Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.ident.as_str().fmt(f)
+    }
+}
+
+impl ExpressionKind {
+    pub const fn variant_name(&self) -> &'static str {
+        match self {
+            ExpressionKind::If(_) => "if",
+            ExpressionKind::New(_, _) => "new",
+            ExpressionKind::Ref(_) => "ref",
+            ExpressionKind::For(_) => "for",
+            ExpressionKind::Break => "break",
+            ExpressionKind::Null(_) => "null",
+            ExpressionKind::None(_) => "none",
+            ExpressionKind::Copy(_) => "copy",
+            ExpressionKind::Pass(_) => "pass",
+            ExpressionKind::Unary(_) => "unary",
+            ExpressionKind::Index(_) => "Index",
+            ExpressionKind::Deref(_) => "deref",
+            ExpressionKind::Match(_) => "match",
+            ExpressionKind::Tuple(_) => "tuple",
+            ExpressionKind::Block(_) => "block",
+            ExpressionKind::Sizeof(_) => "sizeof",
+            ExpressionKind::Binary(_) => "binary",
+            ExpressionKind::TypeOf(_) => "typeof",
+            ExpressionKind::Lambda(_) => "lamdba",
+            ExpressionKind::Return(_) => "return",
+            ExpressionKind::Continue => "continue",
+            ExpressionKind::Array(_) => "anyArray",
+            ExpressionKind::Literal(_) => "literal",
+            ExpressionKind::NewArray(_) => "newArray",
+            ExpressionKind::Variable(_) => "variable",
+            ExpressionKind::Undefined(_) => "undefined",
+            ExpressionKind::NamedTuple(_) => "namedTuple",
+            ExpressionKind::FieldAccess(_) => "fieldAccess",
+            ExpressionKind::Constructor(_) => "constructor",
+            ExpressionKind::MatchMethod(_) => "matchMethode",
+            ExpressionKind::StringFormat(_) => "stringFormat",
+            ExpressionKind::FunctionCall(_) => "functionCall",
+            ExpressionKind::StructConstructor(_) => "structContructor",
+        }
+    }
+}

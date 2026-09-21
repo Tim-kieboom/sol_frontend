@@ -3,9 +3,9 @@
 // Example:
 [
   {
-    "label": "Run soul_tester",
+    "label": "Run sol_tester",
     "command": "cargo",
-    "args": ["run", "-p", "soul_tester"],
+    "args": ["run", "-p", "sol_tester"],
     "cwd": "${ZED_WORKTREE_ROOT}",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
@@ -16,9 +16,9 @@
     "save": "none"
   },
   {
-    "label": "Run soul_tester batcktrace",
+    "label": "Run sol_tester batcktrace",
     "command": "cargo",
-    "args": ["run", "-p", "soul_tester", "--features", "error_backtrace"],
+    "args": ["run", "-p", "sol_tester", "--features", "error_backtrace"],
     "cwd": "${ZED_WORKTREE_ROOT}",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
@@ -29,9 +29,9 @@
     "save": "none"
   },
   {
-    "label": "Run soul_tester release",
+    "label": "Run sol_tester release",
     "command": "cargo",
-    "args": ["run", "-p", "soul_tester", "--release"],
+    "args": ["run", "-p", "sol_tester", "--release"],
     "cwd": "${ZED_WORKTREE_ROOT}",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,
@@ -42,9 +42,9 @@
     "save": "none"
   },
   {
-    "label": "Run soul_tester release batcktrace",
+    "label": "Run sol_tester release batcktrace",
     "command": "cargo",
-    "args": ["run", "-p", "soul_tester", "--release", "--features", "error_backtrace"],
+    "args": ["run", "-p", "sol_tester", "--release", "--features", "error_backtrace"],
     "cwd": "${ZED_WORKTREE_ROOT}",
     "use_new_terminal": false,
     "allow_concurrent_runs": false,

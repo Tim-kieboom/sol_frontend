@@ -1,0 +1,13 @@
+[package]
+name = "sol_utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive", "rc"] }
+serde_json = "1.0.150"
+toml = "0.8"
+
+[features]
+error_backtrace = []
+absolute_internal_error_path = []

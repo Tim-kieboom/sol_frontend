@@ -1,17 +1,17 @@
 [workspace]
 resolver = "3"
 members = [
-    "soul_tester",
-    "soul_utils",
-    "soul_tokenizer",
-    "soul_ast/ast_run",
-    "soul_mir/mir_run",
-    "soul_mir/mir_model", 
-    "soul_ast/ast_model",
-    "soul_mir/mir_parser",
-    "soul_mir/mir_codegen",
-    "soul_ast/ast_parser",
-    "soul_ast/soul_name_resolver", 
+    "sol_tester",
+    "sol_utils",
+    "sol_tokenizer",
+    "sol_ast/ast_run",
+    "sol_mir/mir_run",
+    "sol_mir/mir_model", 
+    "sol_ast/ast_model",
+    "sol_mir/mir_parser",
+    "sol_mir/mir_codegen",
+    "sol_ast/ast_parser",
+    "sol_ast/sol_name_resolver", 
 ]
 
 [profile.release-performance]

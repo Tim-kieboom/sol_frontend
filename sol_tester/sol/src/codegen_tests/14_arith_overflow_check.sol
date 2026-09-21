@@ -1,0 +1,7 @@
+// expect: 3221226505
+// expect_stdout: panic: attempt to add with overflow
+// expect_stdout: 14_arith_overflow_check.sol:6:
+main(): i32 {
+    a: i32 = 2147483647
+    return a + 1
+}

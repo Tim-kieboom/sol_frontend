@@ -1,0 +1,8 @@
+// expect: 3221226505
+// expect_stdout: panic: index out of bounds
+// expect_stdout: 13_slice_bounds_check.sol:7:
+main(): i32 {
+    a: [2]i32 = [1, 2]
+    s: [&]i32 = &a
+    return s[2]
+}

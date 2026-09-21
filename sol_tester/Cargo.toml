@@ -1,0 +1,30 @@
+[package]
+name = "sol_tester"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+error_backtrace = ["sol_utils/error_backtrace"]
+
+[dependencies]
+anyhow = "1.0.102"
+serde_json = "1.0.150"
+serde = { version = "1.0.228", features = ["derive"] }
+ast_run = { version = "0.1.0", path = "../sol_ast/ast_run" }
+ast_model = { version = "0.1.0", path = "../sol_ast/ast_model" }
+sol_tokenizer = { version = "0.1.0", path = "../sol_tokenizer" }
+ast_parser = { version = "0.1.0", path = "../sol_ast/ast_parser" }
+sol_name_resolver = { version = "0.1.0", path = "../sol_ast/sol_name_resolver" }
+mir_model = { version = "0.1.0", path = "../sol_mir/mir_model" }
+mir_parser = { version = "0.1.0", path = "../sol_mir/mir_parser" }
+mir_run = { version = "0.1.0", path = "../sol_mir/mir_run" }
+mir_codegen = { version = "0.1.0", path = "../sol_mir/mir_codegen" }
+inkwell = { version = "0.5", features = ["llvm16-0"] }
+sol_utils = { version = "0.1.0", path = "../sol_utils", default-features = false }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "pipeline"
+harness = false
