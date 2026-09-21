@@ -3455,22 +3455,70 @@ fn check_escapes_allows_a_value_made_safe_on_every_incoming_path() {
 }
 
 #[test]
-fn check_escapes_still_skips_functions_containing_a_for_loop() {
-    // `for`'s back edge is still out of scope for this slice (deferred, see
-    // the module's own docs and `TODO.md`'s M2 entry) — `has_back_edge`
-    // gates it out, same as a plain `if`/`else` used to be gated out before
-    // this slice.
+fn check_escapes_now_flags_a_dangling_return_reached_through_a_for_loop() {
+    // `for`'s back edge is now analyzed (previously the whole function would
+    // have been skipped unanalyzed the moment it contained any branch at
+    // all, `for` included) — `x` is never touched by the loop, so the value
+    // reaching `return &x` is dangling regardless of how many iterations run.
     let (mir, declares) = lower_source_with_declares(
         "f(cond: bool): &int {\n    x := 1\n    for cond {\n        y := 1\n    }\n    return &x\n}\n",
         "f",
     );
 
     let faults = crate::borrow_checker::check_escapes(&mir, &declares);
-    assert!(
-        faults.is_empty(),
-        "expected a function containing a for loop to still be skipped entirely, got {:#?}",
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the for loop to no longer hide this dangling return, got {:#?}",
         faults
     );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_value_reassigned_safely_inside_a_for_loop() {
+    // A loop is now genuinely analyzed, not just "any loop ⇒ reject" — `r`
+    // is reassigned every iteration, but always to another safe, already-
+    // received reference, so the converged verdict must still be safe.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool, p: &int, q: &int): &int {\n    mut r := p\n    for cond {\n        r = q\n    }\n    return r\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "expected a value reassigned safely on every iteration to be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_value_that_only_dangles_via_the_loop_back_edge() {
+    // The falsifying case for real fixed-point convergence: `r` starts safe
+    // (an already-received parameter), and the loop body only *sometimes*
+    // reassigns it to a dangling loop-local `x`. Resolving `r`'s own value
+    // reaching the loop header requires tracing through the loop body's own
+    // bodyless-`if` join, whose "untaken" path loops back to the header's
+    // own not-yet-settled value — a genuine self-referential dependency a
+    // one-shot, non-iterating trace can't answer, and a naive "any cycle ⇒
+    // give up" gate would have skipped entirely, missing a real bug: since
+    // the loop can run zero or more times, there's a reachable execution
+    // (`branch` true on some iteration) where `r` is dangling by the time
+    // the function returns.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool, branch: bool, p: &int): &int {\n    mut r := p\n    for cond {\n        if branch {\n            x := 1\n            r = &x\n        }\n    }\n    return r\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the loop-back-edge-reachable dangling value to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
 }
 
 #[test]

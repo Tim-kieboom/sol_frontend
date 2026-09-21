@@ -10,17 +10,13 @@
 //! reference parameter — tracing finds the one true origin instead of
 //! guessing which parameter an output might be tied to).
 //!
-//! Handles straight-line code and `if`/`else` (`/grill-me`'d again to extend
-//! past straight-line-only): a `for` loop's back edge is still skipped
-//! entirely, unanalyzed — see `has_back_edge` below — a separate, later
-//! slice (per `TODO.md`'s M2 entry), since a cyclic CFG needs the trace to
-//! terminate on a revisited-but-unfinished block, which this doesn't attempt
-//! yet.
-//!
-//! Only checks a function's *own* return value, not its callers: a
-//! reference-typed parameter is trusted as safe without verifying what the
-//! caller actually passed in — that's real interprocedural propagation, a
-//! separate, later slice (see `TODO.md`'s M2 entry).
+//! Handles the full concrete (M1) CFG shape now, including `for` loops
+//! (`/grill-me`'d twice to get here: first straight-line only, then `if`/
+//! `else`, now loops too). Only checks a function's *own* return value, not
+//! its callers: a reference-typed parameter is trusted as safe without
+//! verifying what the caller actually passed in — that's real
+//! interprocedural propagation, a separate, later slice (see `TODO.md`'s M2
+//! entry).
 //!
 //! The backward trace, from wherever the return value is used, has exactly
 //! three outcomes:
@@ -47,27 +43,62 @@
 //! *projected* place (`Use(Copy(x.field))`), or a non-`Ref`/non-alias
 //! rvalue reaching a reference-typed local — isn't analyzed: the trace
 //! stops and nothing is reported for that path, the same "unfamiliar shape
-//! ⇒ skip, don't guess" discipline `move_check` itself uses. Once `if`/
-//! `else` is in play, that discipline applies to the *whole* combined
-//! answer, not just one path: if any path the trace has to walk to answer
-//! "is this local's value always safe" turns out unfamiliar, the combined
-//! answer is unfamiliar too (`None`) rather than guessing from whichever
-//! paths *did* resolve — a false "safe" here would be a real unsoundness,
-//! not just a missed diagnostic.
+//! ⇒ skip, don't guess" discipline `move_check` itself uses. That discipline
+//! applies to the *whole* combined answer, not just one path: if any path
+//! the trace has to walk to answer "is this local's value always safe"
+//! turns out unfamiliar, the combined answer is unfamiliar too (`None`)
+//! rather than guessing from whichever paths *did* resolve — a false "safe"
+//! here would be a real unsoundness, not just a missed diagnostic.
 //!
 //! At an `if`/`else` join, a value's origin is only trusted as safe when
 //! it's safe on **every** incoming path — the trace forks at the join and
 //! walks back through each predecessor independently, requiring all of them
 //! to resolve safe (mirrors requiring a moved-on-*any*-path value to be
 //! rejected in `move_check`, just for the opposite conclusion: here, only
-//! *all*-paths-safe is trusted). A per-`(local, block)` memo cache (the
-//! value reaching a given block's own start, independent of which
-//! downstream point asked for it) keeps this from re-walking a shared
-//! upstream path once per downstream join that reaches it — without it, a
-//! chain of sequential `if`s could refork the same upstream trace once per
-//! `if`, doubling the walk at every one.
+//! *all*-paths-safe is trusted).
+//!
+//! # `for` loops — real fixed-point convergence
+//!
+//! `/grill-me`'d at length before writing anything: a `for` loop's back edge
+//! means a block's own "value reaching here" can depend on itself (the loop
+//! body's own end feeds back into the loop header). A first design sketch
+//! reached for a per-block "in progress" marker defaulting straight to
+//! `Dangling` the moment a cycle was hit, with a fallback span on
+//! `BasicBlock` for the case with no real local to blame — abandoned once it
+//! became clear that's strictly *worse* than just doing what `move_check`'s
+//! own loop extension already does: a real fixed point.
+//!
+//! Mirrors `move_check`'s own two-phase discipline exactly (start optimistic,
+//! converge monotonically toward the conservative verdict, never report
+//! mid-convergence) — but `move_check`'s fixed point is a block-level
+//! Kildall worklist (only the *set* of blocks needing reprocessing has to be
+//! tracked, since "maybe moved" is a monotonically-growing set with a cheap,
+//! well-understood update rule). Escape-checking's `(LocalId, BlockId)`
+//! query space doesn't have an equally cheap incremental update — discovering
+//! *which* pairs even matter requires the same demand-driven recursive trace
+//! this module already has. So instead of a fine-grained worklist, this
+//! re-runs the *entire* demand-driven trace once per round: round 0 treats
+//! every not-yet-settled `(LocalId, BlockId)` pair optimistically as `Safe`
+//! (the same starting point `move_check`'s "nothing moved yet" uses); a
+//! round after that falls back to whatever the *previous* round settled on
+//! for any pair still "in progress" on the current round's own call stack
+//! (a genuine cycle). Rounds repeat until one produces byte-for-byte the
+//! same table as the round before it. This is sound and terminates: a loop
+//! header always has at least one predecessor *outside* the loop (the
+//! initial entry edge, never part of any cycle), so every reachable pair
+//! bottoms out in a real, non-circular answer somewhere, and each round can
+//! only ever move a pair's verdict from `Safe` toward `Dangling` (a
+//! predecessor `?`-propagating `None` or resolving to `Dangling` can only
+//! make a join's own result *more* conservative than the previous round's,
+//! never less) — a finite lattice, descending, so it settles.
+//!
+//! Less efficient than a targeted worklist, but far simpler, and this
+//! compiler's own established preference (`move_check`'s plain queue, not a
+//! priority worklist; escape-checking's own per-round recursion, not a
+//! hand-rolled dependency graph) has consistently favored correctness and
+//! clarity over micro-optimized dataflow scheduling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ast_model::{SolType, declare_store::DeclareStore};
 use mir_model::{self as mir, BlockId, LocalId};
@@ -75,11 +106,11 @@ use sol_utils::fault::Fault;
 
 use crate::fault::{MirErrorKind, MirFault};
 
-use super::move_check::{has_back_edge, successors};
+use super::move_check::successors;
 
 /// See the module's own docs. Returns one fault per return path whose value
 /// provably dangles — a function can have more than one `Terminator::Return`
-/// once `if`/`else` is in play (each `return`/implicit-tail-return statement
+/// once `if`/`else` is in play (each `return`/implicit tail-return statement
 /// seals its own).
 pub fn check_escapes(function: &mir::Function, declares: &DeclareStore) -> Vec<MirFault> {
     let mut faults = Vec::new();
@@ -95,24 +126,21 @@ pub fn check_escapes(function: &mir::Function, declares: &DeclareStore) -> Vec<M
         return faults;
     }
 
-    if has_back_edge(function) {
-        // Contains a `for` loop — not analyzed yet, see the module's own docs.
-        return faults;
-    }
-
     let predecessors = build_predecessors(function);
-    let mut memo = HashMap::new();
+    let return_blocks: Vec<BlockId> = function
+        .blocks
+        .entries()
+        .filter(|(_, block)| matches!(block.terminator, mir::Terminator::Return))
+        .map(|(block_id, _)| block_id)
+        .collect();
 
-    for (block_id, block) in function.blocks.entries() {
-        if !matches!(block.terminator, mir::Terminator::Return) {
-            continue;
-        }
-        if let Some(Origin::Dangling(local)) =
-            trace_from_block_start(return_local, block_id, function, &predecessors, &mut memo)
-        {
+    let settled = converge(return_local, &return_blocks, function, &predecessors);
+
+    for &block_id in &return_blocks {
+        if let Some(Some(Origin::Dangling(local))) = settled.get(&(return_local, block_id)) {
             faults.push(Fault::error_with_kind(
                 MirErrorKind::DanglingReference,
-                Some(function.locals[local].span),
+                Some(function.locals[*local].span),
             ));
         }
     }
@@ -120,7 +148,7 @@ pub fn check_escapes(function: &mir::Function, declares: &DeclareStore) -> Vec<M
     faults
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Origin {
     Safe,
     /// The local whose own storage doesn't outlive this function — used to
@@ -129,23 +157,72 @@ enum Origin {
     Dangling(LocalId),
 }
 
+type Table = HashMap<(LocalId, BlockId), Option<Origin>>;
+
+/// Repeatedly traces every `(return_local, return_block)` pair (and whatever
+/// upstream `(LocalId, BlockId)` pairs that demands, transitively) to a
+/// shared, round-settled table — see the module's own docs on why this is a
+/// real, sound fixed point, not just a heuristic. `return_blocks` is fixed,
+/// deterministic input, so every round discovers exactly the same *set* of
+/// `(LocalId, BlockId)` keys (only their *values* can still be settling) —
+/// that's what makes a plain `Table` equality check a valid convergence
+/// test.
+fn converge(
+    return_local: LocalId,
+    return_blocks: &[BlockId],
+    function: &mir::Function,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+) -> Table {
+    let mut previous_round: Table = HashMap::new();
+    loop {
+        let mut this_round: Table = HashMap::new();
+        let mut in_progress: HashSet<(LocalId, BlockId)> = HashSet::new();
+        for &block_id in return_blocks {
+            trace_from_block_start(
+                return_local,
+                block_id,
+                function,
+                predecessors,
+                &previous_round,
+                &mut in_progress,
+                &mut this_round,
+            );
+        }
+        if this_round == previous_round {
+            return this_round;
+        }
+        previous_round = this_round;
+    }
+}
+
 /// The value `local` holds at the *start* of `block_id` (i.e. before any of
-/// that block's own statements run) — memoized per `(local, block_id)`,
-/// since this is the one query a shared upstream path can be asked more
-/// than once (from more than one downstream join reaching it). `None` the
-/// moment the trace meets an unfamiliar shape anywhere upstream — see the
-/// module's own docs on why that has to poison the *whole* combined answer,
-/// not just the one path that hit it.
+/// that block's own statements run). Three-way memoization within a single
+/// round: `this_round` (already fully settled this round — reused, not
+/// recomputed), `in_progress` (currently being computed higher up *this same
+/// round's* own call stack — a genuine back-edge cycle, resolved via
+/// `previous_round`'s own settled answer, `Safe` if this is round 0 and
+/// nothing settled yet), or neither (compute it now).
 fn trace_from_block_start(
     local: LocalId,
     block_id: BlockId,
     function: &mir::Function,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    memo: &mut HashMap<(LocalId, BlockId), Option<Origin>>,
+    previous_round: &Table,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut Table,
 ) -> Option<Origin> {
-    if let Some(&cached) = memo.get(&(local, block_id)) {
-        return cached;
+    let key = (local, block_id);
+    if let Some(&settled) = this_round.get(&key) {
+        return settled;
     }
+    if in_progress.contains(&key) {
+        return previous_round
+            .get(&key)
+            .copied()
+            .unwrap_or(Some(Origin::Safe));
+    }
+
+    in_progress.insert(key);
     let statement_count = function.blocks[block_id].statements.len();
     let result = trace_within_block(
         local,
@@ -153,9 +230,12 @@ fn trace_from_block_start(
         statement_count,
         function,
         predecessors,
-        memo,
+        previous_round,
+        in_progress,
+        this_round,
     );
-    memo.insert((local, block_id), result);
+    in_progress.remove(&key);
+    this_round.insert(key, result);
     result
 }
 
@@ -173,7 +253,9 @@ fn trace_within_block(
     before_index: usize,
     function: &mir::Function,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    memo: &mut HashMap<(LocalId, BlockId), Option<Origin>>,
+    previous_round: &Table,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut Table,
 ) -> Option<Origin> {
     let block = &function.blocks[block_id];
     for (index, statement) in block.statements.as_slice()[..before_index]
@@ -192,10 +274,21 @@ fn trace_within_block(
                 if !alias.projection.is_empty() {
                     None
                 } else {
-                    trace_within_block(alias.local, block_id, index, function, predecessors, memo)
+                    trace_within_block(
+                        alias.local,
+                        block_id,
+                        index,
+                        function,
+                        predecessors,
+                        previous_round,
+                        in_progress,
+                        this_round,
+                    )
                 }
             }
-            mir::Rvalue::Ref { place: ref_place, .. } => {
+            mir::Rvalue::Ref {
+                place: ref_place, ..
+            } => {
                 let escapes_this_frame = ref_place
                     .projection
                     .iter()
@@ -219,7 +312,15 @@ fn trace_within_block(
 
     let mut dangling = None;
     for &pred in preds {
-        match trace_from_block_start(local, pred, function, predecessors, memo)? {
+        match trace_from_block_start(
+            local,
+            pred,
+            function,
+            predecessors,
+            previous_round,
+            in_progress,
+            this_round,
+        )? {
             Origin::Safe => {}
             Origin::Dangling(dangling_local) => {
                 dangling.get_or_insert(dangling_local);

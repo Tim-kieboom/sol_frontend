@@ -172,10 +172,63 @@ that landing first, in order.
         liveness dataflow plus join-aware alias tracing (reusing escape-checking's fork shape,
         widened to an equality check); overlap is live-point-**set** intersection, not interval
         overlap; `for` still gated out.
-  - [ ] **Extend escape-checking to `for`** — the deferred half of the slice above: needs the
-        backward trace to terminate on a revisited-but-not-yet-settled block (via a visited-blocks
-        set defaulting to *unsafe* until proven otherwise, per the soundness guard already confirmed
-        above but not yet exercised) instead of infinitely recursing around the loop's own back edge.
+  - [x] **Extend escape-checking to `for`** — the deferred half of the slice above. `/grill-me`'d at
+        length before writing anything: the first design sketch (a per-block "in progress" marker
+        defaulting straight to `Dangling` the moment a cycle was hit) needed a fallback span for the
+        "no real local to blame yet" case — surfaced that neither `BasicBlock` nor `mir::Function`
+        actually carry a span today, so that sketch would have meant a real MIR shape change (and,
+        mid-interview, one more question in: that whole sketch turned out to be the *wrong* mechanism
+        anyway, not just one needing an extra field).
+    - **Reconsidered against `move_check`'s own precedent**: `move_check`'s loop extension didn't
+      default pessimistically on a cycle hit — it ran a real fixed point, starting optimistic
+      ("nothing moved"), converging monotonically toward the conservative verdict, with fault
+      collection deliberately deferred until *after* convergence. Confirmed doing the same here
+      instead: no synthetic fallback span needed at all, because every `Dangling` verdict that
+      survives convergence still traces back to a real local — a loop header always has at least one
+      predecessor *outside* the loop (the entry edge, never part of any cycle), which grounds the
+      analysis in a genuine, non-circular answer.
+    - **Worklist shape confirmed as a deliberate simplification, not an oversight**: `move_check`'s
+      fixed point is a block-level Kildall worklist (cheap incremental reprocessing, since "maybe
+      moved" is a monotonically-growing set with an obvious update rule). Escape-checking's
+      `(LocalId, BlockId)` query space doesn't have an equally cheap incremental story — discovering
+      which pairs matter needs the same demand-driven recursive trace this module already has. Chose
+      this over a hand-rolled dependency-tracked worklist: **repeat the entire demand-driven trace
+      once per round**, each round falling back to the *previous* round's settled answer for any pair still
+      "in progress" on the current round's own call stack (round 0 falls back to `Safe`, the same
+      optimistic starting point `move_check` uses), stopping once a round produces byte-for-byte the
+      same table as the one before it. Confirmed sound (monotonic, so it can only ever move a verdict
+      from `Safe` toward `Dangling`, never back — a finite descending lattice, guaranteed to settle)
+      and accepted as a real efficiency-vs-simplicity trade, consistent with this compiler's own
+      established preference throughout M2 (`move_check`'s own plain queue over a priority worklist).
+    - New `converge` (`escape_check.rs`) replaces the old direct `trace_from_block_start` entry point:
+      runs rounds, each building a fresh `this_round: HashMap<(LocalId, BlockId), Option<Origin>>` by
+      tracing every `(return_local, return_block)` pair (a function can have more than one `Return`
+      block, per the `if`/`else` slice above) against the *previous* round's table, until two
+      consecutive rounds compare equal (`Origin` gained `PartialEq`/`Eq` for this). `trace_from_block_
+      start`/`trace_within_block` gained an `in_progress: HashSet<(LocalId, BlockId)>` (this round's
+      own call stack) alongside the existing `this_round` memo — a cache hit still short-circuits as
+      before, an `in_progress` hit returns the previous round's settled answer instead of recursing
+      forever, and only the *outermost* frame for a given key ever writes into `this_round` (an inner,
+      cycle-detecting hit reads `previous_round` without touching `this_round` at all — the same
+      "don't corrupt the round's own record with an in-flight guess" discipline `move_check`'s fixed
+      point uses by only collecting faults in a separate, post-convergence pass).
+    - `check_escapes` itself barely changed: still walks every `Terminator::Return` block, but now
+      reads each one's origin out of `converge`'s settled table instead of calling the trace directly
+      — the `has_back_edge` gate is gone entirely, since every CFG shape is analyzed uniformly now.
+    - Proven via 3 new/rewritten `mir_parser` unit tests, chosen specifically to distinguish real
+      convergence from both the old blanket-skip gate and a cruder "any cycle ⇒ reject" heuristic:
+      `check_escapes_now_flags_a_dangling_return_reached_through_a_for_loop` (rewrites the old
+      "still skips for loops" test — the same source now gets a real fault);
+      `check_escapes_allows_a_value_reassigned_safely_inside_a_for_loop` — a loop present but nothing
+      ever unsafe, proving this isn't just "any loop ⇒ reject" in disguise;
+      `check_escapes_flags_a_value_that_only_dangles_via_the_loop_back_edge` — the falsifying case
+      named up front: a value starts safe, is *conditionally* reassigned to a dangling loop-local
+      inside the body, and resolving the loop header's own reaching value requires walking through the
+      body's own bodyless-`if` join whose untaken path loops back to the header's own not-yet-settled
+      value — a genuine self-referential dependency only real convergence (not a one-shot trace or a
+      pessimistic cycle default) resolves correctly. All 3 passed on the first implementation attempt.
+      Full `cargo test --workspace` (135 `mir_parser` tests, up from 133; the same unrelated
+      pre-existing `ast_parser` failure noted earlier, unaffected) and all 35 exe tests pass unchanged.
   - [ ] **Extend overlap-checking to `for`** — the deferred half of the slice above, same shape as
         escape-checking's own deferred `for` slice: needs the liveness dataflow to become a real
         fixed point (Kildall's algorithm, mirroring `move_check`'s own loop-support upgrade) instead
