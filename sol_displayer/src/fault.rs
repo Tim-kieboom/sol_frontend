@@ -1,15 +1,15 @@
-use crate::{config::PrintConfigs, display::writer::Writer};
-use crate::{push_fmt, source_file};
+use crate::push_fmt;
+use crate::{PrintConfigs, writer::Writer};
 use anyhow::{Error, Result};
 use sol_utils::char_colors::*;
 use sol_utils::collections::module_store::ModuleStore;
 use sol_utils::fault::Severity;
 use sol_utils::{fault::Fault, span::Span};
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::Lines;
 
-pub(crate) fn display_fault<K: Display>(
+pub fn display_fault<K: Display>(
     fault: &Fault<K>,
     modules: &ModuleStore,
     configs: &PrintConfigs,
@@ -169,4 +169,8 @@ fn get_source_snippet(
 
     push_fmt!(writer, "{begin_space}└──{:─<1$}\n", "", max_len)?;
     Ok(())
+}
+
+fn source_file(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
 }

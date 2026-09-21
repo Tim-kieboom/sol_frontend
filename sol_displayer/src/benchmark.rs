@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use crate::{config::PrintConfigs, display::writer::Writer, push_fmt};
+use crate::{PrintConfigs, push_fmt, writer::Writer};
 use anyhow::Result;
 use sol_utils::collections::benchmark::Benchmark;
 
-pub(crate) fn display_benchmark(
+pub fn display_benchmark(
     benchmark: &Benchmark,
     _configs: &PrintConfigs,
     writer: &mut impl Writer,

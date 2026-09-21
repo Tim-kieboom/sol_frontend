@@ -4,11 +4,7 @@ use std::{
     path::Path,
 };
 
-use crate::{
-    config,
-    display::{vecmap_to_pretty_vec, write_create_file, write_to_file, writer::Writer},
-    push_fmt,
-};
+use crate::{push_fmt, writer::Writer};
 use anyhow::Result;
 use ast_model::{
     AnyArray, ArrayKind, Assignment, AstStore, AstTree, BlockId, Enum, EnumVariant, ExpressionId,
@@ -59,49 +55,7 @@ struct Displayer<'a, W: Writer> {
     add_tags: bool,
 }
 
-pub(crate) fn display_ast(tree: &AstTree) -> Result<()> {
-    let mut output_path = config::CONFIG.output_path().join("ast");
-    output_path.push("tree.solc");
-
-    let mut writer = write_create_file(&output_path)?;
-    display_ast_tree(tree, config::CONFIG.source_path(), &mut writer)?;
-
-    output_path.pop();
-    output_path.push("json");
-
-    let modules = vecmap_to_json_str(tree.crates.modules.as_vecmap())?;
-    let externals = serde_json::to_string_pretty(&tree.crates.external)?;
-    let scope_info = vecmap_to_json_str(tree.scope_info.scopes.as_vecmap())?;
-
-    let blocks = vecmap_to_json_str(&tree.crates.store.blocks)?;
-    let functions = vecmap_to_json_str(&tree.crates.store.functions)?;
-    let statements = vecmap_to_json_str(&tree.crates.store.statements)?;
-    let expressions = vecmap_to_json_str(&tree.crates.store.expressions)?;
-
-    write_to_file(&output_path.join("modules.json"), &modules)?;
-    write_to_file(&output_path.join("externals.json"), &externals)?;
-    write_to_file(&output_path.join("scope_info.json"), &scope_info)?;
-
-    output_path.push("store");
-    write_to_file(&output_path.join("blocks.json"), &blocks)?;
-    write_to_file(&output_path.join("functions.json"), &functions)?;
-    write_to_file(&output_path.join("statements.json"), &statements)?;
-    write_to_file(&output_path.join("expressions.json"), &expressions)?;
-
-    Ok(())
-}
-
-fn vecmap_to_json_str<K, V>(map: &VecMap<K, V>) -> Result<String>
-where
-    K: VecMapIndex + Debug,
-    V: serde::Serialize,
-{
-    let vec = vecmap_to_pretty_vec(map);
-    let str = serde_json::to_string_pretty(&vec)?;
-    Ok(str)
-}
-
-fn display_ast_tree(ast: &AstTree, root_dir: &Path, writer: &mut impl Writer) -> Result<()> {
+pub fn display_ast_tree(ast: &AstTree, root_dir: &Path, writer: &mut impl Writer) -> Result<()> {
     let mut displayer = Displayer::new(ast, root_dir, &ast.crates.store, writer);
     displayer.write_crate_overview()?;
     displayer.write_entry(ast.root)?;

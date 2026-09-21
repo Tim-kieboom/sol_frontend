@@ -12,7 +12,7 @@ use ast_model::AstTree;
 use ast_parser::{ParseInfo, parse_module};
 use ast_run::{AstRequest, to_ast};
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use sol_name_resolver::name_resolve;
+use sol_resolver::name_resolve;
 use sol_tokenizer::to_token_stream;
 use sol_utils::{
     collections::{

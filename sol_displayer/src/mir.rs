@@ -1,57 +1,15 @@
-use std::{fmt::Debug, iter::Enumerate};
+use std::iter::Enumerate;
 
-use crate::{
-    config,
-    display::{vecmap_to_pretty_vec, write_create_file, write_to_file, writer::Writer},
-    push_fmt,
-};
+use crate::{push_fmt, writer::Writer};
 use anyhow::Result;
 use ast_model::{AstStore, declare_store::DeclareStore};
-use mir_model::MirProgram;
 use mir_model::{
     AggregateKind, Function, LocalDecl, LocalId, Operand, Place, PlaceElem, Rvalue, Statement,
     Terminator,
 };
-use sol_utils::{
-    FunctionId, Mutable, SharedStr, TypeModifier,
-    collections::vec_map::{VecMap, VecMapIndex},
-};
+use sol_utils::{FunctionId, Mutable, SharedStr, TypeModifier, collections::vec_map::VecMapIndex};
 
-pub(crate) fn display_mir(
-    program: &MirProgram,
-    ast: &AstStore,
-    declares: &DeclareStore,
-) -> Result<()> {
-    let mut output_path = config::CONFIG.output_path().join("mir");
-    output_path.push("tree.solc");
-
-    let mut writer = write_create_file(&output_path)?;
-    let mut dispayer = Displayer::new(&mut writer, ast, declares);
-    for (_, function) in program.functions.entries() {
-        dispayer.write_function(function)?;
-        dispayer.push_char('\n')?;
-    }
-    dispayer.writer_flush()?;
-
-    output_path.pop();
-    output_path.push("json");
-    let functions = vecmap_to_json_str(&program.functions)?;
-    write_to_file(&output_path.join("functions.json"), &functions)?;
-
-    Ok(())
-}
-
-fn vecmap_to_json_str<K, V>(map: &VecMap<K, V>) -> Result<String>
-where
-    K: VecMapIndex + Debug,
-    V: serde::Serialize,
-{
-    let vec = vecmap_to_pretty_vec(map);
-    let str = serde_json::to_string_pretty(&vec)?;
-    Ok(str)
-}
-
-struct Displayer<'a, W: Writer> {
+pub struct Displayer<'a, W: Writer> {
     writer: &'a mut W,
     ast: &'a AstStore,
     declares: &'a DeclareStore,
@@ -65,7 +23,7 @@ impl<'a, W: Writer> Displayer<'a, W> {
         }
     }
 
-    fn write_function(&mut self, function: &Function) -> Result<()> {
+    pub fn write_function(&mut self, function: &Function) -> Result<()> {
         let mut locals = function.locals.entries().enumerate();
 
         let name = self.get_function_name(function.id);

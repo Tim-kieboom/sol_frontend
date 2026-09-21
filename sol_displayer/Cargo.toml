@@ -1,10 +1,10 @@
 [package]
-name = "sol_tester"
+name = "sol_displayer"
 version = "0.1.0"
 edition = "2024"
 
 [features]
-error_backtrace = ["sol_utils/error_backtrace"]
+error_backtrace = []
 
 [dependencies]
 anyhow = "1.0.102"
@@ -21,11 +21,3 @@ mir_run = { version = "0.1.0", path = "../sol_mir/mir_run" }
 mir_codegen = { version = "0.1.0", path = "../sol_mir/mir_codegen" }
 inkwell = { version = "0.5", features = ["llvm16-0"] }
 sol_utils = { version = "0.1.0", path = "../sol_utils", default-features = false }
-sol_displayer = { version = "0.1.0", path = "../sol_displayer" }
-
-[dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "pipeline"
-harness = false

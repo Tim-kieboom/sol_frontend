@@ -12,5 +12,5 @@ sol_utils = { version = "0.1.0", path = "../../sol_utils" }
 [dev-dependencies]
 ast_parser = { version = "0.1.0", path = "../../sol_ast/ast_parser" }
 ast_run = { version = "0.1.0", path = "../../sol_ast/ast_run" }
-sol_name_resolver = { version = "0.1.0", path = "../../sol_ast/sol_name_resolver" }
+sol_resolver = { version = "0.1.0", path = "../../sol_ast/sol_resolver" }
 sol_tokenizer = { version = "0.1.0", path = "../../sol_tokenizer" }

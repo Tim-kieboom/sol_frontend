@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Instant};
 
 use ast_model::AstTree;
 use ast_parser::{ParseInfo, parse_module};
-use sol_name_resolver::name_resolve;
+use sol_resolver::name_resolve;
 use sol_tokenizer::TokenStream;
 use sol_utils::{
     collections::{benchmark::Benchmark, crate_store::CrateStore, module_store::ModuleStore},

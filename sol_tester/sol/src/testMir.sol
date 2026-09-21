@@ -1,3 +1,5 @@
+main() {}
+
 answer(): int {
     return 42
 }

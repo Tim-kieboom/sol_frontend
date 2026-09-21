@@ -6,12 +6,12 @@ members = [
     "sol_tokenizer",
     "sol_ast/ast_run",
     "sol_mir/mir_run",
-    "sol_mir/mir_model", 
+    "sol_mir/mir_model",
     "sol_ast/ast_model",
     "sol_mir/mir_parser",
     "sol_mir/mir_codegen",
     "sol_ast/ast_parser",
-    "sol_ast/sol_name_resolver", 
+    "sol_ast/sol_resolver", "sol_displayer",
 ]
 
 [profile.release-performance]

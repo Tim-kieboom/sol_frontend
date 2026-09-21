@@ -1,13 +1,10 @@
-use crate::display::{
-    ast::display_ast, benchmark::display_benchmark, fault::display_fault, fault_to_anyhow_error,
-    mir::display_mir, tokenizer::display_tokenizer,
-};
 use anyhow::Result;
 use ast_model::AstTree;
 use ast_run::{AstRequest, to_ast};
 use inkwell::context::Context;
 use mir_codegen::to_llvm;
 use mir_model::MirProgram;
+use sol_displayer::{benchmark::display_benchmark, fault::display_fault, fault_to_anyhow_error};
 use sol_tokenizer::{TokenStream, to_token_stream};
 use sol_utils::{
     CrateContext,
@@ -24,6 +21,8 @@ use std::{
     io::{self, stdout},
     path::{Path, PathBuf},
 };
+
+use crate::display::{display_ast, display_mir, display_tokenizer};
 
 mod config;
 mod display;
@@ -137,7 +136,7 @@ fn source_file(path: &Path) -> io::Result<String> {
 
 fn tokenize<'a>(file: &'a str, modules: &ModuleStore) -> Result<TokenStream<'a>> {
     let tokens = to_token_stream(file, modules.get_root_id())
-        .map_err(|f| fault_to_anyhow_error(&f, modules))?;
+        .map_err(|f| fault_to_anyhow_error(&f, modules, &config::PRINT_CONFIGS))?;
 
     display_tokenizer(&tokens, modules)?;
     Ok(tokens)

@@ -6,7 +6,7 @@ use ast_model::{
 };
 use ast_parser::{ParseInfo, parse_module};
 use mir_model::{ConstValue, Operand, Rvalue};
-use sol_name_resolver::name_resolve;
+use sol_resolver::name_resolve;
 use sol_tokenizer::to_token_stream;
 use sol_utils::{
     FunctionId, Mutable,

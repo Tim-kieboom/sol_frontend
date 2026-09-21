@@ -3,6 +3,7 @@ use std::{
     sync::LazyLock,
 };
 
+use sol_displayer::PrintConfigs;
 use sol_utils::{
     compiler_options::{CompilerOptions, MirOptions, PanicMode, PlatformInfo},
     fault::Severity,
@@ -114,10 +115,4 @@ impl Configs {
     pub fn output_path(&self) -> &Path {
         &self.output_path
     }
-}
-
-pub struct PrintConfigs {
-    #[cfg(feature = "error_backtrace")]
-    pub backtrace: bool,
-    pub color: bool,
 }
