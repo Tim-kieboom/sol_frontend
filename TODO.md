@@ -229,12 +229,59 @@ that landing first, in order.
       pessimistic cycle default) resolves correctly. All 3 passed on the first implementation attempt.
       Full `cargo test --workspace` (135 `mir_parser` tests, up from 133; the same unrelated
       pre-existing `ast_parser` failure noted earlier, unaffected) and all 35 exe tests pass unchanged.
-  - [ ] **Extend overlap-checking to `for`** — the deferred half of the slice above, same shape as
-        escape-checking's own deferred `for` slice: needs the liveness dataflow to become a real
-        fixed point (Kildall's algorithm, mirroring `move_check`'s own loop-support upgrade) instead
-        of a single postorder pass, since a loop's back edge means a block's live-in can depend on a
-        later block's own live-in (the loop body), which a single backward pass can't settle in one
-        shot.
+  - [x] **Extend overlap-checking to `for`** — the deferred half of the slice above. `/grill-me`'d at
+        length: unlike escape-checking's `for` slice (one fixed point, for one computation), this
+        needed two *independent* fixed points, each scoped separately because they have different
+        soundness profiles:
+    - **Liveness** (`compute_block_liveness`): converted from a single postorder pass to a real
+      block-level Kildall worklist, the same shape `move_check`'s own loop extension uses, just run
+      backward (reprocess a block whenever a *successor's* `live_in` changes, by pushing that
+      successor's own predecessors back onto the queue). Confirmed as a genuine precision
+      requirement, not just style — a single non-iterating pass over a cyclic CFG would
+      *under*-approximate liveness (a loop body's own "still needed" fact never propagates back
+      through the header more than once), shrinking live ranges and only ever causing *missed*
+      conflicts. That's technically sound under this codebase's own "prefer false negatives"
+      discipline, but `move_check` and escape-checking's own loop extensions both chose the more
+      rigorous fixed point anyway even where a cheaper sound-but-imprecise shortcut existed — matched
+      that precedent rather than settling for less.
+    - **Alias tracing** (`value_of`) surfaced a real design gap mid-interview: naively mirroring
+      escape-checking's `converge` doesn't work here. Escape-checking's `Origin` lattice has an
+      obvious optimistic starting value (`Safe`) a cyclic fallback can default to; `value_of`'s join
+      instead collapses to `None` via `?` the instant *any* predecessor is unresolved, and a fresh
+      cyclic reference has nothing to fall back to in round 0 except `None` — every later round would
+      just read back the same `None` it wrote, "converging" instantly but recovering zero precision.
+      Fixed with a third lattice state, `Resolved::Unknown`, distinct from both `Value(place, mutable)`
+      and `Disagreement`: a join identity that's simply skipped over rather than treated as a
+      disagreement, so an in-progress cyclic reference no longer poisons the result before it's had a
+      chance to settle. Only `Disagreement` (two genuinely different real answers, or a value reaching
+      an untracked parameter) is absorbing/final.
+    - `converge_aliases` (round driver) + `resolve_from_block_start`/`resolve_before_index`
+      (mirroring `escape_check`'s `trace_from_block_start`/`trace_within_block` pairing exactly in
+      shape, join rule aside) replace the old direct `value_of`/`classify_rvalue`. A separate, final
+      `classify_generation` reads the fully-settled table read-only (a fresh, throwaway
+      `in_progress`/`this_round` pair — no real recursion happens there, since the settled table
+      already has a direct answer for anything it could reach) to build the actual `borrows` list —
+      same two-phase "compute the fixed point, then do a separate final pass" split every other M2
+      fixed point in this codebase uses.
+    - `has_back_edge`'s only two callers (`escape_check`, `overlap_check`) are both gone now, so the
+      function itself was deleted from `move_check` rather than left as dead code.
+    - Proven via 3 new/rewritten `mir_parser` unit tests, chosen to distinguish real analysis from the
+      old blanket-skip gate: `check_borrow_overlaps_now_flags_an_overlap_reached_through_a_for_loop`
+      (rewrites the old "still skips for loops" test — the same source now gets a real fault);
+      `check_borrow_overlaps_allows_a_borrow_confined_to_one_loop_iteration` — a loop present but
+      nothing ever conflicts, proving this isn't "any loop ⇒ reject" in disguise;
+      `check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body` — a pre-loop `&mut`
+      borrow staying live across a conditionally-taken inner `if` that itself creates a second `&mut`
+      borrow of the same place, a real nested-borrow conflict the old gate would have missed entirely
+      (not analyzing a single statement of any `for`-containing function before this slice). Note: this
+      last case, unlike escape-checking's own loop test, turned out resolvable via ordinary forward
+      reachability within one pass through the body — a genuinely back-edge-load-bearing overlap
+      example (one that a single-pass liveness computation would get *wrong*, not just "hadn't been
+      tried yet") wasn't found by hand within this slice's own time budget; the Kildall worklist's
+      correctness rests on the general dataflow argument in the module's own docs, not a test that
+      isolates the back edge specifically. All 3 new tests passed on the first implementation attempt.
+      Full `cargo test --workspace` (137 `mir_parser` tests, up from 135; same unrelated pre-existing
+      `ast_parser` failure, unaffected) and all 35 exe tests pass unchanged.
   - [ ] **Interprocedural call-site tracing for escape-checking** — the deferred half of the user's
         own original motivating example (`lifetime(obj: &Obj): &Obj { return obj }` called as
         `lifetime(&Obj{})`): today a reference-typed parameter is trusted as safe the moment

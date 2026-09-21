@@ -3664,11 +3664,11 @@ fn check_borrow_overlaps_allows_two_mutable_borrows_in_mutually_exclusive_branch
 }
 
 #[test]
-fn check_borrow_overlaps_still_skips_functions_containing_a_for_loop() {
-    // `for`'s back edge is still out of scope for this slice (deferred, see
-    // the module's own docs and `TODO.md`'s M2 entry) — `has_back_edge`
-    // gates it out, same as a plain `if`/`else` used to be gated out before
-    // this slice.
+fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_for_loop() {
+    // `for`'s back edge is now analyzed (previously the whole function would
+    // have been skipped unanalyzed the moment it contained a loop at all) —
+    // `mutRef` remains live throughout the loop body, `ref` is read right
+    // after: a real conflict every earlier slice would have missed.
     let mir = lower_source(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    for cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
         "f",
@@ -3676,9 +3676,55 @@ fn check_borrow_overlaps_still_skips_functions_containing_a_for_loop() {
     .expect("expected successful lowering");
 
     let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
-    assert!(
-        faults.is_empty(),
-        "expected a function containing a for loop to still be skipped entirely, got {:#?}",
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the for loop to no longer hide this overlap, got {:#?}",
         faults
     );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_borrow_confined_to_one_loop_iteration() {
+    // A loop is now genuinely analyzed, not just "any loop ⇒ reject" — `r`
+    // is created and used entirely within the loop body's own single pass
+    // (dies before the back edge), so it never conflicts with anything.
+    let mir = lower_source(
+        "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    for cond {\n        r := &mut var\n        useMut(r)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "a borrow confined to a single pass through the loop body should never be flagged, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body() {
+    // A pre-loop `&mut` borrow (`r1`) stays live across every statement of
+    // the loop body, including a conditionally-taken inner `if` that itself
+    // creates a second `&mut` borrow (`r2`) of the same place — a real,
+    // nested-live-mutable-borrows conflict, only reachable through a
+    // for loop's own body, that the old "any for loop ⇒ skip" gate would
+    // have missed entirely (`check_borrow_overlaps` never analyzed a single
+    // statement of any function containing a `for` before this slice).
+    let mir = lower_source(
+        "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool, branch: bool) {\n    mut var := Obj{}\n    r1 := &mut var\n    for cond {\n        if branch {\n            r2 := &mut var\n            useMut(r2)\n        }\n        useMut(r1)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the nested mutable borrows inside the loop body to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
 }

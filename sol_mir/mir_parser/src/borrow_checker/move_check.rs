@@ -262,47 +262,6 @@ pub(super) fn postorder(function: &mir::Function, entry: BlockId) -> Vec<BlockId
     order
 }
 
-/// Detects whether `function`'s CFG contains a back edge (i.e. a `for`
-/// loop) — shared with `escape_check`/`overlap_check`, both of which still
-/// only handle straight-line code plus `if`/`else` (acyclic) and defer
-/// `for` to their own later slices, using this as their gate exactly the
-/// way this module's own `check_moves` used to (back before it grew the
-/// `fixed_point` machinery to handle loops directly). Unlike `postorder`'s
-/// walk (which only needs "ever visited" — a diamond join is visited twice
-/// with no cycle, and `fixed_point` treats a real back edge the same as any
-/// other edge), this tracks the *current* DFS recursion stack: an edge into
-/// a block still on that stack is a genuine back edge, not just a block
-/// reached by more than one path.
-pub(super) fn has_back_edge(function: &mir::Function) -> bool {
-    fn visit(
-        function: &mir::Function,
-        block_id: BlockId,
-        on_stack: &mut HashSet<BlockId>,
-        visited: &mut HashSet<BlockId>,
-    ) -> bool {
-        if on_stack.contains(&block_id) {
-            return true;
-        }
-        if !visited.insert(block_id) {
-            return false;
-        }
-        on_stack.insert(block_id);
-        let found = match function.blocks.get(block_id) {
-            Some(block) => successors(&block.terminator)
-                .into_iter()
-                .any(|successor| visit(function, successor, on_stack, visited)),
-            None => false,
-        };
-        on_stack.remove(&block_id);
-        found
-    }
-
-    let Some((entry, _)) = function.blocks.entries().next() else {
-        return false;
-    };
-    visit(function, entry, &mut HashSet::new(), &mut HashSet::new())
-}
-
 pub(super) fn successors(terminator: &mir::Terminator) -> Vec<BlockId> {
     match terminator {
         mir::Terminator::Goto(target) | mir::Terminator::Drop { target, .. } => vec![*target],

@@ -12,10 +12,9 @@
 //! - **Reference-vs-reference only**: a live borrow blocking a *move* of its
 //!   target (`cannot move out of x because it is borrowed`) is a separate,
 //!   later slice, not attempted here.
-//! - **`if`/`else` is now handled** (`/grill-me`'d again to extend past
-//!   straight-line-only); `for`'s back edge is still gated out entirely,
-//!   unanalyzed (see `has_back_edge`) — a separate, later slice, same
-//!   precedent as `escape_check`'s own `if`/`else`-then-`for` sequencing.
+//! - **The full concrete (M1) CFG shape is now handled**, `for` loops
+//!   included (`/grill-me`'d three times to get here: straight-line, then
+//!   `if`/`else`, now loops too).
 //! - **Conflict matrix**: `&mut` vs `&mut`, and `&mut` vs `&`, overlapping
 //!   in time — reject. `&` vs `&` overlapping — always fine (unlimited
 //!   simultaneous shared borrows, same as real Rust).
@@ -76,24 +75,61 @@
 //! is mutable, and their live-point sets share any point at all — set
 //! intersection, not integer-interval overlap, since a live range is no
 //! longer necessarily contiguous once it can span more than one branch.
+//!
+//! # `for` loops — two independent real fixed points
+//!
+//! `/grill-me`'d at length before writing anything: a `for` loop's back edge
+//! affects the alias-tracing and liveness computations in genuinely
+//! different ways, so each needed its own scoping decision rather than one
+//! blanket "make it cyclic-safe."
+//!
+//! **Liveness** was already a backward dataflow pass; extending it to a
+//! cyclic CFG is the same block-level Kildall worklist `move_check`'s own
+//! loop extension already uses, just run backward (`compute_block_liveness`
+//! reprocesses a block's *predecessors* — not successors — whenever its own
+//! `live_in` changes, converging to a fixed point instead of the old
+//! single postorder pass). Confirmed as a real precision requirement, not
+//! just style: a single non-iterating pass over a cyclic CFG would
+//! *under*-approximate liveness (a loop body's own "this is still needed"
+//! fact never gets to propagate back through the header more than once),
+//! which would only ever shrink a borrow's live range and cause *missed*
+//! conflicts — technically sound by this codebase's own established
+//! "prefer false negatives" discipline, but `move_check` and
+//! `escape_check`'s own loop extensions both chose the more rigorous fixed
+//! point even where a cheaper sound-but-imprecise shortcut existed, and this
+//! follows that same precedent rather than settling for less.
+//!
+//! **Alias tracing** (`value_of`) needed more than "mirror `escape_check`'s
+//! `converge`," though — a real design gap surfaced mid-interview. Unlike
+//! escape-checking's `Origin` (a `Safe`/`Dangling` lattice with an obvious
+//! optimistic starting point, `Safe`, that a cyclic fallback could default
+//! to), `value_of`'s join immediately collapses to `None` — via `?` — the
+//! moment *any* predecessor is unresolved. A fresh cyclic reference has
+//! nothing to fall back to in round 0 except `None`, so every round after
+//! that would keep reading back the *same* `None` it just wrote — "converging"
+//! instantly, but never recovering the real answer, buying no precision at
+//! all despite the extra rounds. Fixed with a third state distinct from both
+//! `Some(place, mutable)` and `None`: `Resolved::Unknown` — a join's
+//! identity element, simply skipped over rather than treated as a
+//! disagreement, so an in-progress cyclic reference no longer poisons the
+//! result before it's had a chance to settle. Only `Resolved::Disagreement`
+//! (two genuinely different real answers, or a value reaching an untracked
+//! parameter) is treated as absorbing/final, collapsed to `None` only once
+//! the whole table has converged.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::fault::Fault;
 
 use crate::fault::{MirErrorKind, MirFault};
 
-use super::move_check::{has_back_edge, postorder, successors};
+use super::move_check::{postorder, successors};
 
 /// See the module's own docs.
 pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
     let mut faults = Vec::new();
 
-    if has_back_edge(function) {
-        // Contains a `for` loop — not analyzed yet, see the module's own docs.
-        return faults;
-    }
     let Some((entry, _)) = function.blocks.entries().next() else {
         return faults;
     };
@@ -101,16 +137,14 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
     let points_per_block = build_points_per_block(function);
     let predecessors = build_predecessors(function);
 
-    // Postorder (successors settle before their predecessors) is exactly
-    // the processing order a single backward pass over a DAG needs.
-    let backward_order = postorder(function, entry);
-    let block_live_out = compute_block_liveness(function, &points_per_block, &backward_order);
+    let block_live_out = compute_block_liveness(function, &points_per_block, &predecessors);
     let point_live_in = compute_point_liveness(&points_per_block, &block_live_out);
 
-    // Reversed postorder (entry-first, a valid topological order for a DAG)
-    // ranks blocks for the fault-reporting "which generation is later" tie
-    // break below — not load-bearing for correctness, just determinism.
-    let mut exec_order = backward_order;
+    // Reverse postorder (entry-first) ranks blocks for the fault-reporting
+    // "which generation is later" tie break below. For a cyclic CFG this
+    // isn't a strict topological order any more, but it doesn't need to be
+    // — it's not load-bearing for correctness, just determinism.
+    let mut exec_order = postorder(function, entry);
     exec_order.reverse();
     let block_rank: HashMap<BlockId, usize> = exec_order
         .iter()
@@ -118,16 +152,22 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
         .map(|(rank, &block)| (block, rank))
         .collect();
 
-    let mut memo = HashMap::new();
+    let settled_aliases = converge_aliases(&points_per_block, &predecessors);
+
     let mut borrows: Vec<Borrow> = Vec::new();
     for (&block_id, points) in &points_per_block {
         for (index, point) in points.iter().enumerate() {
             let Some((local, rvalue)) = point.assign else {
                 continue;
             };
-            let Some((place, mutable)) =
-                classify_rvalue(rvalue, block_id, index, &points_per_block, &predecessors, &mut memo)
-            else {
+            let Resolved::Value(place, mutable) = classify_generation(
+                rvalue,
+                block_id,
+                index,
+                &points_per_block,
+                &predecessors,
+                &settled_aliases,
+            ) else {
                 continue;
             };
             let mut live_points = generation_live_points(
@@ -316,14 +356,18 @@ fn summarize_block(points: &[PointInfo]) -> BlockSummary {
     BlockSummary { use_set, def_set }
 }
 
-/// Block-level backward liveness — a single pass over `order` (postorder:
-/// every successor is processed before its predecessors), which is enough
-/// to settle a DAG in one shot; no fixed-point loop needed yet (`for`'s
-/// cyclic case is deferred, see the module's own docs).
+/// Block-level backward liveness — a real fixed point (Kildall's worklist,
+/// the same shape `move_check`'s own loop extension uses, just run
+/// backward): a block is reprocessed whenever a *successor's* `live_in`
+/// changes (propagated by pushing that successor's own predecessors back
+/// onto the queue), and each reprocessing can only ever grow a block's own
+/// `live_in`, never shrink it — bounded by the finite number of
+/// `(block, local)` pairs, so this always terminates. See the module's own
+/// docs on why this needed to be a real fixed point, not a single pass.
 fn compute_block_liveness(
     function: &mir::Function,
     points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    order: &[BlockId],
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
 ) -> HashMap<BlockId, HashSet<LocalId>> {
     let summaries: HashMap<BlockId, BlockSummary> = points_per_block
         .iter()
@@ -333,7 +377,19 @@ fn compute_block_liveness(
     let mut live_in: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
     let mut live_out: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
 
-    for &block_id in order {
+    let Some((entry, _)) = function.blocks.entries().next() else {
+        return live_out;
+    };
+    // A good initial processing order (successors before predecessors)
+    // minimizes reprocessing but isn't load-bearing for correctness — the
+    // worklist converges to the same fixed point regardless of start order.
+    let initial_order = postorder(function, entry);
+    let mut queued: HashSet<BlockId> = initial_order.iter().copied().collect();
+    let mut queue: VecDeque<BlockId> = initial_order.into_iter().collect();
+
+    while let Some(block_id) = queue.pop_front() {
+        queued.remove(&block_id);
+
         let mut out = HashSet::new();
         if let Some(block) = function.blocks.get(block_id) {
             for successor in successors(&block.terminator) {
@@ -343,15 +399,28 @@ fn compute_block_liveness(
             }
         }
 
-        let summary = &summaries[&block_id];
+        let Some(summary) = summaries.get(&block_id) else {
+            continue;
+        };
         let mut inn = out.clone();
         for def in &summary.def_set {
             inn.remove(def);
         }
         inn.extend(summary.use_set.iter().copied());
 
+        let changed = match live_in.get(&block_id) {
+            Some(existing) => *existing != inn,
+            None => true,
+        };
         live_out.insert(block_id, out);
-        live_in.insert(block_id, inn);
+        if changed {
+            live_in.insert(block_id, inn);
+            for &pred in predecessors.get(&block_id).into_iter().flatten() {
+                if queued.insert(pred) {
+                    queue.push_back(pred);
+                }
+            }
+        }
     }
 
     live_out
@@ -379,20 +448,138 @@ fn compute_point_liveness(
     live_in
 }
 
-/// The value `local` holds immediately before position `before_index` in
-/// `block_id` — searches this block's own points in reverse, falling
-/// through to every predecessor (forked, requiring every path to resolve to
-/// the *same* answer) the moment nothing is found. Mirrors `escape_check`'s
-/// `trace_within_block`/`trace_from_block_start` pairing exactly, save for
-/// the join rule (equality, not "all safe" — see the module's own docs).
-fn value_of(
+/// The three-state lattice `value_of`'s convergence needs — see the
+/// module's own docs on why `Unknown` (a join identity, simply skipped over
+/// rather than treated as a disagreement) has to exist as its own state,
+/// distinct from `Disagreement` (a genuinely final, settled "give up").
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resolved {
+    Unknown,
+    Value(LocalId, bool),
+    Disagreement,
+}
+
+fn join_resolved(a: Resolved, b: Resolved) -> Resolved {
+    match (a, b) {
+        (Resolved::Unknown, other) | (other, Resolved::Unknown) => other,
+        (Resolved::Disagreement, _) | (_, Resolved::Disagreement) => Resolved::Disagreement,
+        (Resolved::Value(local_a, mutable_a), Resolved::Value(local_b, mutable_b)) => {
+            if local_a == local_b && mutable_a == mutable_b {
+                a
+            } else {
+                Resolved::Disagreement
+            }
+        }
+    }
+}
+
+type AliasTable = HashMap<(LocalId, BlockId), Resolved>;
+
+/// Repeatedly classifies every generation's own alias chain against a
+/// shared, round-settled table — mirrors `escape_check`'s `converge`
+/// exactly in shape (round 0 starts every not-yet-settled pair at the
+/// lattice's own identity element, `Unknown`; a round after that falls back
+/// to the *previous* round's settled answer for any pair still "in
+/// progress" on the current round's own call stack; rounds repeat until one
+/// produces byte-for-byte the same table as the round before it), but with
+/// a different join and starting element — see the module's own docs.
+fn converge_aliases(
+    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+) -> AliasTable {
+    let mut previous_round: AliasTable = HashMap::new();
+    loop {
+        let mut this_round: AliasTable = HashMap::new();
+        let mut in_progress: HashSet<(LocalId, BlockId)> = HashSet::new();
+        for (&block_id, points) in points_per_block {
+            for (index, point) in points.iter().enumerate() {
+                let Some((_, rvalue)) = point.assign else {
+                    continue;
+                };
+                if let mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) =
+                    rvalue
+                    && place.projection.is_empty()
+                {
+                    resolve_before_index(
+                        place.local,
+                        block_id,
+                        index,
+                        points_per_block,
+                        predecessors,
+                        &previous_round,
+                        &mut in_progress,
+                        &mut this_round,
+                    );
+                }
+            }
+        }
+        if this_round == previous_round {
+            return this_round;
+        }
+        previous_round = this_round;
+    }
+}
+
+/// The value `local` holds at the *start* of `block_id`. Three-way
+/// memoization within a single round, exactly mirroring `escape_check`'s
+/// `trace_from_block_start`: a `this_round` hit is reused, an `in_progress`
+/// hit (a genuine cycle) falls back to `previous_round`'s settled answer
+/// (`Unknown` if nothing settled there yet), and only the outermost frame
+/// for a given key ever writes into `this_round`.
+fn resolve_from_block_start(
+    local: LocalId,
+    block_id: BlockId,
+    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    previous_round: &AliasTable,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut AliasTable,
+) -> Resolved {
+    let key = (local, block_id);
+    if let Some(&settled) = this_round.get(&key) {
+        return settled;
+    }
+    if in_progress.contains(&key) {
+        return previous_round
+            .get(&key)
+            .copied()
+            .unwrap_or(Resolved::Unknown);
+    }
+
+    in_progress.insert(key);
+    let statement_count = points_per_block[&block_id].len();
+    let result = resolve_before_index(
+        local,
+        block_id,
+        statement_count,
+        points_per_block,
+        predecessors,
+        previous_round,
+        in_progress,
+        this_round,
+    );
+    in_progress.remove(&key);
+    this_round.insert(key, result);
+    result
+}
+
+/// Searches `block_id`'s own points *before* `before_index`, in reverse, for
+/// a bare-local assignment to `local`. Found: classifies it (a fresh `Ref`
+/// directly, or an alias by continuing the search). Not found: forks across
+/// every predecessor (joined via `join_resolved`) or, with none at all, the
+/// function's own entry block — `local` unassigned, a parameter, not a
+/// tracked local-place borrow (`Resolved::Disagreement`, the same "settled,
+/// give up" state a genuine value mismatch produces).
+fn resolve_before_index(
     local: LocalId,
     block_id: BlockId,
     before_index: usize,
     points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    memo: &mut HashMap<(LocalId, BlockId), Option<(LocalId, bool)>>,
-) -> Option<(LocalId, bool)> {
+    previous_round: &AliasTable,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut AliasTable,
+) -> Resolved {
     let points = &points_per_block[&block_id];
     for index in (0..before_index).rev() {
         let Some((assigned_local, rvalue)) = points[index].assign else {
@@ -401,70 +588,110 @@ fn value_of(
         if assigned_local != local {
             continue;
         }
-        return classify_rvalue(rvalue, block_id, index, points_per_block, predecessors, memo);
+        return classify_generation_resolved(
+            rvalue,
+            block_id,
+            index,
+            points_per_block,
+            predecessors,
+            previous_round,
+            in_progress,
+            this_round,
+        );
     }
 
-    if let Some(&cached) = memo.get(&(local, block_id)) {
-        return cached;
-    }
     let preds = predecessors.get(&block_id).filter(|preds| !preds.is_empty());
-    let result = match preds {
-        None => None, // entry block, no earlier assignment: a parameter, not a tracked borrow.
-        Some(preds) => {
-            let mut agreed: Option<(LocalId, bool)> = None;
-            let mut sound = true;
-            for &pred in preds {
-                let pred_points = points_per_block[&pred].len();
-                let pred_result = value_of(local, pred, pred_points, points_per_block, predecessors, memo);
-                match (agreed, pred_result) {
-                    (_, None) => {
-                        sound = false;
-                        break;
-                    }
-                    (None, Some(value)) => agreed = Some(value),
-                    (Some(existing), Some(value)) if existing == value => {}
-                    _ => {
-                        sound = false;
-                        break;
-                    }
-                }
-            }
-            if sound { agreed } else { None }
-        }
+    let Some(preds) = preds else {
+        return Resolved::Disagreement;
     };
-    memo.insert((local, block_id), result);
-    result
+
+    let mut combined = Resolved::Unknown;
+    for &pred in preds {
+        let pred_value = resolve_from_block_start(
+            local,
+            pred,
+            points_per_block,
+            predecessors,
+            previous_round,
+            in_progress,
+            this_round,
+        );
+        combined = join_resolved(combined, pred_value);
+    }
+    combined
 }
 
 /// Classifies one specific, already-known assignment's rvalue: a fresh,
 /// `Deref`-free `Rvalue::Ref` is a genuine borrow of its own `place.local`
 /// (any `Field`/`Index` projection coarsened away, whole-locals only — see
 /// the module's own docs); a bare-local alias continues the search via
-/// `value_of`; anything else isn't a tracked local-place borrow.
-fn classify_rvalue(
+/// `resolve_before_index`; anything else isn't a tracked local-place borrow.
+fn classify_generation_resolved(
     rvalue: &mir::Rvalue,
     block_id: BlockId,
     at_index: usize,
     points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    memo: &mut HashMap<(LocalId, BlockId), Option<(LocalId, bool)>>,
-) -> Option<(LocalId, bool)> {
+    previous_round: &AliasTable,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut AliasTable,
+) -> Resolved {
     match rvalue {
         mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
             if !place.projection.is_empty() {
-                return None;
+                return Resolved::Disagreement;
             }
-            value_of(place.local, block_id, at_index, points_per_block, predecessors, memo)
+            resolve_before_index(
+                place.local,
+                block_id,
+                at_index,
+                points_per_block,
+                predecessors,
+                previous_round,
+                in_progress,
+                this_round,
+            )
         }
         mir::Rvalue::Ref { place, mutable } => {
             let has_deref = place
                 .projection
                 .iter()
                 .any(|elem| matches!(elem, mir::PlaceElem::Deref));
-            (!has_deref).then_some((place.local, *mutable))
+            if has_deref {
+                Resolved::Disagreement
+            } else {
+                Resolved::Value(place.local, *mutable)
+            }
         }
-        _ => None,
+        _ => Resolved::Disagreement,
     }
+}
+
+/// The generation's own final classification, read against the fully
+/// settled `converge_aliases` table. A fresh, throwaway `in_progress`/
+/// `this_round` pair is enough here — the settled table already has a
+/// direct, final answer for any block-start lookup this could reach, so no
+/// real cyclic recursion happens on this call.
+fn classify_generation(
+    rvalue: &mir::Rvalue,
+    block_id: BlockId,
+    at_index: usize,
+    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    settled: &AliasTable,
+) -> Resolved {
+    let mut in_progress = HashSet::new();
+    let mut scratch = AliasTable::new();
+    classify_generation_resolved(
+        rvalue,
+        block_id,
+        at_index,
+        points_per_block,
+        predecessors,
+        settled,
+        &mut in_progress,
+        &mut scratch,
+    )
 }
 
 /// Every point forward-reachable from `(def_block, def_index)` without
