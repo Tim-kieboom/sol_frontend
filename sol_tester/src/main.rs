@@ -76,7 +76,15 @@ fn frontend(benchmark: &mut Benchmark) -> Result<bool> {
     }
 
     display_benchmark(benchmark, &config::PRINT_CONFIGS, &mut stdout())?;
-    Ok(!ast_failed)
+    // `mir_failed` is `all_faults` checked *after* MIR-level faults (if any)
+    // were folded in — it already reflects both AST- and MIR-level faults
+    // together (AST faults never get removed, so if `ast_failed` was true
+    // to begin with, `mir_failed` is trivially true too), so this is the
+    // correct overall pass/fail signal, unlike the old `!ast_failed` (which
+    // silently ignored any MIR-only failure, e.g. a borrow-checker
+    // rejection, and printed "success" for a program that never made it to
+    // codegen at all).
+    Ok(!mir_failed)
 }
 
 fn build_crate_store(source_folder: &Path) -> CrateStore {

@@ -19,7 +19,7 @@ mod tests;
 
 use std::time::Instant;
 
-use ast_model::AstTree;
+use ast_model::{AstTree, ExternLanguage, FunctionKind};
 use mir_model::MirProgram;
 use mir_parser::{MirLowerer, borrow_checker, fault::MirErrorKind};
 use sol_utils::{
@@ -34,11 +34,23 @@ pub fn to_mir(
 ) -> MirProgram {
     let time = Instant::now();
 
-    // No pre-filter by `FunctionKind` here: `lower_function` itself already
-    // handles every case (a normal body, an `extern "C"` declaration, or a
-    // non-extern signature-only stub it correctly faults on).
+    // A trait's own interface method declaration (`FunctionKind::Signature`
+    // with `external: None` — the only source for that combination; the
+    // only *other* source of `FunctionKind::Signature` is an `extern "C"`
+    // declaration, always `external: Some(C)`) has nothing of its own to
+    // lower to a callable MIR shape — only its *implementations* do — so
+    // it's skipped here, before ever calling `lower_function` on it, rather
+    // than attempted and faulted on. `lower_function` itself still
+    // correctly rejects a bare signature-only call made directly (its own
+    // unit test exercises that) — this loop is what decides *whether* to
+    // ask it to lower a given function id in the first place.
     let mut lowerer = MirLowerer::new(&ast.crates.store, &mut ast.declares, options);
-    for (id, _) in ast.crates.store.functions.entries() {
+    for (id, kind) in ast.crates.store.functions.entries() {
+        if let FunctionKind::Signature(signature) = kind
+            && signature.value.external != Some(ExternLanguage::C)
+        {
+            continue;
+        }
         if let Err(fault) = lowerer.lower_function(id) {
             context.faults.push(fault);
         }

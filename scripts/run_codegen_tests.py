@@ -16,6 +16,16 @@ the compiler didn't crash, never that generated code computes the right
 answer — this is the first stage where that's actually checked, by running
 real produced machine code.
 
+A file starting `// expect_fail` instead of `// expect: N` is the opposite
+kind of test: it's expected to be *rejected* before ever reaching codegen
+(e.g. a real borrow-checker violation) — step 1 above still runs, but steps
+2/3 are skipped entirely, and the check is instead "did sol_tester report
+failure" (an optional `// expect_fault: <substring>` line, one or more,
+additionally checks that substring appears in sol_tester's own combined
+stdout/stderr). This is the only place any checker's rejection is proven
+through the real CLI end-to-end, rather than a MIR-level unit test calling
+a checker function directly.
+
 Runs the built exe directly rather than `cargo run` per test: profiling
 showed `cargo run` cost ~2.2s per invocation (vs a ~0.24s baseline with no
 source change) because rewriting config.json used to force a recompile —
@@ -46,6 +56,8 @@ CLANG = Path(r"C:\llvm-16\bin\clang.exe")
 
 EXPECT_RE = re.compile(r"//\s*expect:\s*(\d+)")
 EXPECT_STDOUT_RE = re.compile(r"//\s*expect_stdout:\s*(.+)")
+EXPECT_FAIL_RE = re.compile(r"//\s*expect_fail\s*$")
+EXPECT_FAULT_RE = re.compile(r"//\s*expect_fault:\s*(.+)")
 
 
 def _leading_comment_lines(sol_file: Path) -> list[str]:
@@ -70,6 +82,22 @@ def read_expected_stdout(sol_file: Path) -> list[str]:
         match.group(1).strip()
         for line in _leading_comment_lines(sol_file)
         if (match := EXPECT_STDOUT_RE.search(line))
+    ]
+
+
+def is_expected_to_fail(sol_file: Path) -> bool:
+    """A `// expect_fail` file is expected to be *rejected* before ever
+    reaching codegen (e.g. a real borrow-checker violation) — this compiler's
+    only end-to-end proof that a rejection actually fires through the real
+    CLI, not just a MIR-level unit test calling a checker function directly."""
+    return any(EXPECT_FAIL_RE.match(line.strip()) for line in _leading_comment_lines(sol_file))
+
+
+def read_expected_faults(sol_file: Path) -> list[str]:
+    return [
+        match.group(1).strip()
+        for line in _leading_comment_lines(sol_file)
+        if (match := EXPECT_FAULT_RE.search(line))
     ]
 
 
@@ -98,23 +126,49 @@ def build_sol_tester() -> None:
         raise SystemExit(1)
 
 
-def run_sol_tester(panic_mode: str | None) -> None:
+def run_sol_tester_raw(panic_mode: str | None) -> subprocess.CompletedProcess:
     args = [str(SOL_TESTER_EXE)]
     if panic_mode is not None:
         args.append(f"--panic-mode={panic_mode}")
-    result = subprocess.run(
+    return subprocess.run(
         args,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def run_sol_tester(panic_mode: str | None) -> None:
+    result = run_sol_tester_raw(panic_mode)
     if result.returncode != 0 or "success" not in result.stdout:
         raise RuntimeError(
             f"sol_tester did not report success:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     if "codegen skipped" in result.stderr:
         raise RuntimeError(f"codegen was skipped:\n{result.stderr}")
+
+
+def assert_sol_tester_rejected(sol_file: Path, panic_mode: str | None) -> list[str]:
+    """For a `// expect_fail` test: runs sol_tester and returns a list of
+    human-readable problem descriptions (empty means everything checked out)
+    — unlike `run_sol_tester`, compilation *failing* is this test's own
+    success condition, so this never raises on a plain rejection."""
+    result = run_sol_tester_raw(panic_mode)
+    problems = []
+    if "success" in result.stdout:
+        problems.append(
+            f"sol_tester reported success; expected it to reject this program.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    combined_output = result.stdout + result.stderr
+    for expected_fault in read_expected_faults(sol_file):
+        if expected_fault not in combined_output:
+            problems.append(
+                f"expected the rejection message to contain {expected_fault!r}, "
+                f"got:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+    return problems
 
 
 def build_and_run_exe(exe_path: Path) -> tuple[int, str]:
@@ -160,13 +214,24 @@ def main() -> int:
     try:
         for sol_file in test_files:
             name = sol_file.name
-            expected = read_expected(sol_file)
             relative_path = f"codegen_tests/{name}"
-
-            expected_stdout = read_expected_stdout(sol_file)
 
             try:
                 set_main_path(relative_path)
+
+                if is_expected_to_fail(sol_file):
+                    problems = assert_sol_tester_rejected(sol_file, args.panic_mode)
+                    if problems:
+                        for problem in problems:
+                            print(f"FAIL  {name}: {problem}")
+                        failures.append(name)
+                    else:
+                        print(f"PASS  {name}: correctly rejected at compile time")
+                    continue
+
+                expected = read_expected(sol_file)
+                expected_stdout = read_expected_stdout(sol_file)
+
                 run_sol_tester(args.panic_mode)
                 exe_path = sol_file.with_suffix(".exe")
                 actual, stdout = build_and_run_exe(exe_path)

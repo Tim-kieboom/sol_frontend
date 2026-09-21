@@ -346,6 +346,42 @@ that landing first, in order.
       per-array-element (`Index`) disjointness for overlap-checking, and the narrower
       Deref-not-first-element gap this slice explicitly left in escape-checking's own reborrow
       refinement — both logged as deliberate deferrals, not gaps this pass found by surprise.
+  - [x] **First exe-level "expected to fail to compile" test** — every borrow-checker fault up to this
+        point was only ever proven by a MIR-level unit/integration test calling a checker function (or
+        `mir_run::to_mir`) directly; nothing proved a rejection actually fires through the real CLI
+        end-to-end. `scripts/run_codegen_tests.py` gained a `// expect_fail` file convention (skips the
+        clang-build/run steps entirely; asserts `sol_tester` itself reported failure, plus an optional
+        `// expect_fault: <substring>` check against its combined stdout/stderr) and a new test,
+        `36_dangling_reference_rejected.sol`, reusing this session's own interprocedural
+        dangling-reference motivating example.
+    - **A real, previously-silent bug found and fixed along the way, not by design review**:
+      `sol_tester::main`'s own `frontend()` returned `Ok(!ast_failed)` — a program with an AST-level
+      pass but a *MIR*-level fault (e.g. any borrow-checker rejection) printed `"success"` to stdout
+      regardless, since `mir_failed` (computed from the same, already-MIR-fault-inclusive
+      `all_faults`) was silently never checked. Fixed to `Ok(!mir_failed)` — the correct combined
+      signal, since AST faults are never removed from `all_faults` by the time MIR faults are folded
+      in. This is what made a meaningful `// expect_fail` check possible at all (checking for
+      `"success"` not appearing is now a real signal, not a coincidence).
+    - **That fix immediately surfaced a second, real, previously-masked bug** in an *existing, passing*
+      test: `26_trait_impl_dispatch.sol` started failing, because `mir_run`'s own lowering loop
+      unconditionally called `lower_function` on *every* declared function id, including a trait's own
+      bodyless interface method declarations (`greet(&this): i32` inside `trait Greeter { .. }`) —
+      which `lower_function` itself, by design, hard-errors on (confirmed intentional: an existing
+      unit test, `non_extern_signature_only_function_is_rejected`, asserts exactly this). Every
+      trait-using program had silently carried this fault the whole time; it was invisible only
+      because of the `Ok(!ast_failed)` bug above. Asked the user how to fix it rather than deciding
+      unilaterally (three options: skip trait interfaces in the loop, downgrade the fault, or revert
+      the `Ok` fix) — chose skip-in-the-loop: `mir_run::to_mir`'s own loop now checks
+      `FunctionKind::Signature`'s `external` field *before* calling `lower_function` at all, skipping
+      (not lowering, not faulting) exactly the case with `external: None` — structurally always a
+      trait interface stub (the *only* other source of `FunctionKind::Signature` is an `extern "C"`
+      declaration, always `external: Some(C)`, confirmed by checking both AST-parser construction
+      sites). `lower_function` itself is unchanged, so its own existing rejection test for a bare
+      direct call stays valid.
+    - Proven by the full exe suite passing again (36/36, the previously-broken `26_trait_impl_
+      dispatch.sol` fixed *and* the new `36_dangling_reference_rejected.sol` passing) plus the full
+      `cargo test --workspace` run (zero regressions, same unrelated pre-existing `ast_parser`
+      failure).
   - [x] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
         (rustc's `cannot move out of x because it is borrowed`). `/grill-me`'d first: settled that
         checking "is place `x` moved while a borrow of `x` is still live" doesn't need real
