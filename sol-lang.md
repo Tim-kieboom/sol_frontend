@@ -1,7 +1,7 @@
 # The Sol Programming Language
 
 Sol is a systems language with a Rust-style borrow checker and a terser, more expression-oriented
-surface syntax. Its planned companion, **Goul**, is a transpile target that wraps heap values in
+surface syntax. Its planned companion, **Gol**, is a transpile target that wraps heap values in
 reference-counted boxes (ARC, à la Swift) for a runtime memory model instead of static borrow
 checking — same language, two backends. Goul is not designed yet; see §18.
 
@@ -442,7 +442,7 @@ Variants can be unit (`None`), tuple-style (`Int(int)`), or struct-style with na
 `.Variant{ body }` is one arm; the whole chain *is* the match, not a sequence of steps:
 
 ```sol
-Literal.tag(&this): &str {
+Literal.tag(&this): &'static str {
     this
         .None{"none"}
         .Int{"int"}
@@ -573,8 +573,11 @@ for i, el in array { ... }           // el: int, indexed — like .into_iter().e
 iterations. Exceeding the cap breaks out **with an error** rather than running forever, and the
 whole construct becomes an **expression** evaluating to a `Res`, chainable directly:
 ```sol
-for counter <= 0 limit 4 { counter -= 1 }
-.Err{panic("handle limit error")}
+result := for counter <= 0 limit 4 { 
+    counter -= 1 
+}
+
+result.Err{panic("handle limit error")}
 ```
 This also gives an otherwise-infinite `for {}` a way to become finite and typed, without needing
 `break value` (which doesn't exist in Sol — `break` never carries a value).

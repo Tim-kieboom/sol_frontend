@@ -987,7 +987,144 @@ that landing first, in order.
     tracing (the user's own original motivating example for escape-checking), the deferred
     move-vs-borrow interaction case just above, per-field disjointness for overlap-checking, and
     extending both escape-checking and overlap-checking to `if`/`for` (the same CFG-join/fixed-point
-    work move-checking already went through, not yet ported to either of these two checkers).
+    work move-checking already went through, not yet ported to either of these two checkers). Turned
+    into explicit checklist items below (`/grill-me`'d 2026-09-21) — completing all four is the
+    working definition of "M2 borrow checker done" for now (real per-field/per-path drop elaboration
+    and anything M3-generic-shaped stays out of scope, see the borrow-checker bullet's own earlier
+    "what's left" notes above each finished slice):
+  - [x] **Extend escape-checking to `if`/`else`** (`for` still deferred to its own follow-up, see
+        below) — `/grill-me`'d at length before writing anything, since this is a materially
+        different algorithm shape from move-checking's own `if`/`for` extension: `move_check` is a
+        *forward* dataflow join (union of "maybe moved" states), but `escape_check`'s `trace_origin`
+        is a *backward* walk from a return value to its origin — once a local can have more than one
+        reaching assignment (one per branch), there's no longer "the" single assignment to walk back
+        through.
+    - **Join semantics confirmed**: at an `if`/`else` join, a value's origin is trusted safe only
+      when it's safe on **every** incoming path — the trace forks at the join and walks back through
+      each predecessor independently, requiring all of them to resolve safe (the mirror image of
+      `move_check`'s "moved on *any* path ⇒ reject", for the opposite conclusion: here only
+      all-paths-safe is trusted).
+    - **No-reassignment fallthrough confirmed**: if only one branch reassigns the traced local, the
+      walk on the other, non-reassigning path doesn't stop at "no assignment found here" — it keeps
+      walking backward past the `if` into whatever assigned the local *before* it (same "last write
+      wins" reaching-definition semantics as the straight-line case, just now possibly spanning more
+      than one predecessor block).
+    - **Blowup guard confirmed**: without memoization, a walk that forks at every join could re-walk
+      the same shared upstream path once per downstream join reaching it (exponential in a function
+      with several sequential `if`s). A memo set keyed `(LocalId, BlockId)` — "the value `local`
+      holds at the *start* of this block," independent of which downstream point asked — avoids that.
+    - **Soundness guard confirmed, deliberately not yet needed**: a block still being evaluated
+      (reached again via a back edge while its own first visit hasn't finished) must default to
+      *unsafe*, not optimistically safe — same discipline `move_check`'s `fixed_point` rewrite
+      already established for exactly this class of bug. Not actually exercised by this slice (no
+      cycles reach the memo yet, since `for` is still gated out below), but the design was confirmed
+      up front so the later `for` slice doesn't have to re-derive it.
+    - **Gate reused, not reimplemented**: `move_check`'s own back-edge detector — previously an
+      inline "return `None`, treated as unanalyzed" case inside its now-defunct `reverse_postorder`
+      (later generalized away once `move_check` itself grew real fixed-point handling for loops) —
+      is resurrected as a standalone `pub(super) fn has_back_edge` (a DFS tracking the current
+      recursion stack, not just "ever visited," so a diamond join isn't mistaken for a cycle) and
+      shared by `escape_check` as its skip-`for`-entirely gate, instead of a second, independent
+      detector.
+    - New `escape_check::{trace_from_block_start, trace_within_block}` replace the old flat
+      `trace_origin`/`straight_line_assignments` pair: `trace_within_block` searches one block's own
+      statements (before a given index) in reverse for the traced local's assignment — an alias
+      continues the search within the same block from that point, a fresh `Rvalue::Ref` classifies
+      exactly as before (`Deref` anywhere in its place ⇒ safe, otherwise dangling) — and falls
+      through to `trace_from_block_start` on every predecessor (forked, all-safe required, memoized)
+      the moment nothing is found. `check_escapes` itself now iterates every block ending in
+      `Terminator::Return` (a function can have more than one once `if`/`else` is in play — each
+      `return`/implicit tail-return statement seals its own — unlike straight-line code's "at most
+      one"), collecting one fault per dangling path.
+    - Proven via 6 new/rewritten `mir_parser` unit tests, chosen specifically to distinguish the new
+      behavior from the old, not just re-describe it: `check_escapes_now_flags_a_dangling_return_
+      reached_through_a_bodyless_if_branch` (rewrites the old "skip on any branch" test — the *exact*
+      same source now gets a real fault instead of being silently skipped);
+      `check_escapes_flags_a_dangling_return_reachable_only_through_one_of_two_branches` — the
+      falsifying case named up front during scoping: two independent `Return`s, only one dangling,
+      proving the old blanket-skip gate would have missed a real bug and that multi-return handling
+      actually works; `check_escapes_flags_a_value_only_made_safe_on_one_incoming_path`/
+      `check_escapes_allows_a_value_made_safe_on_every_incoming_path` — a single `return r` fed by a
+      real join (`r` reassigned on only one branch), proving the require-all-safe join rejects the
+      genuinely-still-unsafe case and accepts the genuinely-safe one, not just "rejects anything
+      touching a branch"; `check_escapes_still_skips_functions_containing_a_for_loop` — a regression
+      check that the reused `has_back_edge` gate still holds. All passed on the first implementation
+      attempt, matching every case worked through in the interview beforehand. Full
+      `cargo test --workspace` (131 `mir_parser` tests, up from 127; one unrelated pre-existing
+      `ast_parser` failure — `parameter_missing_type_after_colon_is_rejected` — confirmed failing
+      identically on a clean stash, not caused by this change) and all 35 exe tests pass unchanged.
+  - [ ] **Extend escape-checking to `for`** — the deferred half of the slice above: needs the
+        backward trace to terminate on a revisited-but-not-yet-settled block (via a visited-blocks
+        set defaulting to *unsafe* until proven otherwise, per the soundness guard already confirmed
+        above but not yet exercised) instead of infinitely recursing around the loop's own back edge.
+  - [x] **Extend overlap-checking to `if`/`else`** (`for` still deferred to its own follow-up, see
+        below) — `/grill-me`'d at length before writing anything: the old straight-line version
+        conflated two genuinely separate questions into one linear scan, only possible because
+        straight-line code has a single total order. Split into two independent computations:
+    - **Alias tracing** (`value_of`) — confirmed to reuse `escape_check`'s exact fork-at-a-join
+      shape (search a block's own statements backward, fall through to every predecessor forked the
+      moment nothing is found in-block). Generalized the join rule from escape-checking's binary
+      "require every path safe" to "require every path resolve to the *same* `(place, mutable)`
+      answer, else `None`" — still the same "unfamiliar/disagreeing ⇒ skip, don't guess" discipline,
+      just widened from a boolean to an equality check, since alias tracing answers a richer question
+      than escape-checking's plain safe/unsafe.
+    - **Liveness** (`generation_live_points`) — confirmed as a real backward dataflow pass, separate
+      from alias tracing (unlike escape-checking, this slice needed one from scratch — `escape_check`
+      never had to compute liveness, only trace origins). Two levels, the standard technique: block-
+      level backward liveness (`live_in`/`live_out` per block from each block's own upward-exposed-
+      use/kill summary, a single postorder pass — successors settle before predecessors — sufficient
+      since `if`/`else` alone is acyclic, no fixed point needed yet, mirroring `move_check`'s own
+      pre-loop first slice), then an intra-block backward scan seeded by each block's own `live_out`
+      for exact per-point `live_in`. A specific generation's own live-point *set* (no longer a
+      contiguous interval once it can span branches) is a forward walk from its definition along real
+      point-level successor edges, stopping down any path at a redefinition (a new generation begins
+      there) or wherever the local's no longer live (per the already-computed sets). A point reached
+      via more than one branch from genuinely different generations (`if c { r = &a } else { r = &b
+      }` then a shared read of `r`) legitimately belongs to *both* generations' live sets — confirmed
+      correct, not a bug: whichever branch ran, its value is the one flowing through that read.
+    - Two-level liveness (`compute_block_liveness`/`compute_point_liveness`) reused
+      `move_check::postorder`/`successors`/`has_back_edge` (all three promoted to `pub(super)`,
+      `has_back_edge` shared with `escape_check` too — three checkers, one back-edge detector, not
+      three) instead of a fourth independent implementation.
+    - Overlap between two borrows is now live-point-**set** intersection, not integer-interval
+      overlap — a live range is no longer necessarily contiguous once it can span more than one
+      branch.
+    - Proven via 3 new/rewritten `mir_parser` unit tests, chosen specifically to distinguish the new
+      behavior from both the old *and* from a naive-but-wrong extension:
+      `check_borrow_overlaps_now_flags_an_overlap_reached_through_a_bodyless_if_branch` (rewrites the
+      old "skip on any branch" test — the same source now gets a real fault); `check_borrow_overlaps_
+      allows_two_mutable_borrows_in_mutually_exclusive_branches` — the falsifying case named up front
+      during scoping: a *naive* extension that just concatenated every block into one flat sequential
+      list (instead of real per-point CFG liveness) would see two `&mut` borrows confined to sibling
+      `if`/`else` arms as "sequential" and wrongly flag them; this proves the real CFG-aware liveness
+      respects branch exclusivity, not just that it catches more cases than straight-line code did;
+      `check_borrow_overlaps_still_skips_functions_containing_a_for_loop` — a regression check that
+      the reused `has_back_edge` gate still holds. All passed on the first implementation attempt
+      (one intermediate compile error along the way — a stray `RangeTo`-vs-`usize` slicing mistake in
+      `escape_check`, unrelated to this checker, fixed before any test ran). Full
+      `cargo test --workspace` (133 `mir_parser` tests, up from 131; the same unrelated pre-existing
+      `ast_parser` failure noted in the escape-checking entry above, unaffected) and all 35 exe tests
+      pass unchanged.
+  - [ ] **Extend overlap-checking to `for`** — the deferred half of the slice above, same shape as
+        escape-checking's own deferred `for` slice: needs the liveness dataflow to become a real
+        fixed point (Kildall's algorithm, mirroring `move_check`'s own loop-support upgrade) instead
+        of a single postorder pass, since a loop's back edge means a block's live-in can depend on a
+        later block's own live-in (the loop body), which a single backward pass can't settle in one
+        shot.
+  - [ ] **Interprocedural call-site tracing for escape-checking** — the deferred half of the user's
+        own original motivating example (`lifetime(obj: &Obj): &Obj { return obj }` called as
+        `lifetime(&Obj{})`): today a reference-typed parameter is trusted as safe the moment
+        `trace_origin` reaches it, without checking what any actual caller passed in. Needs tracing
+        into a callee's own return-value dependency on its reference parameters, then checking each
+        call site's actual arguments against that.
+  - [ ] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
+        (rustc's `cannot move out of x because it is borrowed`); today `move_check` and
+        `overlap_check` run as two fully independent passes with no shared state, so a move through
+        an outstanding borrow isn't rejected by either.
+  - [ ] **Per-field disjointness for overlap-checking** — `check_borrow_overlaps` currently treats two
+        borrows of the same root local as conflicting regardless of which field each actually
+        touches (`&o.a` and `&mut o.b` wrongly flagged as overlapping); needs the borrow-timeline
+        generations to key on the full projection (place), not just the root `LocalId`.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
