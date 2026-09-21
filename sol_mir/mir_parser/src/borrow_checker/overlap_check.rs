@@ -5,13 +5,13 @@
 //! do two *live* borrows of the same local conflict? `/grill-me`'d at
 //! length before writing anything — settled scope:
 //!
-//! - **Whole-locals only**: two borrows of the same *root local* conflict
-//!   regardless of which field each one actually touches (`&o.a` and
-//!   `&mut o.b` are wrongly treated as conflicting even though they're
-//!   disjoint) — real per-field precision is a deferred, later slice.
-//! - **Reference-vs-reference only**: a live borrow blocking a *move* of its
-//!   target (`cannot move out of x because it is borrowed`) is a separate,
-//!   later slice, not attempted here.
+//! - **Field-level disjointness for struct fields** (`/grill-me`'d again to
+//!   add this — see the "Per-field disjointness" section below): `&o.a` and
+//!   `&mut o.b` no longer wrongly conflict. `Index` projections (array
+//!   elements) are still coarsened to "same root ⇒ conflict," deferred to
+//!   its own later slice.
+//! - **Move-vs-borrow interaction** (does a move of `x` invalidate a live
+//!   borrow of `x`) is handled — see `check_move_while_borrowed`.
 //! - **The full concrete (M1) CFG shape is now handled**, `for` loops
 //!   included (`/grill-me`'d three times to get here: straight-line, then
 //!   `if`/`else`, now loops too).
@@ -116,6 +116,32 @@
 //! (two genuinely different real answers, or a value reaching an untracked
 //! parameter) is treated as absorbing/final, collapsed to `None` only once
 //! the whole table has converged.
+//!
+//! # Per-field disjointness
+//!
+//! `/grill-me`'d before writing anything: two settled scope cuts.
+//! **Field projections only** — `arr[i]` vs `arr[j]` can't be proven
+//! disjoint without real symbolic range analysis (an index is always a
+//! runtime local in this MIR, never a compile-time constant, per the
+//! bounds-checking design), so any `Index` step anywhere in either place's
+//! projection still falls back to today's coarse "same root ⇒ conflict"
+//! answer — deferred to its own later slice, not attempted here.
+//! **A prefix relationship is always overlapping** — `&o` (the whole
+//! struct) and `&mut o.a` (one of its fields) conflict exactly as before;
+//! only two *genuinely disjoint* field paths (differing at some `Field`
+//! index, with neither a prefix of the other) are newly accepted.
+//! `fields_disjoint` walks both projections in lockstep and can only ever
+//! *narrow* the set of flagged conflicts relative to the pre-this-slice
+//! baseline (an `Index` step, or a genuine prefix, always falls back to
+//! "not proven disjoint," never a new false negative) — the opposite
+//! direction from every other "unfamiliar shape ⇒ skip, don't guess" rule
+//! in this module, which defaults to *not* reporting; here the safe default
+//! is *still* reporting, since that's what the code already did before this
+//! slice existed. `check_move_while_borrowed` needed no changes at all: a
+//! tracked move's own place always has an *empty* projection (whole-locals
+//! only, already true before this slice), which is a prefix of every other
+//! place sharing its root — so a move of `o` already, correctly, conflicts
+//! with a borrow of any of `o`'s individual fields.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -155,7 +181,7 @@ fn analyze(function: &mir::Function) -> Analysis<'_> {
             let Some((local, rvalue)) = point.assign else {
                 continue;
             };
-            let Resolved::Value(place, mutable) = classify_generation(
+            let Resolved::Value(place, projection, mutable) = classify_generation(
                 rvalue,
                 block_id,
                 index,
@@ -177,6 +203,7 @@ fn analyze(function: &mir::Function) -> Analysis<'_> {
             borrows.push(Borrow {
                 local,
                 place,
+                projection,
                 mutable,
                 def: (block_id, index),
                 live_points,
@@ -223,6 +250,9 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
                 let (a, b) = (group[i], group[j]);
                 if !(a.mutable || b.mutable) {
                     continue; // shared vs. shared — always fine
+                }
+                if fields_disjoint(&a.projection, &b.projection) {
+                    continue;
                 }
                 if a.live_points.is_disjoint(&b.live_points) {
                     continue;
@@ -290,6 +320,29 @@ fn rank_of(block_rank: &HashMap<BlockId, usize>, point: (BlockId, usize)) -> (us
     (block_rank.get(&point.0).copied().unwrap_or(0), point.1)
 }
 
+/// Whether two borrows of the same root local can be proven disjoint — see
+/// the module's own "Per-field disjointness" docs. Walks both projections
+/// in lockstep: the first `Field` index they disagree on proves
+/// disjointness; either projection ending first (one is a prefix of the
+/// other) means they overlap; an `Index` step on either side (or, in
+/// principle, a `Deref` — never actually reachable here, since a borrow
+/// with one isn't tracked at all) gives up and conservatively reports "not
+/// proven disjoint," the same coarse answer this whole check gave before
+/// this slice existed.
+fn fields_disjoint(a: &[mir::PlaceElem], b: &[mir::PlaceElem]) -> bool {
+    for (elem_a, elem_b) in a.iter().zip(b.iter()) {
+        match (elem_a, elem_b) {
+            (mir::PlaceElem::Field(index_a), mir::PlaceElem::Field(index_b)) => {
+                if index_a != index_b {
+                    return true;
+                }
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// One flattened program point within its own block, in that block's own
 /// execution order.
 struct PointInfo<'a> {
@@ -312,9 +365,14 @@ struct PointInfo<'a> {
 struct Borrow {
     /// The local currently holding this borrow — used for the fault's span.
     local: LocalId,
-    /// The root local actually being borrowed (whole-locals only — see the
-    /// module's own docs).
+    /// The root local actually being borrowed.
     place: LocalId,
+    /// The field path from `place` down to what's actually borrowed (e.g.
+    /// `[Field(0)]` for `&o.a`) — never contains `Deref` (a borrow whose own
+    /// place has one isn't tracked at all, see the module's own docs).
+    /// Compared via `fields_disjoint`, not equality, when deciding whether
+    /// two borrows of the same root actually conflict.
+    projection: Vec<mir::PlaceElem>,
     mutable: bool,
     def: (BlockId, usize),
     live_points: HashSet<(BlockId, usize)>,
@@ -567,23 +625,24 @@ fn compute_point_liveness(
 /// module's own docs on why `Unknown` (a join identity, simply skipped over
 /// rather than treated as a disagreement) has to exist as its own state,
 /// distinct from `Disagreement` (a genuinely final, settled "give up").
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// `Value` carries the borrowed place's own field-projection alongside its
+/// root local and mutability (not just the root — see the module's own
+/// "Per-field disjointness" docs) — `Vec<PlaceElem>` isn't `Copy`, so unlike
+/// `escape_check`'s `Origin`, this only derives `Clone`.
+#[derive(Clone, PartialEq, Eq)]
 enum Resolved {
     Unknown,
-    Value(LocalId, bool),
+    Value(LocalId, Vec<mir::PlaceElem>, bool),
     Disagreement,
 }
 
 fn join_resolved(a: Resolved, b: Resolved) -> Resolved {
-    match (a, b) {
-        (Resolved::Unknown, other) | (other, Resolved::Unknown) => other,
+    match (&a, &b) {
+        (Resolved::Unknown, _) => b,
+        (_, Resolved::Unknown) => a,
         (Resolved::Disagreement, _) | (_, Resolved::Disagreement) => Resolved::Disagreement,
-        (Resolved::Value(local_a, mutable_a), Resolved::Value(local_b, mutable_b)) => {
-            if local_a == local_b && mutable_a == mutable_b {
-                a
-            } else {
-                Resolved::Disagreement
-            }
+        (Resolved::Value(..), Resolved::Value(..)) => {
+            if a == b { a } else { Resolved::Disagreement }
         }
     }
 }
@@ -651,13 +710,13 @@ fn resolve_from_block_start(
     this_round: &mut AliasTable,
 ) -> Resolved {
     let key = (local, block_id);
-    if let Some(&settled) = this_round.get(&key) {
-        return settled;
+    if let Some(settled) = this_round.get(&key) {
+        return settled.clone();
     }
     if in_progress.contains(&key) {
         return previous_round
             .get(&key)
-            .copied()
+            .cloned()
             .unwrap_or(Resolved::Unknown);
     }
 
@@ -674,7 +733,7 @@ fn resolve_from_block_start(
         this_round,
     );
     in_progress.remove(&key);
-    this_round.insert(key, result);
+    this_round.insert(key, result.clone());
     result
 }
 
@@ -737,9 +796,9 @@ fn resolve_before_index(
 }
 
 /// Classifies one specific, already-known assignment's rvalue: a fresh,
-/// `Deref`-free `Rvalue::Ref` is a genuine borrow of its own `place.local`
-/// (any `Field`/`Index` projection coarsened away, whole-locals only — see
-/// the module's own docs); a bare-local alias continues the search via
+/// `Deref`-free `Rvalue::Ref` is a genuine borrow of its own `place` (root
+/// local plus field projection, kept — see the module's own "Per-field
+/// disjointness" docs); a bare-local alias continues the search via
 /// `resolve_before_index`; anything else isn't a tracked local-place borrow.
 fn classify_generation_resolved(
     rvalue: &mir::Rvalue,
@@ -775,7 +834,7 @@ fn classify_generation_resolved(
             if has_deref {
                 Resolved::Disagreement
             } else {
-                Resolved::Value(place.local, *mutable)
+                Resolved::Value(place.local, place.projection.clone(), *mutable)
             }
         }
         _ => Resolved::Disagreement,

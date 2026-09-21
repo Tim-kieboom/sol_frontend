@@ -329,10 +329,52 @@ that landing first, in order.
       `cargo test --workspace` (139 `mir_parser` tests, up from 137; 10 `mir_run` tests, up from 9;
       same unrelated pre-existing `ast_parser` failure, unaffected) and all 35 exe tests pass
       unchanged.
-  - [ ] **Per-field disjointness for overlap-checking** — `check_borrow_overlaps` currently treats two
-        borrows of the same root local as conflicting regardless of which field each actually
-        touches (`&o.a` and `&mut o.b` wrongly flagged as overlapping); needs the borrow-timeline
-        generations to key on the full projection (place), not just the root `LocalId`.
+  - [x] **Per-field disjointness for overlap-checking** — `check_borrow_overlaps` no longer treats
+        every borrow of the same root local as conflicting regardless of field. `/grill-me`'d first,
+        two scope cuts settled before writing anything:
+    - **Field projections only** — `arr[i]`/`arr[j]` still coarsen to "same root ⇒ conflict," deferred
+      to its own later slice: an index is always a runtime local in this MIR, never a compile-time
+      constant (per the bounds-checking design), so there's no sound way to prove two array-element
+      borrows disjoint without real symbolic range analysis.
+    - **A prefix relationship is always overlapping** — `&o` (the whole struct) and `&mut o.a` (one of
+      its fields) still conflict exactly as before; only two *genuinely disjoint* field paths (differing
+      at some `Field` index, neither a prefix of the other) are newly accepted. Confirmed this is the
+      correct default direction *opposite* every other "unfamiliar shape ⇒ skip, don't guess" rule in
+      this module (which defaults to *not* reporting): here, "can't prove disjoint" has to still mean
+      "conflict," since that's what the code already did before this slice — the refinement can only
+      *narrow* the set of flagged conflicts relative to that baseline, never introduce a new missed one.
+    - `PlaceElem` (`mir_model`) gained `PartialEq`/`Eq` (previously only `Debug`/`Clone`) — needed to
+      compare two borrows' field projections at all. `Borrow` gained a `projection: Vec<PlaceElem>`
+      field alongside its existing root-`LocalId` `place`; new `fields_disjoint` walks two projections
+      in lockstep, the first differing `Field` index proving disjointness, either side ending first
+      (a prefix) or an `Index`/`Deref` step anywhere falling back to "not proven disjoint." Wired into
+      `check_borrow_overlaps`'s own pairwise loop as one more early-continue guard, alongside the
+      existing mutability and live-point-overlap checks.
+    - `Resolved::Value` (the alias-tracing lattice's own "real answer" state) now carries the borrowed
+      place's projection too, not just its root local — otherwise two branches resolving to different
+      fields of the same root would wrongly agree at a join. Since `Vec<PlaceElem>` isn't `Copy`,
+      `Resolved` dropped its own `Copy` derive (kept `Clone`); the handful of call sites that relied on
+      copying it (`this_round.get(&key)`/`previous_round.get(&key)` lookups, the settled result written
+      back after `resolve_before_index` returns) switched to explicit `.clone()`/`.cloned()`.
+    - `check_move_while_borrowed` needed **no changes at all**: a tracked move's own place always has
+      an *empty* projection (whole-locals only, already true before this slice) — an empty projection
+      is a prefix of every other place sharing its root, so a move of `o` already, correctly, conflicts
+      with a borrow of any of `o`'s individual fields, with no new logic required.
+    - Proven via 3 new `mir_parser` unit tests: `check_borrow_overlaps_allows_two_mutable_borrows_of_
+      disjoint_fields` (the core new-acceptance case — two live `&mut` borrows of different fields of
+      the same struct), `check_borrow_overlaps_flags_two_mutable_borrows_of_the_same_field` (proves
+      the refinement isn't over-broad — the same field still conflicts), and `check_borrow_overlaps_
+      flags_a_whole_struct_borrow_overlapping_a_field_borrow` (the prefix-relationship half). All 3
+      passed on the first implementation attempt; all 9 pre-existing `check_borrow_overlaps` tests and
+      both `check_move_while_borrowed` tests passed unchanged. Full `cargo test --workspace`
+      (142 `mir_parser` tests, up from 139; same unrelated pre-existing `ast_parser` failure,
+      unaffected) and all 35 exe tests pass unchanged.
+    - **Closes out 4 of the 5 checklist items this `/grill-me` series set as the working definition of
+      "M2 borrow checker done"** (see this section's own opening note) — only interprocedural
+      call-site tracing for escape-checking remains open from that list. What's left beyond that
+      self-imposed bar: that interprocedural tracing, plus per-array-element (`Index`) disjointness for
+      overlap-checking — both already logged above as their own explicit deferrals, not new gaps this
+      pass found.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

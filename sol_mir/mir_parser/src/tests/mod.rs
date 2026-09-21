@@ -3730,6 +3730,69 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body() {
 }
 
 #[test]
+fn check_borrow_overlaps_allows_two_mutable_borrows_of_disjoint_fields() {
+    // The core case for per-field disjointness: `ra`/`rb` are both `&mut`,
+    // both live at the same time, but of two different fields of the same
+    // struct — genuinely disjoint memory, so this must be accepted even
+    // though a whole-locals-only check would (wrongly) flag it.
+    let mir = lower_source(
+        "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    ra := &mut var.a\n    rb := &mut var.b\n    useMut(ra)\n    useMut(rb)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "two mutable borrows of disjoint fields should never be flagged, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_two_mutable_borrows_of_the_same_field() {
+    // Same shape as the disjoint-fields case, but both borrows target the
+    // exact same field — proves field-disjointness isn't over-broad; a
+    // real conflict on the same field must still be caught.
+    let mir = lower_source(
+        "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    r1 := &mut var.a\n    r2 := &mut var.a\n    useMut(r1)\n    useMut(r2)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected two overlapping mutable borrows of the same field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_whole_struct_borrow_overlapping_a_field_borrow() {
+    // A whole-struct borrow is a prefix of every one of its own fields'
+    // places, so it must still conflict with a live field borrow — the
+    // "one place is a prefix of the other ⇒ overlapping" half of this
+    // slice's own scoping, not just the "genuinely disjoint fields" half.
+    let mir = lower_source(
+        "struct Pair {\n    a: int\n    b: int\n}\nuseMutPair(r: &mut Pair) {}\nuseMutField(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    rWhole := &mut var\n    rField := &mut var.a\n    useMutPair(rWhole)\n    useMutField(rField)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the whole-struct borrow to still conflict with the field borrow, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
 fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed() {
     // The core case, and proof the conflict rule really is mutability-
     // independent (unlike `check_borrow_overlaps`'s own matrix): `r` is only

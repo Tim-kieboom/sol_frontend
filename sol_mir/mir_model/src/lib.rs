@@ -191,7 +191,7 @@ impl Place {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum PlaceElem {
     Field(usize),
     Index(LocalId),
