@@ -19,7 +19,8 @@ collected in the Appendix.
   Python. Writing one statement per line is just house style.
 - **`;` has exactly one job: discard a value.** Since newlines don't separate statements, `;` is
   needed to stack multiple statements on one line (`a := 1; b := 2`), and it's also the one way
-  to suppress a block's final expression from being that block's value (see §4).
+  to suppress a block's final expression from being that block's value (see §4). **These two
+  cases are exhaustive** — there's no other situation where a semicolon is required.
 - Three comment forms: `//` single-line, `///` doc comment, `/* ... */` multi-line.
 - Punctuation used for declarations:
   - `::` — associated constant (`LIST_GROW :: f32.(2)`)
@@ -109,19 +110,59 @@ unsafe { unwrap: int = option.null{undefined} }
 
 ### 3.3 Arrays, Slices, and Array Literals
 
-Array **types** — the size/borrow marker comes *before* the element type:
-- `[N]T` — a fixed-size stack array (size is part of the type: `[4]int`).
-- `[]T` — a heap array (dynamically sized).
-- `[&]T` — a slice: a borrowed view over a run of `T`.
-- `[&mut]T` — a mutable slice.
+Six array-family types, all sharing the `[marker]T` shape — the marker before the element type
+says where the data lives and what's tracked alongside it:
 
-Array **literals** compose independently of stack-vs-heap:
+| Type | Syntax | Representation |
+|---|---|---|
+| `StackArray` | `[N]int` | stack value, `N` part of the type (LLVM `[int x N]`) |
+| `Slice` | `[&]int` | `{buffer: RawPtr, len: uint}` — borrowed, immutable view |
+| `MutableSlice` | `[&mut]int` | `{buffer: RawPtr, len: uint}` — borrowed, mutable view |
+| `Array` | `[]int` | `{buffer: RawPtr, len: uint}` — owned, heap-allocated |
+| `DynamicArray` | `[dyn]int` | `{buffer: RawPtr, len: uint, cap: uint}` — owned, growable |
+
+**`StackArray` (`[N]T`)** — a fixed-size stack value; `N` is part of the type, exactly as before.
+**`N` must be a compile-time value** (a literal or a `const` fn, §5) — a runtime `N` couldn't
+produce a fixed type, so a runtime-length fill goes through heap `Array` instead (below):
 ```sol
-a: [4]int := [1, 2, 3, 4]        // plain literal
-a: [3]i64 := [i64: 1, 2, 3]      // explicit element-type prefix, for when inference needs help
-a: [4]int := [for 4 => 0]        // fill/comprehension → [0, 0, 0, 0]
-a: [3]int := [for i in 3 => i]   // named loop variable → [0, 1, 2]
-a: []int  := new[1, 2, 3]        // new[...] allocates any of the above forms on the heap
+COMPTIME_LEN :: 4
+mut stackArray: [4]int = [1, 2, 3, 4]   // plain literal
+stackArray = [for COMPTIME_LEN => 0]    // fill/comprehension; comptimeLen() must be a `const` fn (§5)
+
+a: [3]i64 := [1, 2, 3]                  
+b := [i64: 1, 2, 3]                     // explicit element-type prefix, for when inference is needed
+c := [i8: for i in 3 => i]             // named loop variable → [0, 1, 2]
+```
+
+**`Array` (`[]T`)** — a heap-allocated, owned array whose **length is fixed once created and
+never resized in place** (no `cap`, no `push`/`pop`/realloc — the heap counterpart to `[N]T`, not
+to `[dyn]T`). Growing means building a new `Array`/`[dyn]T` and moving data over. `new[...]`
+allocates a literal/fill form on the heap:
+```sol
+mut array: []int = new[1, 2, 3, 4]
+array = new[for runtimeLen() => 1]    // fill length can be a runtime value here, unlike [N]T
+```
+
+**`DynamicArray` (`[dyn]T`)** — the growable one (Rust's `Vec<T>`): adds `cap` alongside `buffer`
+and `len`, and supports `push`/`pop`. `new dyn[...]` is the literal/fill form; `withCapacity` is an
+ordinary associated constructor (§3.5), called through the type the same way `int.parse(...)` is:
+```sol
+mut dynArray: [dyn]int = new dyn[1, 2, 3, 4]    
+dynArray = new dyn[for runtimeLen() => 1]       
+dynArray = [dyn]int.withCapacity(10)            
+dynArray.push(10)
+value: ?int = dynArray.pop()     // pop(): ?T — .null{} (§3.2) supplies the empty-array fallback
+```
+
+**`Slice`/`MutableSlice` (`[&]T`/`[&mut]T`)** — a borrowed view, never owning: `{buffer, len}`
+exactly like `Array`, but the `buffer` is borrowed rather than owned, subject to the same aliasing
+rules as any other borrow (§11). `&[...]`/`&mut[...]` borrows an array literal — stack-allocating
+the backing data as a temporary and handing back a slice over it, empty (`&[]`) being the
+degenerate case:
+```sol
+slice: [&]int = &[]              // empty slice
+mutSlice: [&mut]int = &mut[]     // empty mutable slice
+overlay: [&]int = &[1, 2, 3]     // slice over a stack-allocated temporary
 ```
 
 ### 3.4 Generics
@@ -143,7 +184,10 @@ related shorthands:
 - `Type.` (bare, no call) denotes **the constructor as a value** — a one-argument lambda
   equivalent to `el => Type.(el)`. Used directly inside a match-chain arm where a value (not a
   function) is expected, a bare `Type.` implicitly applies itself to `it`
-  (`this.Int{f64.}` ≡ `this.Int{f64.(it)}`).
+  (`this.Int{f64.}` ≡ `this.Int{f64.(it)}`). **This isn't constructor-specific: any bare reference
+  to a one-argument function or method, used as a value in that same position, gets the same
+  implicit-apply-to-`it` treatment** — `Type.` is just the most common case, not a special rule of
+  its own.
 - `Type.EMPTY`/similar named constants (e.g. `str.EMPTY`) are ordinary associated constants,
   unrelated to the `Type.` shorthand above — they just happen to coincide for `str`.
 
@@ -334,7 +378,9 @@ use Literal impl Display {
 **A struct can implement the same generic trait multiple times if the generic parameters
 differ** — including when the parameter is in output position (`Index<Out=T>`), not just input
 position. Disambiguation for output-position cases comes from context/return-type inference at
-the call site. What's disallowed is implementing a trait with *identical* generic parameters
+the call site; **when nothing at the call site disambiguates, it's a compile error** — the same
+"ambiguous associated type" failure Rust produces, rather than silently picking one impl by
+declaration order. What's disallowed is implementing a trait with *identical* generic parameters
 twice.
 
 ---
@@ -462,6 +508,19 @@ This desugars to `match this { None => "none", Int(x) => "int", Str(s) => "str" 
   number := value.Err{1}.else{it + 1} // ≡ match value { Err(_) => 1, other => other + 1 }
   ```
 - Chain arms are **read-only, by-value** — no `&mut` access to a payload through a chain.
+  **Match-and-mutate reuses `if type` instead** (§10.2/§19.2), rather than inventing a separate
+  construct: `if type Int(v) := &mut expr { ... }` binds `v: &mut int`.
+- **A partial chain's unhandled arm passes through the *unwrapped payload* of whichever
+  variant(s) remain**, not the whole original union value — `other` in `value.Err{1}` (Ok
+  unhandled) binds to `Ok`'s `int` payload directly, which is exactly why the type-checks above
+  work (`Err{1}` is `int`, the `Ok` passthrough is also `int` — both arms unify, per §4's ordinary
+  rule). When more than one variant remains unhandled, `other`'s type is the union of those
+  variants' payload types. For unit variants (no payload), `other` is just the unit value itself:
+  ```sol
+  union Foo { One, Two, Three }
+  obj := Foo.One
+  v := obj.One{panic("msg")}   // ≡ match obj { One => panic("msg"), other => other }
+  ```
 
 **The map-chain (`->Variant{}`)** — a completely different thing: single-variant `map`/`map_err`,
 Rust-style, applied one at a time rather than as a combined match:
@@ -485,8 +544,10 @@ This one *is* exhaustive, with Rust's full pattern grammar (tuples, guards, bind
 
 **If-let**: `if type Err(err) := newRes { ... }`, binding `err` only inside the block.
 
-**`typeof`**: `newRes.typeof` returns a first-class, comparable type value.
-**Open:** compared at compile time, runtime, or both (this affects monomorphization)?
+**`typeof`**: `newRes.typeof` returns a first-class, comparable type value, comparable **both at
+compile time** (e.g. specializing generic code during monomorphization) **and at runtime** (e.g.
+comparing two `&any`'s runtime types, §19) — the same dual-purpose role as Odin's `typeid`, which
+this design already takes as its model.
 
 ---
 
@@ -521,8 +582,9 @@ impl Drop drop(&mut this) { free(this.buffer) }
 ```
 Called automatically at scope-exit for a value's final (non-moved-from) owner.
 
-**Open:** what `mut` means for a variable after it's been moved from (is reassignment always
-legal regardless, since the slot is empty)?
+**A moved-from binding can always be reassigned.** The slot left behind by a move is simply empty;
+only *reading* a moved-from value is an error, exactly like Rust's move-then-reassign pattern —
+`mut` doesn't add any extra restriction here beyond ordinary move-checking.
 
 **Idea, not designed (arena allocation for non-escaping-from-allocating-frame values):** narrowed,
 after grill-me, from a full region-inference design (general cross-scope regions, ML Kit-style) to
@@ -573,18 +635,24 @@ for i, el in array { ... }           // el: int, indexed — like .into_iter().e
 iterations. Exceeding the cap breaks out **with an error** rather than running forever, and the
 whole construct becomes an **expression** evaluating to a `Res`, chainable directly:
 ```sol
-result := for counter <= 0 limit 4 { 
+result: Res<none, LimitExceeded> = for counter <= 0 limit 4 { 
     counter -= 1 
 }
 
 result.Err{panic("handle limit error")}
 ```
 This also gives an otherwise-infinite `for {}` a way to become finite and typed, without needing
-`break value` (which doesn't exist in Sol — `break` never carries a value).
+`break value` (which doesn't exist in Sol — `break` never carries a value). `LimitExceeded` is a
+dedicated marker error type, distinct from a caller's own `str`/custom errors, so a `limit`
+timeout can't be silently conflated with an ordinary application error.
 
-**Open:** exact `Res` shape from `limit`; whether `break`/`continue` exist as plain
-(valueless) keywords and whether labeled loops exist; range syntax (`0..3` vs `0..=3`) is
-inferred but not formally specified.
+**`break`/`continue` exist as plain, valueless keywords**, exactly like Rust minus
+break-with-value: `break` exits the innermost `for`, `continue` skips to its next iteration.
+**There are no labeled loops** — both always target the innermost enclosing `for`; a multi-level
+exit needs a flag or an early `return` instead.
+
+**Range syntax is Rust's, both forms**: `0..3` (exclusive) and `0..=3` (inclusive) — no new
+spelling invented, and this is also the `Range<T>` shape `Limit<T, RANGE>` (§20) uses.
 
 ---
 
@@ -618,12 +686,19 @@ panics for programmer-error/unrecoverable conditions.
 - **`Eq`/`Ord` are auto-derived whenever every field/variant supports them** — structural
   equality/ordering, field-by-field or variant-by-variant, automatic rather than requiring a
   derive annotation. `#[!Eq]`/`#[!Ord]` presumably opt out.
-- **Custom operator overloading is planned, not yet designed.** The intent is `+`/`-`/`==`/`<`
-  etc. all dispatching through traits the same way `Index` already does (`Add`, `Sub`, ...),
-  likely following the same "differ by generic parameter" rule already established for traits.
+- **Custom operator overloading dispatches through per-operator traits**, the same way `Index`
+  already does: `+` through `Add`, `-` through `Sub`, `==` through `Eq`, `<`/`>`/... through `Ord`,
+  and so on — one trait per operator, following the same "differ by generic parameter" rule
+  already established for traits (§7), not a bespoke mechanism.
 
-**Open:** the full operator list and precedence/associativity table don't exist yet; `Ord`
-tie-breaking on multi-variant unions is unspecified.
+**`Ord` is not cross-variant on a multi-variant union.** Auto-derivation only produces `Ord` when
+there's a single variant (so its fields have a well-defined field-by-field order) or the union's
+variants are otherwise directly comparable; comparing values from two *different* variants
+(`Err(_)` vs `Ok(_)`) is a compile error rather than picking an arbitrary declaration-order
+ranking — there's no natural order between "this failed" and "this succeeded," so the derive
+doesn't invent one.
+
+**Open:** the full operator list and precedence/associativity table don't exist yet.
 
 ---
 
@@ -692,9 +767,26 @@ task fn().await
   inside code the async runtime is already driving is the classic deadlock footgun (Tokio panics
   on the equivalent). `task.block` is only valid at genuinely sync call sites.
 
-**Open:** detached/fire-and-forget tasks (spawn that outlives its scope), cancellation, channels
-and a `select`-equivalent, and whether an `actor`-style construct exists (it would collide with
-the coloring decision — would calling an actor method need `.await`?).
+**No detached/fire-and-forget spawns.** Every `spawn` must be awaited inside its enclosing
+`task { }` — there's no opt-out that lets a task outlive its spawning scope, keeping the
+structured-concurrency guarantee airtight. Fire-and-forget work is just its own top-level
+`task { }`, not a variant of `spawn`.
+
+**Cooperative cancellation.** A `Task<T>` handle gets a `.cancel()` that sets a flag checked at
+the task's own `.await` points — the standard structured-concurrency pattern (Kotlin
+coroutines/trio's model), fitting naturally since `task { }` already tracks child lifetimes.
+
+**Channels and `select`, Rust-`mpsc`-style.** A `Channel<T>` with sender/receiver halves, plus a
+`select { }` construct to race multiple `.await`-able sources — the standard complement to
+structured `spawn`/`task`.
+
+**No `actor` construct.** Ordinary structs plus the borrow checker's aliasing rules (§11) already
+serialize access to mutable state; a dedicated `actor` primitive would duplicate that machinery
+without a clear payoff, and it would also have reopened the function-coloring question (would
+calling an actor method need `.await`?) for no clear benefit.
+
+**Open:** the exact `Channel<T>`/`select { }` API surface (buffered vs. unbuffered, `select`'s
+arm syntax) isn't designed yet, just the intent that it exists.
 
 ---
 
@@ -713,6 +805,9 @@ others (e.g. `intrinsic.typeinfo`, §19) are perfectly safe and callable directl
 `unsafe` wrapper needed. `unsafe { }` gates specific dangerous operations, not the `intrinsic`
 namespace as a whole.
 
+`RawPtr` is the bare-pointer representation underneath `Slice`/`Array`/`DynamicArray`'s `buffer`
+field (§3.3) — an implementation detail those types wrap, not itself a surface-level array type.
+
 ---
 
 ## 17. Testing
@@ -727,8 +822,11 @@ No special `Test` trait. Testing is a file-naming + attribute convention:
   }
   ```
 
-**Open:** exact `sol test` CLI behavior; whether a failed `assert` is caught per-test rather
-than aborting the whole run (presumably yes).
+**A failed `assert` is caught per-test.** Each `#[test]` fn runs in a context that catches its
+panic and reports just that one test as failed — the rest of the suite still runs, matching
+`cargo test`/`go test`'s behavior.
+
+**Open:** exact `sol test` CLI behavior (flags, output format, parallelism).
 
 ---
 
@@ -796,9 +894,10 @@ if type v: int := value {
 Since `any` never owned the data, the bound `v` is itself a borrow of the underlying value
 (`v: &int` here) — consistent with §19.1. For a type that implements `AutoCopy` (every
 primitive does, §11), that borrow behaves like an implicit copy wherever one is needed, the same
-as any other `AutoCopy` value would. **Open:** whether downcasting to a non-`AutoCopy` type
-(a struct, say) yields only `&T`, or whether an owned copy is obtainable via `.copy` (§11) on
-the bound reference — `v.copy` — the same way you'd duplicate any other borrow.
+as any other `AutoCopy` value would. **For a non-`AutoCopy` type (a struct, say), `v` is an
+ordinary borrow, and `.copy` (§11) works on it exactly as it would on any other borrow** —
+`v.copy` yields an owned duplicate, with no special-casing needed for the fact that `v` came from
+an `any` downcast rather than an explicit `&`.
 
 ### 19.3 Full reflection: `intrinsic.typeinfo` and `TypeInfo`
 
@@ -847,12 +946,15 @@ printFields(value: &any) {
 }
 ```
 
-**Open:** exact shape of `PrimitiveKind`/`VariantInfo`/`EnumVariantInfo`; whether `TypeInfo` is
-itself usable as an `&any`'s target for `if type` (reflecting on reflection); whether field
-*values* (not just names/types/offsets) are reachable generically for a struct behind an `&any`
-— that's the piece that would make something like a generic serializer possible, and it's the
-part most likely to run into the borrow-checker/ownership questions from §19.1 and §19.2 again,
-just per-field instead of for the whole value.
+**`TypeInfo` is reflectable through `if type` just like any other union** — it isn't
+special-cased or hidden from the `any` machinery it's built on top of, so
+`if type v: TypeInfo := value` works the same way it would for any other union type (§10, §19.2).
+
+**Open:** exact shape of `PrimitiveKind`/`VariantInfo`/`EnumVariantInfo`; whether field *values*
+(not just names/types/offsets) are reachable generically for a struct behind an `&any` — that's
+the piece that would make something like a generic serializer possible, and it's the part most
+likely to run into the borrow-checker/ownership questions from §19.1 and §19.2 again, just
+per-field instead of for the whole value.
 
 ---
 
@@ -914,42 +1016,49 @@ this point every generic parameter in the language (`List<T>`, `Result<O, E>`, .
 type. `Limit` needs its second parameter to be a range value instead, so const generics are now
 a real prerequisite, not just a `Limit`-specific detail.
 
-**Open:**
-- Const generics themselves aren't designed — syntax for declaring one (`Limit<T, const R: Range<T>>`?
-  something else?), and how broadly they're allowed beyond this one use case.
-- `Range<T>` (or whatever type a `1..u8.MAX` expression actually has) isn't formally specified
-  anywhere — this connects directly to §12's still-open range-syntax question.
-- How to get the underlying `T` back out of a `Limit<T, RANGE>` — a `.value` field, an unwrap
-  conversion mirroring `distinct`'s `T.(value: Limit<T, RANGE>)`, or something else?
-- Whether a `Limit<T, RANGE>`'s value can be mutated in place after construction (risking
-  re-violating the range) or whether it's immutable once built, requiring reconstruction
-  (and a fresh `Res` check) to change.
+**Const generics use an inline `const` marker, mirroring Rust's `const N: usize`:**
+```sol
+struct Limit<T, const RANGE: Range<T>> {
+    mut value: T
+    This.(value: T): Res<This> => ...
+}
+```
+`Range<T>` is exactly the `0..3`/`0..=3` type from §12's range syntax — so `Limit`'s const
+parameter is just an ordinary value of that type, not a new kind of thing.
+
+**Unwrapping a `Limit<T, RANGE>` back to `T` mirrors `distinct`'s own unwrap** (above) rather than
+exposing a public field: `T.(value: Limit<T, RANGE>)`, the same `Type.(arg)` dispatch mechanism
+used everywhere else (§6). This keeps `Limit`'s internal field private and the conversion
+consistent with the pattern the doc already established for `distinct`.
+
+**A `Limit<T, RANGE>`'s value is mutable in place, re-checked on every mutation.** A `mut
+Limit<T, RANGE>` allows direct mutation of the wrapped value, but each mutation re-runs the range
+check — so a plain-looking assignment can fail (or panic), the trade accepted for the ergonomics
+of not having to reconstruct the wrapper on every change (e.g. in a hot loop).
+
+**Open:** how broadly const generics are allowed beyond this one use case (arbitrary const
+expressions as parameters elsewhere in the language, or just this one `Limit`-shaped need).
 
 ---
 
 ## Appendix: Open Design Questions
 
-Collected from inline **Open:** markers above, for at-a-glance status:
+Collected from inline **Open:** markers above, for at-a-glance status. Most of what used to be
+listed here has been resolved (see the relevant sections); what's left is deliberately deferred,
+either because it's a large standalone design surface or because nothing currently depends on it:
 
-- **Pattern matching** — the exact type-inference rule for a partial `.` match-chain (handled-arm
-  type vs. the implicit passthrough-arm type); whether `if type Pattern := &mut expr` is the
-  answer for "match and mutate".
-- **Control flow** — `Res` shape from a `limit`-capped loop; whether `break`/`continue` exist
-  as plain keywords and whether labeled loops exist; formal range syntax (`0..3` vs `0..=3`).
-- **Ownership** — what `mut` means for a variable after it's been moved from.
-- **Traits** — output-position generic disambiguation when there's no type annotation to infer
-  from (e.g. `Index<Out=T>` with no surrounding context).
-- **Operators** — full list, precedence/associativity table, and the overloading design itself.
-- **Concurrency** — detached tasks, cancellation, channels/`select`, and whether an `actor`
-  construct exists alongside `async`/`await` coloring.
-- **Misc** — whether a semicolon is ever *required* beyond the cases already settled in §1/§4;
-  whether the implicit-apply-to-`it` sugar for bare `Type.` generalizes to any unapplied
-  single-argument callable or stays specific to constructors.
-- **Reflection** — whether downcasting an `any` to a non-`AutoCopy` type can yield an owned
-  `.copy` or only a borrow; exact shape of `PrimitiveKind`/`VariantInfo`/`EnumVariantInfo`;
-  whether generic per-field *value* access through an `any` is possible (needed for a generic
-  serializer, and the hardest open piece of §19).
-- **Goul** — essentially everything (§18).
-- **Type aliases** — const generics aren't designed at all (needed for `Limit<T, RANGE>`);
-  `Range<T>`'s formal type is unspecified (ties to §12's open range-syntax item); how to unwrap
-  a `Limit<T, RANGE>` back to `T`; whether its value is mutable in place or reconstruction-only.
+- **Operators** — the full operator list and precedence/associativity table (the trait-dispatch
+  *shape* itself is now settled, §14).
+- **Concurrency** — the exact `Channel<T>`/`select { }` API surface (buffered vs. unbuffered,
+  `select`'s arm syntax) — the intent that they exist is settled, §15.
+- **Testing** — exact `sol test` CLI behavior (flags, output format, parallelism) — per-test
+  isolation itself is settled, §17.
+- **Reflection** — exact shape of `PrimitiveKind`/`VariantInfo`/`EnumVariantInfo`; whether generic
+  per-field *value* access through an `&any` is possible (needed for a generic serializer) —
+  deliberately left for a dedicated future session, §19.3.
+- **Goul** — essentially everything (§18) — deliberately out of scope until Sol itself settles.
+- **Type aliases** — how broadly const generics are allowed beyond `Limit<T, RANGE>`'s one need
+  (§20); Sol's general operator-precedence table (above) also covers how `..`/`..=` interact with
+  other operators.
+- **Traits** — whether disambiguating an output-position generic conflict some day gets a
+  turbofish-equivalent syntax, rather than always requiring an outer type annotation (§7).
