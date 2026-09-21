@@ -26,8 +26,20 @@ impl Default for Severity {
 /// structured, crate-specific error-kind enum. Carries the old free-text
 /// message verbatim so `.message()` keeps working unchanged during migration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub struct UnclassifiedKind(pub Box<str>);
+pub struct UnclassifiedKind(Box<str>);
+impl UnclassifiedKind {
+    pub fn new(value: impl Into<Box<str>>) -> Self {
+        Self(value.into())
+    }
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_box_str(self) -> Box<str> {
+        self.0
+    }
+}
 impl Display for UnclassifiedKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)

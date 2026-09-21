@@ -38,13 +38,13 @@ pub enum TokenErrorKind {
 
 impl From<UnclassifiedKind> for TokenErrorKind {
     fn from(value: UnclassifiedKind) -> Self {
-        TokenErrorKind::Unclassified(value.0)
+        TokenErrorKind::Unclassified(value.into_box_str())
     }
 }
 
 impl From<TokenErrorKind> for UnclassifiedKind {
     fn from(value: TokenErrorKind) -> Self {
-        UnclassifiedKind(value.to_string().into_boxed_str())
+        UnclassifiedKind::new(value.to_string().into_boxed_str())
     }
 }
 

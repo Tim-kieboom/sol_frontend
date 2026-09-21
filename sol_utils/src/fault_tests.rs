@@ -19,7 +19,7 @@ impl Display for TestErrorKind {
 
 impl From<TestErrorKind> for UnclassifiedKind {
     fn from(value: TestErrorKind) -> Self {
-        UnclassifiedKind(value.to_string().into_boxed_str())
+        UnclassifiedKind::new(value.to_string().into_boxed_str())
     }
 }
 
