@@ -1,0 +1,213 @@
+use std::path::PathBuf;
+
+use ast_model::{Import, ImportItem, ImportKind, ImportPath, Statement, StatementKind};
+use sol_tokenizer::model::{TokenKind, keyword::KeyWord};
+use sol_utils::{
+    Ident, collections::sol_import_path::SolImportPath, fault::Fault, sol_names::Symbol,
+};
+
+use crate::{
+    parser::Parser,
+    utils::{AS, AS_STR, COMMA, CURLY_CLOSE, CURLY_OPEN, IMPORT, ROUND_CLOSE, ROUND_OPEN, STAR},
+};
+
+impl<'a, 'f> Parser<'a, 'f> {
+    pub(super) fn parse_import(&mut self) -> Result<Statement, crate::fault::AstFault> {
+        let start_span = self.token().span;
+
+        let mut spans = vec![];
+        let mut paths = vec![];
+        self.expect(&IMPORT)?;
+        if self.current_is(&ROUND_OPEN) {
+            self.bump();
+            self.skip_end_lines();
+            loop {
+                if self.current_is(&ROUND_CLOSE) {
+                    break;
+                }
+
+                let span = self.token().span;
+                paths.push(self.inner_parse_import()?);
+                spans.push(self.span_combine(span));
+
+                self.skip_end_lines();
+            }
+
+            self.expect(&ROUND_CLOSE)?;
+        } else {
+            let span = self.token().span;
+            paths.push(self.inner_parse_import()?);
+            spans.push(self.span_combine(span));
+        }
+
+        for (i, path) in paths.iter().enumerate() {
+            self.parse_child_module(path, spans[i]);
+        }
+
+        let import = Import {
+            paths: paths.into(),
+        };
+
+        Ok(Statement::new(
+            StatementKind::Import(import),
+            start_span.combine(self.token().span),
+        ))
+    }
+
+    fn inner_parse_import(&mut self) -> Result<ImportPath, crate::fault::AstFault> {
+        let (path, lib_name) = self.parse_import_path()?;
+        let kind = match &self.token().kind {
+            &CURLY_OPEN => {
+                self.bump();
+                let (this, this_alias, items) = self.parse_import_items()?;
+                self.expect(&CURLY_CLOSE)?;
+                ImportKind::Items {
+                    has_this: this,
+                    this_alias,
+                    items: items.into(),
+                }
+            }
+            &STAR => {
+                self.bump();
+                ImportKind::Glob
+            }
+            TokenKind::Ident(ident) => match ident.as_str() {
+                AS_STR => {
+                    self.bump();
+                    let alias = self.try_bump_consume_ident()?;
+                    ImportKind::Alias(alias)
+                }
+                _ => ImportKind::Module,
+            },
+            _ => ImportKind::Module,
+        };
+
+        Ok(ImportPath {
+            module: path,
+            kind,
+            lib_name,
+        })
+    }
+
+    fn parse_import_items(
+        &mut self,
+    ) -> Result<(bool, Option<Ident>, Vec<ImportItem>), crate::fault::AstFault> {
+        let mut this = false;
+        let mut items = vec![];
+        let mut this_alias = None;
+        loop {
+            let name = self.try_bump_consume_ident()?;
+            if name.as_str() == "this" {
+                this = true;
+                if self.current_is(&AS) {
+                    self.bump();
+                    let alias = self.try_bump_consume_ident()?;
+                    this_alias = Some(alias);
+                }
+            } else if self.current_is(&AS) {
+                self.bump();
+                let alias = self.try_bump_consume_ident()?;
+                items.push(ImportItem::Alias { name, alias })
+            } else {
+                items.push(ImportItem::Normal(name))
+            };
+
+            match self.token().kind {
+                COMMA => {
+                    self.bump();
+                }
+                CURLY_CLOSE => {
+                    break;
+                }
+                _ => {
+                    return Err(Fault::error_with_kind(
+                        crate::fault::AstErrorKind::ExpectedCommaOrCurlyCloseInImportList,
+                        Some(self.token().span),
+                    ));
+                }
+            }
+        }
+        Ok((this, this_alias, items))
+    }
+
+    fn parse_import_path(
+        &mut self,
+    ) -> Result<(SolImportPath, Option<String>), crate::fault::AstFault> {
+        const IS_EXTERNAL: bool = true;
+        const IS_INTERNAL: bool = false;
+        const CRATE: TokenKind = TokenKind::Keyword(KeyWord::Crate);
+        const SEPARATOR: TokenKind = TokenKind::Symbol(Symbol::Dot);
+        const PREV_SUPER: TokenKind = TokenKind::Symbol(Symbol::Slash);
+
+        let mut lib_name = None;
+        let mut path = SolImportPath::new(PathBuf::default(), IS_EXTERNAL);
+
+        match &self.token().kind {
+            &CRATE => {
+                let current_path = self.source_path.clone();
+                path = SolImportPath::new(current_path, IS_INTERNAL);
+                path.set_absolute();
+                self.bump();
+                self.expect(&SEPARATOR)?;
+            }
+            &SEPARATOR => {
+                let mut current_path = self.current_path().to_path_buf();
+                self.bump();
+
+                while self.current_is(&PREV_SUPER) {
+                    self.bump();
+                    if !current_path.pop() {
+                        return Err(Fault::error_with_kind(
+                            crate::fault::AstErrorKind::CouldNotPopImportPath,
+                            Some(self.token().span),
+                        ));
+                    }
+
+                    self.expect(&SEPARATOR)?;
+                }
+
+                path = SolImportPath::new(current_path, IS_INTERNAL);
+            }
+            TokenKind::Ident(name) => {
+                lib_name = Some(name.clone());
+            }
+            _ => {
+                self.log_fault(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::TokenNotAllowedInImport {
+                        found: self.token().kind.clone(),
+                    },
+                    Some(self.token().span),
+                ));
+            }
+        }
+
+        loop {
+            if self.is_non_path_import_symbool() {
+                return Ok((path, lib_name));
+            }
+
+            let ident = self.try_bump_consume_ident()?;
+            path.push(ident.as_str());
+
+            if !self.current_is(&SEPARATOR) {
+                break;
+            }
+
+            self.bump();
+        }
+
+        if self.is_non_path_import_symbool() {
+            return Ok((path, lib_name));
+        }
+
+        if !self.current_is(&TokenKind::EndFile) {
+            self.expect(&TokenKind::EndLine)?;
+        }
+
+        Ok((path, lib_name))
+    }
+
+    fn is_non_path_import_symbool(&self) -> bool {
+        self.current_is_any(&[CURLY_OPEN, STAR, AS])
+    }
+}

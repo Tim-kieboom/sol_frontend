@@ -1,0 +1,73 @@
+use anyhow::Result;
+use sol_utils::{
+    collections::{
+        module_store::ModuleStore,
+        vec_map::{VecMap, VecMapIndex},
+    },
+    fault::Fault,
+};
+use std::{
+    fmt::{Debug, Display},
+    fs::{File, OpenOptions},
+    io::Write,
+    path::Path,
+};
+
+use crate::{
+    config,
+    display::{fault::display_fault, writer::Writer},
+};
+
+pub(crate) mod ast;
+pub(crate) mod benchmark;
+pub(crate) mod fault;
+pub(crate) mod mir;
+pub(crate) mod tokenizer;
+pub mod writer;
+
+fn write_to_file(path: &Path, str: &str) -> Result<()> {
+    let mut file = write_create_file(path)?;
+    file.push_str(str)?;
+    file.flush()?;
+    Ok(())
+}
+
+fn write_create_file(path: &Path) -> Result<File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|err| anyhow::anyhow!("Failed to create output file({path:?}): {}", err))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct VecMapEntry<V> {
+    id: String,
+    value: V,
+}
+
+fn vecmap_to_pretty_vec<K: VecMapIndex + Debug, V>(map: &VecMap<K, V>) -> Vec<VecMapEntry<&V>> {
+    map.entries()
+        .map(|(id, value)| VecMapEntry {
+            id: format!("{id:?}"),
+            value,
+        })
+        .collect()
+}
+
+pub(crate) fn fault_to_anyhow_error<K: Display>(
+    fault: &Fault<K>,
+    module_store: &ModuleStore,
+) -> anyhow::Error {
+    let mut message = String::new();
+    if let Err(err) = display_fault(fault, module_store, &config::PRINT_CONFIGS, &mut message) {
+        err
+    } else {
+        anyhow::Error::msg(message)
+    }
+}

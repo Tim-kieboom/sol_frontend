@@ -1,0 +1,563 @@
+use std::str::FromStr;
+
+use ast_model::{
+    Expression, ExpressionId, ExpressionKind, TypeOf, TypeofKind,
+    operators::{BinaryOperator, BinaryOperatorKind, UnaryOperator, UnaryOperatorKind},
+};
+use sol_tokenizer::model::{Token, TokenKind, keyword::KeyWord};
+use sol_utils::{
+    LoopState, Mutable, define_symbols,
+    fault::Fault,
+    sol_names::{Operator, Symbol},
+    span::Span,
+};
+
+use crate::{
+    fault::AstResult,
+    parse::expression::precedence::Precedence,
+    parser::Parser,
+    utils::{ARRAY, DOT, NOT, NULL, OPTIONAL, ROUND_CLOSE, ROUND_OPEN, SQUARE_OPEN},
+};
+
+mod access;
+mod conditionals;
+mod for_loop;
+mod group_expressions;
+mod lambda;
+mod precedence;
+mod primairy;
+
+impl<'a, 'f> Parser<'a, 'f> {
+    pub(crate) fn parse_expression_id(
+        &mut self,
+        end_tokens: &[TokenKind],
+    ) -> AstResult<ExpressionId> {
+        let value = self.pratt_parse_expression(Precedence::MIN, end_tokens, None)?;
+        Ok(self.forest.store.insert_expression(value))
+    }
+
+    pub(crate) fn parse_expression(&mut self, end_tokens: &[TokenKind]) -> AstResult<Expression> {
+        self.pratt_parse_expression(Precedence::MIN, end_tokens, None)
+    }
+
+    pub(crate) fn parse_primary_expression(
+        &mut self,
+        primary: Expression,
+        end_tokens: &[TokenKind],
+    ) -> AstResult<Expression> {
+        self.pratt_parse_expression(Precedence::MIN, end_tokens, Some(primary))
+    }
+
+    fn pratt_parse_expression(
+        &mut self,
+        min_precedence: Precedence,
+        end_tokens: &[TokenKind],
+        primary: Option<Expression>,
+    ) -> AstResult<Expression> {
+        let start_span = self.token().span;
+
+        let mut unary_operators = vec![];
+        self.collect_unary_operators(&mut unary_operators, start_span);
+
+        let mut left = match primary {
+            Some(value) => value,
+            None => self.parse_primary(end_tokens)?,
+        };
+
+        loop {
+            match self.check_for_end_tokens(end_tokens) {
+                LoopState::None => (),
+                LoopState::Break => break,
+                LoopState::Continue => continue,
+            }
+
+            if self.current_is(&TokenKind::EndFile) {
+                return Err(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::UnexpectedEndOfFileInExpression,
+                    Some(self.span_combine(start_span)),
+                ));
+            }
+
+            let token_kind = &self.token().kind;
+            match token_kind {
+                &DOT | &SQUARE_OPEN | &OPTIONAL => (),
+                _ => break,
+            };
+
+            match self.consume_expression_operator(start_span)? {
+                ExpressionOperator::Access {
+                    ty: AccessType::AccessThis,
+                    optional_map,
+                } => {
+                    self.access_this_expression(&mut left, start_span, optional_map)?;
+                    continue;
+                }
+                ExpressionOperator::Access {
+                    ty: AccessType::AccessIndex,
+                    optional_map,
+                } => {
+                    self.access_index_expression(&mut left, start_span, optional_map)?;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        left = self.apply_prefix_operators(left, unary_operators);
+
+        loop {
+            match self.check_for_end_tokens(end_tokens) {
+                LoopState::None => (),
+                LoopState::Break => break,
+                LoopState::Continue => continue,
+            }
+
+            if self.current_is(&TokenKind::EndFile) {
+                return Err(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::UnexpectedEndOfFileInExpression,
+                    Some(self.span_combine(start_span)),
+                ));
+            }
+
+            let precedence = self.current_precedence();
+
+            // If precedence is lower than the minimum required, or there's no operator, stop
+            if precedence.is_none() || precedence < min_precedence {
+                break;
+            }
+
+            match self.consume_expression_operator(start_span)? {
+                ExpressionOperator::Binary(operator)
+                    if operator.value == BinaryOperatorKind::Arrow =>
+                {
+                    if self.try_parse_method_arm(&mut left, start_span, false)? {
+                        continue;
+                    }
+                    let right = self.pratt_parse_expression(precedence.next(), end_tokens, None)?;
+                    let span = self.span_combine(start_span);
+                    left = Expression::new_binary(
+                        self.alloc_node(),
+                        self.forest.store.insert_expression(left),
+                        operator,
+                        self.forest.store.insert_expression(right),
+                        span,
+                    );
+                }
+                ExpressionOperator::Binary(operator) => {
+                    let next_min_precedence = precedence.next();
+                    let right =
+                        self.pratt_parse_expression(next_min_precedence, end_tokens, None)?;
+                    let span = self.span_combine(start_span);
+                    left = Expression::new_binary(
+                        self.alloc_node(),
+                        self.forest.store.insert_expression(left),
+                        operator,
+                        self.forest.store.insert_expression(right),
+                        span,
+                    );
+                }
+                ExpressionOperator::TypeOf(kind) => {
+                    let typeof_ = TypeOf {
+                        kind,
+                        value: self.forest.store.insert_expression(left),
+                    };
+                    left = Expression::new(
+                        ExpressionKind::TypeOf(typeof_),
+                        self.span_combine(start_span),
+                    )
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn check_for_end_tokens(&mut self, end_tokens: &[TokenKind]) -> LoopState {
+        if self.current_is(&TokenKind::EndLine) && self.current_is_any(end_tokens) {
+            let saved = self.tokens.current_position();
+            self.skip_end_lines();
+            if self.current_is(&DOT) {
+                return LoopState::Continue;
+            }
+            self.goto(saved);
+        }
+
+        if self.current_is_any(end_tokens) {
+            return LoopState::Break;
+        }
+
+        self.skip_end_lines();
+        if self.current_is_any(end_tokens) {
+            return LoopState::Break;
+        }
+
+        LoopState::None
+    }
+
+    fn current_precedence(&mut self) -> Precedence {
+        match &self.token().kind {
+            TokenKind::Ident(ident) => {
+                if let Ok(keyword) = KeyWord::from_str(ident) {
+                    Precedence::new(keyword.precedence())
+                } else {
+                    Precedence::MIN
+                }
+            }
+            TokenKind::Keyword(keyword) => Precedence::new(keyword.precedence()),
+            TokenKind::Symbol(symbool_kind) => {
+                if let Some(bin) = try_to_binary_operator(symbool_kind) {
+                    let peek = self.peek();
+                    Precedence::new(self.try_multi_binary(&peek, bin).precedence())
+                } else if let Some(access) = AccessType::from_symbool(*symbool_kind) {
+                    Precedence::new(access.precedence())
+                } else if let Some(unary) = try_to_unary_operator(symbool_kind) {
+                    Precedence::new(unary.precedence())
+                } else {
+                    Precedence::NONE
+                }
+            }
+            _ => Precedence::NONE,
+        }
+    }
+
+    fn apply_prefix_operators(
+        &mut self,
+        mut left: Expression,
+        prefix_operators: Vec<(Span, UnaryKinds)>,
+    ) -> Expression {
+        for (span, unary) in prefix_operators.into_iter().rev() {
+            let id = self.forest.store.insert_expression(left);
+            left = match unary {
+                UnaryKinds::UnaryOperator(unary) => {
+                    Expression::new_unary(self.alloc_node(), unary, id, span)
+                }
+                UnaryKinds::Ref { mutable } => {
+                    Expression::new_ref(self.alloc_node(), mutable, id, span)
+                }
+                UnaryKinds::Deref => Expression::new_deref(self.alloc_node(), id, span),
+            };
+        }
+
+        left
+    }
+
+    fn parse_sizeof(&mut self, left_id: ExpressionId) -> AstResult<Expression> {
+        let span = self.get_forest_expression(left_id)?.span;
+        Ok(Expression::new(
+            ExpressionKind::Sizeof(left_id),
+            self.span_combine(span),
+        ))
+    }
+
+    fn consume_expression_operator(
+        &mut self,
+        start_span: Span,
+    ) -> Result<ExpressionOperator, crate::fault::AstFault> {
+        fn get_invalid_error(token: &Token) -> Result<ExpressionOperator, crate::fault::AstFault> {
+            Err(Fault::error_with_kind(
+                crate::fault::AstErrorKind::InvalidOperator {
+                    found: token.kind.display().into_boxed_str(),
+                },
+                Some(token.span),
+            ))
+        }
+
+        let optional_map = self.current_is(&OPTIONAL);
+        if optional_map {
+            self.bump();
+        }
+
+        match &self.token().kind {
+            TokenKind::Ident(ident) => {
+                if optional_map {
+                    return Err(Fault::error_with_kind(
+                        crate::fault::AstErrorKind::InvalidSymbolHere {
+                            symbol: Symbol::Question,
+                        },
+                        Some(self.span_combine(start_span)),
+                    ));
+                }
+
+                match KeyWord::from_str(ident.as_str()) {
+                    Ok(KeyWord::Typeof) => self.parse_typeof_operator(start_span),
+                    _ => get_invalid_error(self.token()),
+                }
+            }
+            TokenKind::Keyword(KeyWord::Typeof) => {
+                if optional_map {
+                    return Err(Fault::error_with_kind(
+                        crate::fault::AstErrorKind::InvalidSymbolHere {
+                            symbol: Symbol::Question,
+                        },
+                        Some(self.span_combine(start_span)),
+                    ));
+                }
+
+                self.parse_typeof_operator(start_span)
+            }
+            TokenKind::Symbol(sym) => {
+                if let Some(access) = AccessType::from_symbool(*sym) {
+                    self.bump();
+                    return Ok(ExpressionOperator::Access {
+                        ty: access,
+                        optional_map,
+                    });
+                } else if let Some(mut binary) = try_to_binary_operator(sym) {
+                    self.bump();
+                    binary = self.try_consume_multi_binary(binary);
+
+                    return Ok(ExpressionOperator::Binary(BinaryOperator::new(
+                        binary,
+                        self.span_combine(start_span),
+                    )));
+                }
+
+                get_invalid_error(self.token())
+            }
+            _ => get_invalid_error(self.token()),
+        }
+    }
+
+    fn try_consume_multi_binary(&mut self, binary: BinaryOperatorKind) -> BinaryOperatorKind {
+        let bin = self.try_multi_binary(self.token(), binary);
+        match bin {
+            BinaryOperatorKind::Pow | BinaryOperatorKind::LogAnd => self.bump(),
+            _ => (),
+        };
+        bin
+    }
+
+    fn try_multi_binary(&self, current: &Token, binary: BinaryOperatorKind) -> BinaryOperatorKind {
+        let symbol = match &current.kind {
+            TokenKind::Symbol(val) => *val,
+            _ => return binary,
+        };
+
+        match binary {
+            BinaryOperatorKind::Mul => {
+                if let Some(Operator::Mul) = Operator::from_symbool(symbol) {
+                    BinaryOperatorKind::Pow
+                } else {
+                    binary
+                }
+            }
+            BinaryOperatorKind::BitAnd => {
+                if let Some(Operator::BitAnd) = Operator::from_symbool(symbol) {
+                    BinaryOperatorKind::LogAnd
+                } else {
+                    binary
+                }
+            }
+            _ => binary,
+        }
+    }
+
+    fn parse_typeof_operator(
+        &mut self,
+        _start_span: Span,
+    ) -> Result<ExpressionOperator, crate::fault::AstFault> {
+        self.expect(&TokenKind::Keyword(KeyWord::Typeof))?;
+
+        let kind = match &self.token().kind {
+            TokenKind::Ident(_) => {
+                let type_name = self.try_bump_consume_ident()?;
+                self.expect(&TokenKind::Symbol(Symbol::Dot))?;
+                let variant_name = self.try_bump_consume_ident()?;
+                TypeofKind::Union {
+                    type_name,
+                    variant_name,
+                }
+            }
+            &NULL => {
+                self.bump();
+                TypeofKind::Null
+            }
+            &NOT if self.peek_is(&NULL) => {
+                self.bump();
+                self.bump();
+                TypeofKind::NotNull
+            }
+            _ => {
+                return Err(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::ExpectedIdentOrNullForTypeof {
+                        found: self.token().kind.display().into_boxed_str(),
+                    },
+                    Some(self.token().span),
+                ));
+            }
+        };
+
+        Ok(ExpressionOperator::TypeOf(kind))
+    }
+
+    fn parse_new_ptr(&mut self, start_span: Span) -> Result<Expression, crate::fault::AstFault> {
+        let mutable = if self.current_is(&crate::utils::MUT) {
+            self.bump();
+            Mutable::Mut
+        } else {
+            Mutable::Immut
+        };
+        self.expect(&ROUND_OPEN)?;
+        let inner =
+            self.parse_expression_id(&[ROUND_CLOSE, TokenKind::EndLine, TokenKind::EndFile])?;
+        self.expect(&ROUND_CLOSE)?;
+        Ok(Expression::new(
+            ExpressionKind::New(inner, mutable),
+            self.span_combine(start_span),
+        ))
+    }
+
+    fn parse_new_array(&mut self, start_span: Span) -> Result<Expression, crate::fault::AstFault> {
+        const START: &[TokenKind] = &[SQUARE_OPEN, ARRAY];
+
+        if !self.current_is_any(START) {
+            return Err(self.get_expect_any_error(START));
+        }
+
+        let array = self.parse_array(None)?;
+        Ok(Expression::new(
+            ExpressionKind::NewArray(array.value),
+            self.span_combine(start_span),
+        ))
+    }
+
+    /// Collect prefix operators before parse_primary so that postfix operators
+    /// (`.`, `()`, `[]`) bind tighter — which is standard language semantics.
+    /// `@*expr` → outer `@` wraps the result of inner `*`; we apply them in
+    /// reverse order below so the outermost prefix wraps the innermost.
+    fn collect_unary_operators(&mut self, unarys: &mut Vec<(Span, UnaryKinds)>, start_span: Span) {
+        while let TokenKind::Symbol(symbol) = &self.token().kind {
+            match self.expect_unary_kind(start_span, *symbol) {
+                Ok(unary_kind) => {
+                    self.bump();
+                    unarys.push((self.span_combine(start_span), unary_kind));
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn expect_unary_kind(
+        &mut self,
+        start_span: Span,
+        symbool: Symbol,
+    ) -> Result<UnaryKinds, crate::fault::AstFault> {
+        let op = match Operator::from_symbool(symbool) {
+            Some(val) => val,
+            None => {
+                return Err(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::InvalidOperator {
+                        found: symbool.as_str().into(),
+                    },
+                    Some(self.span_combine(start_span)),
+                ));
+            }
+        };
+
+        if let Some(unary) = op.to_unary() {
+            return Ok(UnaryKinds::UnaryOperator(UnaryOperator::new(
+                unary,
+                self.span_combine(start_span),
+            )));
+        }
+
+        match op {
+            Operator::Mul => Ok(UnaryKinds::Deref),
+            Operator::BitAnd => {
+                let mutable = matches!(self.peek().kind, TokenKind::Keyword(KeyWord::Mut));
+                if mutable {
+                    self.bump();
+                }
+                Ok(UnaryKinds::Ref { mutable })
+            }
+            _ => Err(Fault::error_with_kind(
+                crate::fault::AstErrorKind::InvalidUnaryOperator { found: op },
+                Some(self.span_combine(start_span)),
+            )),
+        }
+    }
+}
+
+fn try_to_binary_operator(symbol: &Symbol) -> Option<BinaryOperatorKind> {
+    match Operator::from_symbool(*symbol).map(|el| el.to_binary()) {
+        Some(Some(val)) => Some(val),
+        _ => None,
+    }
+}
+
+fn try_to_unary_operator(symbol: &Symbol) -> Option<UnaryOperatorKind> {
+    match Operator::from_symbool(*symbol).map(|el| el.to_unary()) {
+        Some(Some(val)) => Some(val),
+        _ => None,
+    }
+}
+
+enum UnaryKinds {
+    UnaryOperator(UnaryOperator),
+    Ref { mutable: bool },
+    Deref,
+}
+
+enum ExpressionOperator {
+    Binary(BinaryOperator),
+    TypeOf(TypeofKind),
+    Access { ty: AccessType, optional_map: bool },
+}
+
+define_symbols!(
+    /// Access operators for accessing members or elements of values.
+    ///
+    /// These keywords represent different ways to access fields, methods, or
+    /// indexed elements.
+    pub enum AccessType {
+        /// Access method or field of lvalue (`.`).
+        AccessThis => ".", Symbol::Dot, u8::MAX,
+        /// Access element by index of lvalue (`[`).
+        AccessIndex => "[", Symbol::SquareOpen, u8::MAX,
+    }
+);
+
+/// Converts a generic operator token into the unary/binary operator kind it
+/// represents, if any.
+pub trait ConvertOperator {
+    /// Returns the unary operator this represents, or `None` if it cannot be
+    /// used as a unary operator.
+    fn to_unary(&self) -> Option<UnaryOperatorKind>;
+    /// Returns the binary operator this represents, or `None` if it cannot be
+    /// used as a binary operator.
+    fn to_binary(&self) -> Option<BinaryOperatorKind>;
+}
+impl ConvertOperator for Operator {
+    fn to_unary(&self) -> Option<UnaryOperatorKind> {
+        Some(match self {
+            Operator::Not => UnaryOperatorKind::Not,
+            Operator::Sub => UnaryOperatorKind::Neg,
+            _ => return None,
+        })
+    }
+
+    fn to_binary(&self) -> Option<BinaryOperatorKind> {
+        Some(match self {
+            Operator::Eq => BinaryOperatorKind::Eq,
+            Operator::Mul => BinaryOperatorKind::Mul,
+            Operator::Div => BinaryOperatorKind::Div,
+            Operator::Mod => BinaryOperatorKind::Mod,
+            Operator::Add => BinaryOperatorKind::Add,
+            Operator::Sub => BinaryOperatorKind::Sub,
+            Operator::Root => BinaryOperatorKind::Root,
+            Operator::LessEq => BinaryOperatorKind::Le,
+            Operator::GreatEq => BinaryOperatorKind::Ge,
+            Operator::LessThen => BinaryOperatorKind::Lt,
+            Operator::NotEq => BinaryOperatorKind::NotEq,
+            Operator::Range => BinaryOperatorKind::Range,
+            Operator::BitOr => BinaryOperatorKind::BitOr,
+            Operator::LogOr => BinaryOperatorKind::LogOr,
+            Operator::GreatThen => BinaryOperatorKind::Gt,
+            Operator::BitAnd => BinaryOperatorKind::BitAnd,
+            Operator::BitXor => BinaryOperatorKind::BitXor,
+            Operator::Arrow => BinaryOperatorKind::Arrow,
+
+            Operator::Not | Operator::AtSign => return None,
+        })
+    }
+}

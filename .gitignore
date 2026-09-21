@@ -1,11 +1,8 @@
-# soul compiler outputs
+# sol compiler outputs
 *.VSCodeCounter
-*.soulc
-*.soulAST
-*.soulAST.json
+*.solc
 *.ll
-soul_tester/path.json
-
-soul_tester/log.txt
-soul_tester/paths.json
-bottleneck.md
+/docs
+Cargo.lock
+/target
+/sol_ast/ast_model/target

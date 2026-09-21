@@ -1,0 +1,16 @@
+[package]
+name = "mir_parser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ast_model = { version = "0.1.0", path = "../../sol_ast/ast_model" }
+mir_model = { version = "0.1.0", path = "../mir_model" }
+serde = { version = "1.0.228", features = ["derive"] }
+sol_utils = { version = "0.1.0", path = "../../sol_utils" }
+thiserror = "2.0"
+
+[dev-dependencies]
+ast_parser = { version = "0.1.0", path = "../../sol_ast/ast_parser" }
+sol_name_resolver = { version = "0.1.0", path = "../../sol_ast/sol_name_resolver" }
+sol_tokenizer = { version = "0.1.0", path = "../../sol_tokenizer" }

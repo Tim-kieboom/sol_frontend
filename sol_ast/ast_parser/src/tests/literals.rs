@@ -1,0 +1,412 @@
+use ast_model::{ExpressionKind, Literal, StatementKind, operators::BinaryOperatorKind};
+use sol_utils::fault::Severity;
+
+use crate::tests::{get_statement, parse};
+
+#[test]
+fn expression_literal_int() {
+    let (module, store, context) = parse("42");
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            assert!(matches!(
+                expr.node,
+                ExpressionKind::Literal((_, Literal::Uint(42)))
+            ));
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_literal_float() {
+    let (module, store, context) = parse("3.20");
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            assert!(matches!(
+                expr.node,
+                ExpressionKind::Literal((_, Literal::Float(3.20)))
+            ));
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_literal_string() {
+    let (module, store, context) = parse(r#""hello""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+
+            if let ExpressionKind::Literal((_, Literal::Str(string))) = &expr.node {
+                assert_eq!(string, "hello")
+            } else {
+                panic!("should be ExpressionKind::Literal")
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_literal_bool() {
+    let (module, store, context) = parse("true");
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            assert!(matches!(
+                expr.node,
+                ExpressionKind::Literal((_, Literal::Bool(true)))
+            ));
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring() {
+    let (module, store, context) = parse(r#"f"hello {1 + 2} world""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(fmt.to_string);
+                    assert_eq!(fmt.trailing, " world");
+                    assert_eq!(fmt.parts.len(), 1);
+                    let (text, expr_id) = &fmt.parts[0];
+                    assert_eq!(text, "hello ");
+                    let inner = &store.expressions[*expr_id];
+                    match &inner.node {
+                        ExpressionKind::Binary(bin) => {
+                            assert_eq!(bin.operator.value, BinaryOperatorKind::Add);
+                            let left = &store.expressions[bin.left];
+                            let right = &store.expressions[bin.right];
+                            assert!(matches!(
+                                left.node,
+                                ExpressionKind::Literal((_, Literal::Uint(1)))
+                            ));
+                            assert!(matches!(
+                                right.node,
+                                ExpressionKind::Literal((_, Literal::Uint(2)))
+                            ));
+                        }
+                        other => panic!("expected Binary expression, got {other:?}"),
+                    }
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_fstr_tag() {
+    let (module, store, context) = parse(r#"fstr"hello {42}""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(!fmt.to_string);
+                    assert_eq!(fmt.trailing, "");
+                    assert_eq!(fmt.parts.len(), 1);
+                    let (text, expr_id) = &fmt.parts[0];
+                    assert_eq!(text, "hello ");
+                    let inner = &store.expressions[*expr_id];
+                    assert!(matches!(
+                        inner.node,
+                        ExpressionKind::Literal((_, Literal::Uint(42)))
+                    ));
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_multiple() {
+    let (module, store, context) = parse(r#"f"a {1} b {2} c""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(fmt.to_string);
+                    assert_eq!(fmt.parts.len(), 2);
+                    assert_eq!(fmt.trailing, " c");
+                    let (t0, e0) = &fmt.parts[0];
+                    assert_eq!(t0, "a ");
+                    assert!(matches!(
+                        store.expressions[*e0].node,
+                        ExpressionKind::Literal((_, Literal::Uint(1)))
+                    ));
+                    let (t1, e1) = &fmt.parts[1];
+                    assert_eq!(t1, " b ");
+                    assert!(matches!(
+                        store.expressions[*e1].node,
+                        ExpressionKind::Literal((_, Literal::Uint(2)))
+                    ));
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_expression_at_start() {
+    let (module, store, context) = parse(r#"f"{42} world""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(fmt.to_string);
+                    assert_eq!(fmt.parts.len(), 1);
+                    assert_eq!(fmt.trailing, " world");
+                    let (text, eid) = &fmt.parts[0];
+                    assert_eq!(text, "");
+                    assert!(matches!(
+                        store.expressions[*eid].node,
+                        ExpressionKind::Literal((_, Literal::Uint(42)))
+                    ));
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_adjacent_expressions() {
+    let (module, store, context) = parse(r#"f"{1}{2}""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(fmt.to_string);
+                    assert_eq!(fmt.parts.len(), 2);
+                    assert_eq!(fmt.trailing, "");
+                    let (t0, e0) = &fmt.parts[0];
+                    assert_eq!(t0, "");
+                    assert!(matches!(
+                        store.expressions[*e0].node,
+                        ExpressionKind::Literal((_, Literal::Uint(1)))
+                    ));
+                    let (t1, e1) = &fmt.parts[1];
+                    assert_eq!(t1, "");
+                    assert!(matches!(
+                        store.expressions[*e1].node,
+                        ExpressionKind::Literal((_, Literal::Uint(2)))
+                    ));
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_fstr_tag_with_trailing() {
+    let (module, store, context) = parse(r#"fstr"hello {1} world""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(!fmt.to_string);
+                    assert_eq!(fmt.parts.len(), 1);
+                    assert_eq!(fmt.trailing, " world");
+                    let (text, eid) = &fmt.parts[0];
+                    assert_eq!(text, "hello ");
+                    assert!(matches!(
+                        store.expressions[*eid].node,
+                        ExpressionKind::Literal((_, Literal::Uint(1)))
+                    ));
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+#[test]
+fn expression_fstring_complex_expression() {
+    let (module, store, context) = parse(r#"f"{1 + 2 * 3}""#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            match &expr.node {
+                ExpressionKind::StringFormat(fmt) => {
+                    assert!(fmt.to_string);
+                    assert_eq!(fmt.parts.len(), 1);
+                    assert_eq!(fmt.trailing, "");
+                    let (text, eid) = &fmt.parts[0];
+                    assert_eq!(text, "");
+                    let inner = &store.expressions[*eid];
+                    match &inner.node {
+                        ExpressionKind::Binary(bin) => {
+                            assert_eq!(bin.operator.value, BinaryOperatorKind::Add);
+                            let left = &store.expressions[bin.left];
+                            let right = &store.expressions[bin.right];
+                            assert!(matches!(
+                                left.node,
+                                ExpressionKind::Literal((_, Literal::Uint(1)))
+                            ));
+                            match &right.node {
+                                ExpressionKind::Binary(bin) => {
+                                    assert_eq!(bin.operator.value, BinaryOperatorKind::Mul);
+                                    assert!(matches!(
+                                        store.expressions[bin.left].node,
+                                        ExpressionKind::Literal((_, Literal::Uint(2)))
+                                    ));
+                                    assert!(matches!(
+                                        store.expressions[bin.right].node,
+                                        ExpressionKind::Literal((_, Literal::Uint(3)))
+                                    ));
+                                }
+                                other => panic!("expected Binary expression, got {other:?}"),
+                            }
+                        }
+                        other => panic!("expected Binary expression, got {other:?}"),
+                    }
+                }
+                other => panic!("expected StringFormat expression, got {other:?}"),
+            }
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}
+
+// ----------------------------------------------------------------
+//  Bad-path: malformed f-strings
+// ----------------------------------------------------------------
+#[test]
+fn fstring_unclosed_embedded_expression_brace_is_rejected() {
+    let (_, _, context) = parse(r#"f"hello {1 + 2""#);
+    assert!(
+        context.faults.count_severity(Severity::Error) > 0,
+        "expected an error for an f-string embedded expression missing '}}'"
+    );
+}
+
+#[test]
+fn fstring_malformed_embedded_expression_is_rejected() {
+    let (_, _, context) = parse(r#"f"hello {,} world""#);
+    assert!(
+        context.faults.count_severity(Severity::Error) > 0,
+        "expected an error for a malformed f-string embedded expression"
+    );
+}
+
+#[test]
+fn expression_null() {
+    let (module, store, context) = parse("null");
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::Expression { expression, .. } => {
+            let expr = &store.expressions[*expression];
+            assert!(matches!(expr.node, ExpressionKind::Null(_)));
+        }
+        _ => panic!("expected Expression statement"),
+    }
+}

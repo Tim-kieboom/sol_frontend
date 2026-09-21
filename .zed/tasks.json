@@ -1,0 +1,57 @@
+// Project tasks configuration. See https://zed.dev/docs/tasks for documentation.
+//
+// Example:
+[
+  {
+    "label": "Run sol_tester",
+    "command": "cargo",
+    "args": ["run", "-p", "sol_tester"],
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true,
+    "save": "none"
+  },
+  {
+    "label": "Run sol_tester batcktrace",
+    "command": "cargo",
+    "args": ["run", "-p", "sol_tester", "--features", "error_backtrace"],
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true,
+    "save": "none"
+  },
+  {
+    "label": "Run sol_tester release",
+    "command": "cargo",
+    "args": ["run", "-p", "sol_tester", "--release"],
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true,
+    "save": "none"
+  },
+  {
+    "label": "Run sol_tester release batcktrace",
+    "command": "cargo",
+    "args": ["run", "-p", "sol_tester", "--release", "--features", "error_backtrace"],
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "use_new_terminal": false,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "hide": "never",
+    "show_summary": true,
+    "show_command": true,
+    "save": "none"
+  },
+]

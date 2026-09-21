@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build sol_tester",
+      "type": "cargo",
+      "command": "build",
+      "args": ["-p", "sol_tester"],
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "cargo build sol_tester (release)",
+      "type": "cargo",
+      "command": "build",
+      "args": ["-p", "sol_tester", "--release"],
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+name = "SolTest"
+
+[dependencies]
+Std = {path = "lib/Std", linkage = "static"}
+Core = {path = "lib/Core", linkage = "static"}

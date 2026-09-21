@@ -1,0 +1,5 @@
+- [ ] pointer/array cotr
+- `*u8.(rawptr)`
+- `[]u8.(rawptr, 0)`
+- [ ] type in methode
+- `int.maxValue()`

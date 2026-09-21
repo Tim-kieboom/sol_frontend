@@ -1,0 +1,8 @@
+// expect: 8
+add(a: i32, b: i32): i32 {
+    return a + b
+}
+
+main(): i32 {
+    return add(3, 5)
+}
