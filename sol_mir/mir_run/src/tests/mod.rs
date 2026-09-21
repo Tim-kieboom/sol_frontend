@@ -274,6 +274,33 @@ fn an_overlapping_mutable_borrow_is_flagged_through_the_full_pipeline() {
 }
 
 #[test]
+fn a_move_while_borrowed_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring for `check_move_while_borrowed`, not just the
+    // function in isolation: `var` is moved into `consume` while `r`, a
+    // still-needed shared borrow of `var`, is live.
+    let mut ast = build_ast(
+        "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    consume(var)\n    useRef(r)\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::MoveWhileBorrowed)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn mixed_program_lowers_what_it_can_and_faults_on_the_rest() {
     let mut ast = build_ast(
         "okFn(a: int, b: int): int {\n    return a + b\n}\nbadFn(a: []int): []int {\n    return a\n}\n",

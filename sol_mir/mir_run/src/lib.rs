@@ -89,5 +89,15 @@ pub fn to_mir(
         }
     }
 
+    // Move-vs-borrow checking (see `check_move_while_borrowed`, the same
+    // module) — does a whole-place move happen while some still-needed
+    // borrow of that place is live. Reuses `overlap_check`'s own borrow
+    // tracking directly, so it's wired in right alongside it.
+    for function in functions.values() {
+        for fault in borrow_checker::check_move_while_borrowed(function) {
+            context.faults.push(fault);
+        }
+    }
+
     MirProgram { functions, externs }
 }

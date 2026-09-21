@@ -3,4 +3,4 @@ mod move_check;
 mod overlap_check;
 pub use escape_check::check_escapes;
 pub use move_check::{check_moves, elaborate_drops};
-pub use overlap_check::check_borrow_overlaps;
+pub use overlap_check::{check_borrow_overlaps, check_move_while_borrowed};

@@ -3728,3 +3728,46 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body() {
     );
     assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
 }
+
+#[test]
+fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed() {
+    // The core case, and proof the conflict rule really is mutability-
+    // independent (unlike `check_borrow_overlaps`'s own matrix): `r` is only
+    // ever a *shared* borrow of `var`, but `var` is moved into `consume`
+    // while `r` is still needed for the `useRef(r)` right after — a real
+    // conflict, since `r` would dereference storage that's already gone.
+    let mir = lower_source(
+        "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    consume(var)\n    useRef(r)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the move-while-still-borrowed conflict to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::MoveWhileBorrowed));
+}
+
+#[test]
+fn check_move_while_borrowed_allows_a_move_after_the_borrows_last_use() {
+    // Same shape, but `r`'s own last (and only) read happens strictly
+    // before the move — `r` is no longer live by the time `var` is moved,
+    // so this is legal: real NLL-style liveness, not "the borrow's lexical
+    // scope hasn't ended yet."
+    let mir = lower_source(
+        "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    useRef(r)\n    consume(var)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    assert!(
+        faults.is_empty(),
+        "a move after the borrow's own last use should be accepted, got {:#?}",
+        faults
+    );
+}

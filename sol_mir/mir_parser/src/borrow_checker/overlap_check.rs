@@ -126,32 +126,27 @@ use crate::fault::{MirErrorKind, MirFault};
 
 use super::move_check::{postorder, successors};
 
-/// See the module's own docs.
-pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
-    let mut faults = Vec::new();
+/// Everything both `check_borrow_overlaps` and `check_move_while_borrowed`
+/// need: every tracked borrow (place, mutability, live-point set) plus the
+/// per-block point data each borrow's `live_points` was computed from —
+/// `check_move_while_borrowed` needs the latter to find where a whole-place
+/// `Move` actually occurs, something `Borrow` itself doesn't carry.
+struct Analysis<'a> {
+    points_per_block: HashMap<BlockId, Vec<PointInfo<'a>>>,
+    borrows: Vec<Borrow>,
+}
 
-    let Some((entry, _)) = function.blocks.entries().next() else {
-        return faults;
-    };
-
+/// Builds every tracked borrow in `function` — see the module's own docs
+/// for the two-computation mechanism (alias tracing, then liveness). Shared
+/// by every consumer of "what borrows exist and when are they live"; a
+/// consumer wanting cross-borrow *conflicts* (overlap, or a move while
+/// still needed) does its own pass over the result.
+fn analyze(function: &mir::Function) -> Analysis<'_> {
     let points_per_block = build_points_per_block(function);
     let predecessors = build_predecessors(function);
 
     let block_live_out = compute_block_liveness(function, &points_per_block, &predecessors);
     let point_live_in = compute_point_liveness(&points_per_block, &block_live_out);
-
-    // Reverse postorder (entry-first) ranks blocks for the fault-reporting
-    // "which generation is later" tie break below. For a cyclic CFG this
-    // isn't a strict topological order any more, but it doesn't need to be
-    // — it's not load-bearing for correctness, just determinism.
-    let mut exec_order = postorder(function, entry);
-    exec_order.reverse();
-    let block_rank: HashMap<BlockId, usize> = exec_order
-        .iter()
-        .enumerate()
-        .map(|(rank, &block)| (block, rank))
-        .collect();
-
     let settled_aliases = converge_aliases(&points_per_block, &predecessors);
 
     let mut borrows: Vec<Borrow> = Vec::new();
@@ -189,6 +184,34 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
         }
     }
 
+    Analysis {
+        points_per_block,
+        borrows,
+    }
+}
+
+/// See the module's own docs.
+pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
+    let mut faults = Vec::new();
+
+    let Some((entry, _)) = function.blocks.entries().next() else {
+        return faults;
+    };
+
+    // Reverse postorder (entry-first) ranks blocks for the fault-reporting
+    // "which generation is later" tie break below. For a cyclic CFG this
+    // isn't a strict topological order any more, but it doesn't need to be
+    // — it's not load-bearing for correctness, just determinism.
+    let mut exec_order = postorder(function, entry);
+    exec_order.reverse();
+    let block_rank: HashMap<BlockId, usize> = exec_order
+        .iter()
+        .enumerate()
+        .map(|(rank, &block)| (block, rank))
+        .collect();
+
+    let Analysis { borrows, .. } = analyze(function);
+
     let mut by_place: HashMap<LocalId, Vec<&Borrow>> = HashMap::new();
     for borrow in &borrows {
         by_place.entry(borrow.place).or_default().push(borrow);
@@ -220,6 +243,49 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
     faults
 }
 
+/// Move-vs-borrow checking: does a whole-place `Move` of some local `x`
+/// happen while a still-needed borrow of `x` is live — rustc's own "cannot
+/// move out of x because it is borrowed." Unlike `check_borrow_overlaps`'s
+/// own conflict matrix (unlimited simultaneous shared borrows are fine), a
+/// move invalidates the underlying storage entirely, so it conflicts with
+/// *any* live borrow of its target, mutable or shared — a shared borrow
+/// read after the move would also be dereferencing storage that's gone.
+/// Reuses `analyze`'s own already-computed borrows/live-points directly, no
+/// separate CFG-shape scoping needed (see the module's own docs).
+pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
+    let mut faults = Vec::new();
+    let Analysis {
+        points_per_block,
+        borrows,
+    } = analyze(function);
+
+    let mut by_place: HashMap<LocalId, Vec<&Borrow>> = HashMap::new();
+    for borrow in &borrows {
+        by_place.entry(borrow.place).or_default().push(borrow);
+    }
+
+    for (&block_id, points) in &points_per_block {
+        for (index, point) in points.iter().enumerate() {
+            for &moved_local in &point.moves {
+                let Some(group) = by_place.get(&moved_local) else {
+                    continue;
+                };
+                if group
+                    .iter()
+                    .any(|borrow| borrow.live_points.contains(&(block_id, index)))
+                {
+                    faults.push(Fault::error_with_kind(
+                        MirErrorKind::MoveWhileBorrowed,
+                        Some(function.locals[moved_local].span),
+                    ));
+                }
+            }
+        }
+    }
+
+    faults
+}
+
 fn rank_of(block_rank: &HashMap<BlockId, usize>, point: (BlockId, usize)) -> (usize, usize) {
     (block_rank.get(&point.0).copied().unwrap_or(0), point.1)
 }
@@ -232,8 +298,15 @@ struct PointInfo<'a> {
     /// module's own docs, same convention `move_check`/`escape_check` use).
     assign: Option<(LocalId, &'a mir::Rvalue)>,
     /// Every local read at this point, from the assignment's own rvalue or
-    /// (for the one point built per terminator) the terminator's operands.
+    /// (for the one point built per terminator) the terminator's operands —
+    /// `Copy` and `Move` alike (liveness doesn't care which).
     reads: Vec<LocalId>,
+    /// The subset of `reads` that are specifically a whole-place
+    /// `Operand::Move` (not `Copy`) — used only by
+    /// `check_move_while_borrowed`, which needs to distinguish a move from
+    /// an ordinary read; every other consumer of `PointInfo` only ever
+    /// wants `reads`.
+    moves: Vec<LocalId>,
 }
 
 struct Borrow {
@@ -272,6 +345,37 @@ fn collect_reads(rvalue: &mir::Rvalue) -> Vec<LocalId> {
     }
 }
 
+/// The whole-place local a `Move` operand consumes, if this operand is a
+/// `Move` at all (a `Copy`/`Constant` moves nothing) and its own place has
+/// no projection (whole-locals only, matching every other rule in this
+/// module) — used only by `check_move_while_borrowed`.
+fn collect_operand_moves(operand: &mir::Operand) -> Vec<LocalId> {
+    match operand {
+        mir::Operand::Move(place) if place.projection.is_empty() => vec![place.local],
+        mir::Operand::Move(_) | mir::Operand::Copy(_) | mir::Operand::Constant(_) => Vec::new(),
+    }
+}
+
+fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
+    match rvalue {
+        mir::Rvalue::Use(operand) => collect_operand_moves(operand),
+        mir::Rvalue::BinaryOp(_, left, right) | mir::Rvalue::CheckedBinaryOp(_, left, right) => {
+            let mut moves = collect_operand_moves(left);
+            moves.extend(collect_operand_moves(right));
+            moves
+        }
+        mir::Rvalue::UnaryOp(_, operand)
+        | mir::Rvalue::Cast(operand, _)
+        | mir::Rvalue::HeapAlloc(_, operand, _) => collect_operand_moves(operand),
+        // Neither `Ref`'s nor `Len`'s own place is ever itself moved — a
+        // reference/measurement is inherently a borrow, not a consuming read.
+        mir::Rvalue::Ref { .. } | mir::Rvalue::Len(_) => Vec::new(),
+        mir::Rvalue::Aggregate(_, operands) => {
+            operands.iter().flat_map(collect_operand_moves).collect()
+        }
+    }
+}
+
 /// Every block's own points, in execution order — same per-statement/
 /// per-reading-terminator shape the old flat `build_timeline` used, just
 /// keyed by block instead of concatenated into one global list.
@@ -283,8 +387,13 @@ fn build_points_per_block(function: &mir::Function) -> HashMap<BlockId, Vec<Poin
             match statement {
                 mir::Statement::Assign(place, rvalue) => {
                     let reads = collect_reads(rvalue);
+                    let moves = collect_moves(rvalue);
                     let assign = place.projection.is_empty().then_some((place.local, rvalue));
-                    points.push(PointInfo { assign, reads });
+                    points.push(PointInfo {
+                        assign,
+                        reads,
+                        moves,
+                    });
                 }
                 mir::Statement::MarkMoved(_)
                 | mir::Statement::SetDropFlag(..)
@@ -292,27 +401,33 @@ fn build_points_per_block(function: &mir::Function) -> HashMap<BlockId, Vec<Poin
             }
         }
 
-        let terminator_reads = match &block.terminator {
-            mir::Terminator::Call { arguments, .. } => {
-                arguments.iter().flat_map(collect_operand_reads).collect()
-            }
-            mir::Terminator::Assert { cond, msg, .. } => {
-                let mut reads = collect_operand_reads(cond);
-                reads.extend(collect_operand_reads(msg));
-                reads
-            }
-            mir::Terminator::Goto(_)
-            | mir::Terminator::Drop { .. }
-            | mir::Terminator::Return
-            | mir::Terminator::Unreachable => Vec::new(),
-            mir::Terminator::SwitchInt { discriminant, .. } => {
-                collect_operand_reads(discriminant)
-            }
-        };
+        let (terminator_reads, terminator_moves): (Vec<LocalId>, Vec<LocalId>) =
+            match &block.terminator {
+                mir::Terminator::Call { arguments, .. } => (
+                    arguments.iter().flat_map(collect_operand_reads).collect(),
+                    arguments.iter().flat_map(collect_operand_moves).collect(),
+                ),
+                mir::Terminator::Assert { cond, msg, .. } => {
+                    let mut reads = collect_operand_reads(cond);
+                    reads.extend(collect_operand_reads(msg));
+                    let mut moves = collect_operand_moves(cond);
+                    moves.extend(collect_operand_moves(msg));
+                    (reads, moves)
+                }
+                mir::Terminator::Goto(_)
+                | mir::Terminator::Drop { .. }
+                | mir::Terminator::Return
+                | mir::Terminator::Unreachable => (Vec::new(), Vec::new()),
+                mir::Terminator::SwitchInt { discriminant, .. } => (
+                    collect_operand_reads(discriminant),
+                    collect_operand_moves(discriminant),
+                ),
+            };
         if !terminator_reads.is_empty() {
             points.push(PointInfo {
                 assign: None,
                 reads: terminator_reads,
+                moves: terminator_moves,
             });
         }
 

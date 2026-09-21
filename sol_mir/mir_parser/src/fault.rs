@@ -156,30 +156,37 @@ pub enum MirErrorKind {
     /// Points at the moved-out local's own declaration span — MIR statements
     /// don't carry their own per-statement spans yet, so the *exact* source
     /// location of the violating read can't be reported, only where the
-    /// value in question was introduced. Straight-line functions only for
-    /// now (anything containing a branch is skipped, unchecked, until the
-    /// checker gains real CFG join support — see `move_check`'s own docs).
+    /// value in question was introduced. Handles the full concrete (M1) CFG
+    /// shape, `for` loops included, via a real fixed-point dataflow — see
+    /// `move_check`'s own docs.
     #[error("value may have already been moved out of")]
     UseAfterMove,
 
     /// The escape checker's own violation (see `mir_parser::escape_check`).
     /// Points at the referenced local's own declaration span, for the same
     /// reason `UseAfterMove` does — MIR statements don't carry their own
-    /// per-statement spans yet. Straight-line functions only for now
-    /// (anything containing a branch is skipped, unchecked); only a
-    /// function's own return value is checked, not what its callers pass
-    /// in (see `escape_check`'s own docs).
+    /// per-statement spans yet. Handles the full concrete (M1) CFG shape,
+    /// `for` loops included; only a function's own return value is checked,
+    /// not what its callers pass in (see `escape_check`'s own docs).
     #[error("returns a reference to a local that doesn't outlive this function")]
     DanglingReference,
 
     /// The overlap checker's own violation (see
     /// `mir_parser::borrow_checker::overlap_check`). Points at the
-    /// later-created borrow's own declaration span. Straight-line functions
-    /// only for now; whole-locals only (no per-field disjointness); and
-    /// reference-vs-reference only (a live borrow blocking a *move* of its
-    /// target isn't checked here — see that module's own docs).
+    /// later-created borrow's own declaration span. Whole-locals only (no
+    /// per-field disjointness) and reference-vs-reference only — a live
+    /// borrow blocking a *move* of its target is `MoveWhileBorrowed` below,
+    /// a separate check.
     #[error("a mutable borrow overlaps another live borrow of the same value")]
     OverlappingBorrows,
+
+    /// `mir_parser::borrow_checker::overlap_check::check_move_while_borrowed`'s
+    /// own violation — a whole-place move of a local while some still-needed
+    /// borrow (mutable or shared) of that same local is live. Points at the
+    /// moved local's own declaration span, same reasoning as `UseAfterMove`.
+    /// Whole-locals only, same scope as `OverlappingBorrows`.
+    #[error("value is moved while it is still borrowed")]
+    MoveWhileBorrowed,
 }
 
 impl From<UnclassifiedKind> for MirErrorKind {

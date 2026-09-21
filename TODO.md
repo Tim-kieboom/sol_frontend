@@ -288,10 +288,47 @@ that landing first, in order.
         `trace_origin` reaches it, without checking what any actual caller passed in. Needs tracing
         into a callee's own return-value dependency on its reference parameters, then checking each
         call site's actual arguments against that.
-  - [ ] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
-        (rustc's `cannot move out of x because it is borrowed`); today `move_check` and
-        `overlap_check` run as two fully independent passes with no shared state, so a move through
-        an outstanding borrow isn't rejected by either.
+  - [x] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
+        (rustc's `cannot move out of x because it is borrowed`). `/grill-me`'d first: settled that
+        checking "is place `x` moved while a borrow of `x` is still live" doesn't need real
+        cross-module wiring with `move_check`'s own forward dataflow at all — `overlap_check` already
+        computes, per generation, a live-point *set* for every tracked borrow of a place, so the whole
+        check is a self-contained lookup against that existing machinery: for every whole-place
+        `Operand::Move`, is its own point a member of any tracked borrow's `live_points`.
+    - **Conflict matrix confirmed as asymmetric from `check_borrow_overlaps`'s own rule**: unlike
+      overlap-checking (which only cares about mutable exclusivity, unlimited simultaneous shared
+      borrows are fine), a move invalidates the underlying storage entirely — it conflicts with *any*
+      live borrow of its target, mutable or shared alike, since a shared borrow read after the move
+      would also be dereferencing gone storage.
+    - **CFG scope confirmed as inherited, not restarted**: every other new M2 checker began
+      straight-line-only and earned `if`/`else`/`for` slice by slice. This one skips that entirely —
+      `overlap_check`'s own borrow/live-point data is already fully general (the `if`/`else` and `for`
+      slices above), so the new check just reuses it as-is, with no separate CFG-shape scoping of its
+      own.
+    - `overlap_check.rs`'s `check_borrow_overlaps` refactored: its "build every tracked borrow" logic
+      (previously inline) extracted into a shared `analyze(function) -> Analysis` (points-per-block +
+      the borrows list), so a second consumer doesn't have to recompute or duplicate it.
+    - `PointInfo` gained a `moves: Vec<LocalId>` field alongside `reads` — liveness only ever needs
+      "was this local read here" (`Copy` and `Move` alike), but this new check specifically needs
+      *which* reads are `Move`s; new `collect_operand_moves`/`collect_moves` (mirroring
+      `collect_operand_reads`/`collect_reads`'s own shape) populate it, whole-locals-only (a
+      projected `Move`, e.g. `consume(container.item)`, isn't tracked — same scope cut every other
+      M2 pass already makes, and the lowerer doesn't emit those as `Operand::Move` in the first place
+      per `move_eligible_operand`'s own docs).
+    - New `pub fn check_move_while_borrowed`: for every point's own `moves`, looks up tracked borrows
+      of that same root local and flags one whose `live_points` contains this exact point. New
+      `MirErrorKind::MoveWhileBorrowed`, reported at the moved local's own declaration span (same
+      convention as `UseAfterMove`/`DanglingReference`). Wired into `mir_run::to_mir` right alongside
+      `check_borrow_overlaps`. In passing, fixed two other `MirErrorKind` doc comments
+      (`UseAfterMove`/`DanglingReference`) that still said "straight-line functions only" — stale
+      since both checkers' own `if`/`for` extensions above.
+    - Proven via 2 new `mir_parser` unit tests (a shared borrow flagged when its target is moved while
+      still needed; the same shape accepted once the move comes strictly after the borrow's own last
+      use — proving real liveness, not a lexical "the borrow variable is still in scope" heuristic)
+      plus 1 new `mir_run` integration test exercising the real `to_mir` wiring. Full
+      `cargo test --workspace` (139 `mir_parser` tests, up from 137; 10 `mir_run` tests, up from 9;
+      same unrelated pre-existing `ast_parser` failure, unaffected) and all 35 exe tests pass
+      unchanged.
   - [ ] **Per-field disjointness for overlap-checking** — `check_borrow_overlaps` currently treats two
         borrows of the same root local as conflicting regardless of which field each actually
         touches (`&o.a` and `&mut o.b` wrongly flagged as overlapping); needs the borrow-timeline
