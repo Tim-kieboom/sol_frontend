@@ -3371,19 +3371,104 @@ fn check_escapes_allows_dereferencing_an_owning_heap_pointer() {
 }
 
 #[test]
-fn check_escapes_skips_functions_containing_a_branch() {
-    // Straight-line only for now (see the module's own docs) — a dangling
-    // return reachable only after a branch isn't analyzed yet, even though
-    // this is a real violation on every call.
+fn check_escapes_now_flags_a_dangling_return_reached_through_a_bodyless_if_branch() {
+    // `if`/`else` is now analyzed (previously the whole function would have
+    // been skipped unanalyzed the moment it contained any branch at all) —
+    // `x` is never touched by the `if`, so the value reaching `return &x`
+    // is dangling on every call, `cond` notwithstanding.
     let (mir, declares) = lower_source_with_declares(
         "f(cond: bool): &int {\n    x := 1\n    if cond {\n        y := 2\n    }\n    return &x\n}\n",
         "f",
     );
 
     let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the branch to no longer hide this dangling return, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_return_reachable_only_through_one_of_two_branches() {
+    // The falsifying case for this slice: the *old* "skip the whole function
+    // on any branch" gate would have silently let this through, even though
+    // the `else` arm's own `return &x` is unconditionally dangling every
+    // time `cond` is false. Two independent `Terminator::Return`s (one per
+    // arm) — proves multi-return handling, not just the single-return case
+    // every earlier test here used.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool, p: &int): &int {\n    x := 1\n    if cond {\n        return &*p\n    } else {\n        return &x\n    }\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected exactly the else-arm's dangling return to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_value_only_made_safe_on_one_incoming_path() {
+    // A single `return r` whose value comes from a real join: `r` starts
+    // dangling (`&x`), then is *conditionally* reassigned to a safe value
+    // before the return. The bodyless `else` means one incoming path to the
+    // join still carries the original dangling assignment — the join has to
+    // require *every* incoming path safe, not just the one that reassigned.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool, p: &int): &int {\n    x := 1\n    mut r := &x\n    if cond {\n        r = &*p\n    }\n    return r\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the still-dangling untaken path to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_value_made_safe_on_every_incoming_path() {
+    // Same join shape as above, but *both* incoming values are safe — proves
+    // the require-all-safe join isn't just conservatively rejecting anything
+    // that touches a branch.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool, p: &int, q: &int): &int {\n    mut r := p\n    if cond {\n        r = q\n    }\n    return r\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(
         faults.is_empty(),
-        "expected a branching function to be skipped entirely, got {:#?}",
+        "expected a value safe on every incoming path to be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_still_skips_functions_containing_a_for_loop() {
+    // `for`'s back edge is still out of scope for this slice (deferred, see
+    // the module's own docs and `TODO.md`'s M2 entry) — `has_back_edge`
+    // gates it out, same as a plain `if`/`else` used to be gated out before
+    // this slice.
+    let (mir, declares) = lower_source_with_declares(
+        "f(cond: bool): &int {\n    x := 1\n    for cond {\n        y := 1\n    }\n    return &x\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    assert!(
+        faults.is_empty(),
+        "expected a function containing a for loop to still be skipped entirely, got {:#?}",
         faults
     );
 }
@@ -3484,9 +3569,13 @@ fn check_borrow_overlaps_allows_sequential_non_overlapping_mutable_borrows() {
 }
 
 #[test]
-fn check_borrow_overlaps_skips_functions_containing_a_branch() {
-    // Straight-line only for now (see the module's own docs) — a real
-    // overlap reachable only after a branch isn't analyzed yet.
+fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_bodyless_if_branch() {
+    // `if`/`else` is now analyzed (previously the whole function would have
+    // been skipped unanalyzed the moment it contained any branch at all) —
+    // `mutRef` is read inside the `if`, `ref` is read unconditionally right
+    // after it: on the path where `cond` is true, both are genuinely live
+    // at the same time, a real conflict every earlier straight-line-only
+    // slice would have missed.
     let mir = lower_source(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    if cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
         "f",
@@ -3494,9 +3583,54 @@ fn check_borrow_overlaps_skips_functions_containing_a_branch() {
     .expect("expected successful lowering");
 
     let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the branch to no longer hide this overlap, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
+}
+
+#[test]
+fn check_borrow_overlaps_allows_two_mutable_borrows_in_mutually_exclusive_branches() {
+    // The falsifying case for this slice: a *naive* extension that just
+    // concatenated every block into one flat sequential list (rather than
+    // real per-point CFG liveness) would see these two `&mut` borrows as
+    // "sequential" and wrongly flag them — they're actually in sibling
+    // branches, so at most one of them ever exists at runtime. Proves the
+    // CFG-aware liveness respects branch exclusivity, not just that it
+    // catches more cases than straight-line code did.
+    let mir = lower_source(
+        "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    if cond {\n        r1 := &mut var\n        useMut(r1)\n    } else {\n        r2 := &mut var\n        useMut(r2)\n    }\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
     assert!(
         faults.is_empty(),
-        "expected a branching function to be skipped entirely, got {:#?}",
+        "two mutable borrows confined to sibling branches should never be flagged, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_still_skips_functions_containing_a_for_loop() {
+    // `for`'s back edge is still out of scope for this slice (deferred, see
+    // the module's own docs and `TODO.md`'s M2 entry) — `has_back_edge`
+    // gates it out, same as a plain `if`/`else` used to be gated out before
+    // this slice.
+    let mir = lower_source(
+        "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    for cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    assert!(
+        faults.is_empty(),
+        "expected a function containing a for loop to still be skipped entirely, got {:#?}",
         faults
     );
 }

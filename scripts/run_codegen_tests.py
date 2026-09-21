@@ -89,6 +89,7 @@ def build_sol_tester() -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         print("sol_tester failed to build:", file=sys.stderr)
@@ -106,6 +107,7 @@ def run_sol_tester(panic_mode: str | None) -> None:
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0 or "success" not in result.stdout:
         raise RuntimeError(
@@ -120,13 +122,14 @@ def build_and_run_exe(exe_path: Path) -> tuple[int, str]:
         [str(CLANG), str(LL_PATH), "-o", str(exe_path)],
         capture_output=True,
         text=True,
+        check=False,
     )
     if compile_result.returncode != 0:
         raise RuntimeError(
             f"clang failed to build the exe:\n{compile_result.stdout}\n{compile_result.stderr}"
         )
 
-    run_result = subprocess.run([str(exe_path)], capture_output=True, text=True)
+    run_result = subprocess.run([str(exe_path)], capture_output=True, text=True, check=False)
     return run_result.returncode, run_result.stdout
 
 

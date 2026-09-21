@@ -184,12 +184,12 @@ pub enum MirErrorKind {
 
 impl From<UnclassifiedKind> for MirErrorKind {
     fn from(value: UnclassifiedKind) -> Self {
-        MirErrorKind::Unclassified(value.0)
+        MirErrorKind::Unclassified(value.into_box_str())
     }
 }
 impl From<MirErrorKind> for UnclassifiedKind {
     fn from(value: MirErrorKind) -> Self {
-        UnclassifiedKind(value.to_string().into_boxed_str())
+        UnclassifiedKind::new(value.to_string().into_boxed_str())
     }
 }
 

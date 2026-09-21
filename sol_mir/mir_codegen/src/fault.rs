@@ -96,12 +96,12 @@ pub enum CodegenErrorKind {
 
 impl From<UnclassifiedKind> for CodegenErrorKind {
     fn from(value: UnclassifiedKind) -> Self {
-        CodegenErrorKind::Unclassified(value.0)
+        CodegenErrorKind::Unclassified(value.into_box_str())
     }
 }
 impl From<CodegenErrorKind> for UnclassifiedKind {
     fn from(value: CodegenErrorKind) -> Self {
-        UnclassifiedKind(value.to_string().into_boxed_str())
+        UnclassifiedKind::new(value.to_string().into_boxed_str())
     }
 }
 

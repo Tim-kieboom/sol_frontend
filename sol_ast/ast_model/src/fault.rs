@@ -387,12 +387,12 @@ impl From<EnumVariantArgumentTypeMismatch> for AstErrorKind {
 
 impl From<UnclassifiedKind> for AstErrorKind {
     fn from(value: UnclassifiedKind) -> Self {
-        AstErrorKind::Unclassified(value.0)
+        AstErrorKind::Unclassified(value.into_box_str())
     }
 }
 impl From<AstErrorKind> for UnclassifiedKind {
     fn from(value: AstErrorKind) -> Self {
-        UnclassifiedKind(value.to_string().into_boxed_str())
+        UnclassifiedKind::new(value.to_string().into_boxed_str())
     }
 }
 
