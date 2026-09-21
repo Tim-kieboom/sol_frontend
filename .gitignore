@@ -2,7 +2,7 @@
 *.VSCodeCounter
 *.solc
 *.ll
-/docs
 Cargo.lock
 /target
 /sol_ast/ast_model/target
+/docs

@@ -1,14 +1,5 @@
 # Sol Compiler — Roadmap / TODO
 
-Source of truth for design decisions lives in [`docs/`](docs/):
-[compiler-pipeline-plan.md](docs/compiler-pipeline-plan.md),
-[mir-design.md](docs/mir-design.md),
-[crate-system-plan.md](docs/crate-system-plan.md),
-[reflection-system.md](docs/reflection-system.md),
-[ANCHORED-crate.md](docs/ANCHORED-crate.md).
-This file just tracks status and next steps — update it as work lands, don't duplicate design
-rationale from those docs here.
-
 ## Pipeline
 
 ```
