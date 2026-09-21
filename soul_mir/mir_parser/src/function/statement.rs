@@ -210,6 +210,19 @@ impl<'a> FunctionLowerer<'a> {
             ));
         };
         let return_type_id = signature.return_type;
+
+        let is_last_variadic = signature.parameters.last().is_some_and(|p| p.is_variadic);
+
+        if is_last_variadic && signature.parameters.len() != call.arguments.len() {
+            let span = self.last_argument_span(call)
+                .unwrap_or(call.name.span());
+
+            return Err(Fault::error_with_kind(
+                MirErrorKind::MissingVarargs,
+                Some(span),
+            ));
+        }
+
         // The `varargs` marker is always the last declared parameter (see
         // `ast_parser::parse::function`) — its corresponding call argument
         // is never a plain value but the compile-time-only `varargs.[...]`
@@ -218,11 +231,18 @@ impl<'a> FunctionLowerer<'a> {
         // or more extra trailing operands rather than a single argument.
         // Computed up front, before `signature`'s borrow of `self.declares`
         // would otherwise conflict with the `&mut self` calls below.
-        let variadic_arg_index = signature
+        let variadic_arg_index = if is_last_variadic {
+            Some(call.arguments.len().saturating_sub(1))
+        } else {
+            None
+        };
+
+        signature
             .parameters
             .last()
             .is_some_and(|p| p.is_variadic)
             .then(|| call.arguments.len().saturating_sub(1));
+
         // Whichever of `func(..)`/`&this`/`this`/`&mut this` the *callee*
         // declares its receiver as: `&this`/`&mut this` borrow the receiver
         // (matching the callee's own `Reference`-typed local set up in
@@ -324,7 +344,9 @@ impl<'a> FunctionLowerer<'a> {
         let expr = &self.store.expressions[expr_id];
         let ast::ExpressionKind::Array(ast::AnyArray::Array(array)) = &expr.node else {
             return Err(Fault::error_with_kind(
-                MirErrorKind::UnsupportedCallShape,
+                MirErrorKind::ExpectedVarargs {
+                    expression_variant: expr.node.variant_name(),
+                },
                 Some(span),
             ));
         };
@@ -500,5 +522,10 @@ impl<'a> FunctionLowerer<'a> {
                 Some(span),
             )),
         }
+    }
+
+    fn last_argument_span(&self, call: &ast::FunctionCall) -> Option<Span> {
+        let last = call.arguments.last()?;
+        self.store.expressions.get(last.value).map(|e| e.span)
     }
 }

@@ -1,5 +1,6 @@
 use ast_model::{
-    AstModuleStore, Block, BlockId, CrateForest, Module, SoulType, declare_store::DeclareStore,
+    AstModuleStore, Block, BlockId, CrateForest, ExternLanguage, Module, SoulType,
+    declare_store::DeclareStore,
 };
 use soul_tokenizer::TokenStream;
 #[cfg(debug_assertions)]
@@ -24,6 +25,11 @@ pub(crate) struct DebugViewer {
 #[derive(Debug, Default)]
 pub(crate) struct Current {
     pub(crate) this_type: Option<SoulType>,
+    /// `Some(lang)` while parsing inside an `extern "C" ( ... )` block, so that
+    /// the next statement is forced to parse as another extern signature
+    /// instead of a normal statement. See [`crate::parse::function`]'s
+    /// `parse_extern_signature_statement`.
+    pub(crate) extern_block: Option<ExternLanguage>,
 }
 
 /// Recursive descent parser that builds AST from token stream.

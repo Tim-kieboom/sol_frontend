@@ -7,7 +7,9 @@
 //! calls, structs, borrow checking) are new passes over an already-complete shape
 //! rather than a shape migration.
 
-use ast_model::{Literal, SoulType, TypeId, declare_store::DeclareStore, operators::BinaryOperatorKind};
+use ast_model::{
+    Literal, SoulType, TypeId, declare_store::DeclareStore, operators::BinaryOperatorKind,
+};
 use soul_utils::{
     FunctionId, Mutable, TypeModifier,
     collections::{array::Arr, vec_map::VecMap},

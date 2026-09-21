@@ -90,6 +90,14 @@ pub enum MirErrorKind {
     )]
     UnsupportedCallShape,
 
+    #[error("expected `varargs` got `{expression_variant}`")]
+    ExpectedVarargs { expression_variant: &'static str },
+
+    #[error(
+        "missing `varargs` at the and of the functioncall (empty varargs are explicit so `varargs.[]` if you want no arguments)"
+    )]
+    MissingVarargs,
+
     #[error("a `none`-returning call's result can't be used as a value")]
     CannotUseNoneValueAsOperand,
 

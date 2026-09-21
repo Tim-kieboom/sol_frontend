@@ -639,9 +639,9 @@ fn all_kinds() {
         }) => {
             assert!(is_distinct);
             match declares.get_type(*new_type) {
-                Some(SoulType::Stub(stub)) => assert!(
-                    stub.matches_ignoring_occurrence(&Stub::new("DistinctInt".to_string()))
-                ),
+                Some(SoulType::Stub(stub)) => {
+                    assert!(stub.matches_ignoring_occurrence(&Stub::new("DistinctInt".to_string())))
+                }
                 other => panic!("expected a Stub named DistinctInt, got {other:?}"),
             }
             assert_eq!(

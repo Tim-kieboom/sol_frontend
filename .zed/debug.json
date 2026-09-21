@@ -1,0 +1,54 @@
+[
+  {
+    "label": "Debug soul_tester",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/debug/soul_tester.exe",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "args": [],
+    "build": {
+      "label": "Build soul_tester",
+      "command": "cargo",
+      "args": ["build", "-p", "soul_tester"]
+    }
+  },
+  {
+    "label": "Debug soul_tester backtrace",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/debug/soul_tester.exe",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "args": [],
+    "build": {
+      "label": "Build soul_tester backtrace",
+      "command": "cargo",
+      "args": ["build", "-p", "soul_tester", "--features", "error_backtrace"]
+    }
+  },
+  {
+    "label": "Debug soul_tester release",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/release/soul_tester.exe",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "args": [],
+    "build": {
+      "label": "Build soul_tester release",
+      "command": "cargo",
+      "args": ["build", "-p", "soul_tester", "--release"]
+    }
+  },
+  {
+    "label": "Debug soul_tester release backtrace",
+    "adapter": "CodeLLDB",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/soul_tester/target/release/soul_tester.exe",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "args": [],
+    "build": {
+      "label": "Build soul_tester release backtrace",
+      "command": "cargo",
+      "args": ["build", "-p", "soul_tester", "--release", "--features", "error_backtrace"]
+    }
+  }
+]

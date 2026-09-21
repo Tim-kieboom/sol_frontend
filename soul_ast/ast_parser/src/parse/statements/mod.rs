@@ -146,6 +146,10 @@ impl<'a, 'f> Parser<'a, 'f> {
             return self.parse_assign_or_expression(start_span);
         }
 
+        if let Some(external) = self.current.extern_block {
+            return self.parse_extern_signature_statement(external);
+        }
+
         match self.parse_possible_statement(start_span) {
             Ok(val) => return Ok(val),
             Err(TryError::IsErr(err)) => return Err(err),

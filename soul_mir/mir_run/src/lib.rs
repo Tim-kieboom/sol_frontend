@@ -21,7 +21,7 @@ use std::time::Instant;
 
 use ast_model::AstTree;
 use mir_model::MirProgram;
-use mir_parser::{MirLowerer, fault::MirErrorKind, borrow_checker};
+use mir_parser::{MirLowerer, borrow_checker, fault::MirErrorKind};
 use soul_utils::{
     CrateContext, collections::benchmark::Benchmark, compiler_options::CompilerOptions,
 };

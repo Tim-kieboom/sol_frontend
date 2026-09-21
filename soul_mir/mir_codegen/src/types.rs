@@ -131,7 +131,7 @@ pub(crate) fn llvm_type<'ctx>(
                 ));
             }
         }),
-        SoulType::Reference(_) | SoulType::Pointer(_) => {
+        SoulType::Reference(_) | SoulType::Pointer(_) | SoulType::RawPtr(_) => {
             Ok(context.ptr_type(AddressSpace::default()).into())
         }
         SoulType::Stub(_) => stub_type(context, platform, declares, module, ty, span),

@@ -218,6 +218,10 @@ impl<'a, 'f> Parser<'a, 'f> {
     pub(crate) fn parse_extern_function(&mut self) -> Result<Statement, AstFault> {
         self.expect(&TokenKind::Keyword(KeyWord::Extern))?;
 
+        self.inner_parse_extern_function()
+    }
+
+    fn inner_parse_extern_function(&mut self) -> Result<Statement, AstFault> {
         let string_literal = match &self.token().kind {
             TokenKind::Literal(TokenLiteral::String(val)) => val,
             other => {
@@ -254,21 +258,79 @@ impl<'a, 'f> Parser<'a, 'f> {
         };
 
         self.bump();
-        let name = self.try_bump_consume_ident()?;
+
+        if self.current_is(&ROUND_OPEN) {
+            self.bump();
+            self.skip_end_lines();
+            if self.current_is(&ROUND_CLOSE) {
+                return Err(Fault::error_with_kind(
+                    crate::fault::AstErrorKind::EmptyExternBlock,
+                    Some(self.token().span),
+                ));
+            }
+            self.current.extern_block = Some(external);
+        }
+
+        self.parse_extern_signature_statement(external)
+    }
+
+    /// Parses a single `name(...): T` extern function signature and wraps it
+    /// in an `ExternalFunction` statement. Used both for the single-function
+    /// `extern "C" name(...): T` form and for each entry of an
+    /// `extern "C" ( ... )` block (see [`Parser::current_extern_block`]).
+    ///
+    /// When called while `current_extern_block` is set, also checks for the
+    /// block's closing `)` right after the signature and clears the flag
+    /// when found, so the surrounding statement-parsing loop naturally moves
+    /// on to whatever follows the block.
+    pub(crate) fn parse_extern_signature_statement(
+        &mut self,
+        external: ExternLanguage,
+    ) -> Result<Statement, AstFault> {
+        let in_block = self.current.extern_block.is_some();
+
+        let name = match self.try_bump_consume_ident() {
+            Ok(name) => name,
+            Err(err) => {
+                self.current.extern_block = None;
+                return Err(err);
+            }
+        };
         let span = self.token().span;
-        match self.try_parse_function_signature(span, &SoulType::None, name, false, Some(external))
-        {
+        let statement = match self.try_parse_function_signature(
+            span,
+            &SoulType::None,
+            name,
+            false,
+            Some(external),
+        ) {
             Ok(signature) => {
                 let span = signature.span;
                 let id = self
                     .forest
                     .store
                     .insert_function(FunctionKind::Signature(signature));
-                Ok(Statement::from_external_function(Spanned::new(id, span)))
+                Statement::from_external_function(Spanned::new(id, span))
             }
-            Err(TryError::IsErr(err)) => Err(err),
-            Err(TryError::IsNotValue(err)) => Err(err.fault),
+            Err(TryError::IsErr(err)) => {
+                self.current.extern_block = None;
+                return Err(err);
+            }
+            Err(TryError::IsNotValue(err)) => {
+                self.current.extern_block = None;
+                return Err(err.fault);
+            }
+        };
+
+        if in_block {
+            self.skip_end_lines();
+            if self.current_is(&ROUND_CLOSE) {
+                self.bump();
+                self.current.extern_block = None;
+            }
         }
+
+        Ok(statement)
     }
 
     pub(crate) fn try_parse_function_signature(
@@ -345,6 +407,10 @@ impl<'a, 'f> Parser<'a, 'f> {
             } else {
                 None
             };
+
+            if self.current_is(&ROUND_CLOSE) {
+                break;
+            }
 
             let value = self.parse_expression_id(&[COMMA, ROUND_CLOSE])?;
             values.push(Argument { name, value });

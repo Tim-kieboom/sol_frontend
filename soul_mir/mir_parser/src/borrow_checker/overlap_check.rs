@@ -317,11 +317,17 @@ fn classify_borrows(generations: &HashMap<LocalId, Vec<Generation<'_>>>) -> Vec<
     let mut borrows = Vec::new();
     for (&local, gens) in generations {
         for generation in gens {
-            let Some((place, mutable)) = trace_borrow(generations, generation.rvalue, generation.def_index)
+            let Some((place, mutable)) =
+                trace_borrow(generations, generation.rvalue, generation.def_index)
             else {
                 continue;
             };
-            let last_use = generation.reads.iter().copied().max().unwrap_or(generation.def_index);
+            let last_use = generation
+                .reads
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(generation.def_index);
             borrows.push(Borrow {
                 local,
                 place,

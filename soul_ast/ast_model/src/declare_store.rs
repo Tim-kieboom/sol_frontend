@@ -333,7 +333,11 @@ impl DeclareStore {
     /// per-occurrence-unique `TypeId` — see `Stub::occurrence`) resolved to.
     /// Returns the previous entry, if any (there normally shouldn't be one —
     /// each occurrence is resolved at most once).
-    pub fn insert_type_resolve(&mut self, occurrence: TypeId, resolve: TypeResolve) -> Option<TypeResolve> {
+    pub fn insert_type_resolve(
+        &mut self,
+        occurrence: TypeId,
+        resolve: TypeResolve,
+    ) -> Option<TypeResolve> {
         self.type_resolves.insert(occurrence, resolve)
     }
 
@@ -368,8 +372,9 @@ impl DeclareStore {
         let SoulType::Stub(stub) = ty else {
             return None;
         };
-        if let Some(TypeResolve::Struct(node_id)) =
-            self.get_type_id(ty).and_then(|id| self.get_type_resolve(id))
+        if let Some(TypeResolve::Struct(node_id)) = self
+            .get_type_id(ty)
+            .and_then(|id| self.get_type_resolve(id))
         {
             return match self.custom_types.get(node_id) {
                 Some((CustomType::Struct(struct_), _)) => Some(struct_),
@@ -389,10 +394,11 @@ impl DeclareStore {
     /// — callers that need a diagnostic on failure (`mir_parser`'s own
     /// `require_lowerable`) wrap this with their own `Fault`.
     pub fn is_lowerable(&self, ty: &SoulType, module: Option<ModuleId>) -> bool {
-        let is_lowerable_array =
-            matches!(ty, SoulType::Array(array) if array.kind.is_lowerable());
-        matches!(ty, SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_))
-            || self.resolve_struct(ty, module).is_some()
+        let is_lowerable_array = matches!(ty, SoulType::Array(array) if array.kind.is_lowerable());
+        matches!(
+            ty,
+            SoulType::Primitive(_) | SoulType::Reference(_) | SoulType::Pointer(_)
+        ) || self.resolve_struct(ty, module).is_some()
             || is_lowerable_array
     }
 

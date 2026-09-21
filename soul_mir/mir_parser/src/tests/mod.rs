@@ -97,7 +97,10 @@ fn lower_source(source: &str, function_name: &str) -> MirResult<mir_model::Funct
 /// Like `lower_source`, but also hands back the `DeclareStore` — needed by
 /// anything (like `escape_check`) that has to resolve a `TypeId` back to a
 /// `SoulType` after lowering.
-fn lower_source_with_declares(source: &str, function_name: &str) -> (mir_model::Function, DeclareStore) {
+fn lower_source_with_declares(
+    source: &str,
+    function_name: &str,
+) -> (mir_model::Function, DeclareStore) {
     let mut ast = resolve_source(source);
     let function_id = find_function(&ast.crates.store, function_name);
     let mir = lower_function(&ast.crates.store, &mut ast.declares, function_id)
@@ -3283,7 +3286,8 @@ fn check_escapes_flags_a_direct_reference_to_a_body_local() {
     // The most basic case: `&x` where `x` is a body-declared local — `x`'s
     // own storage dies at this function's own end, so returning a reference
     // to it is dangling on every call, unconditionally.
-    let (mir, declares) = lower_source_with_declares("f(): &int {\n    x := 1\n    return &x\n}\n", "f");
+    let (mir, declares) =
+        lower_source_with_declares("f(): &int {\n    x := 1\n    return &x\n}\n", "f");
 
     let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert_eq!(
@@ -3322,8 +3326,7 @@ fn check_escapes_allows_returning_a_received_reference_parameter_unchanged() {
     // that's actually sound depends on what the *caller* passed, which this
     // slice deliberately doesn't check yet (see the module's own docs) — for
     // this function's own body in isolation, it's accepted.
-    let (mir, declares) =
-        lower_source_with_declares("f(p: &int): &int {\n    return p\n}\n", "f");
+    let (mir, declares) = lower_source_with_declares("f(p: &int): &int {\n    return p\n}\n", "f");
 
     let faults = crate::borrow_checker::check_escapes(&mir, &declares);
     assert!(

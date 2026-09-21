@@ -83,7 +83,12 @@ pub fn check_moves(function: &mir::Function) -> Vec<MirFault> {
     // Final, settled-state pass — the only place faults are ever collected.
     for &block_id in &analysis.order {
         let mut moved = join(block_id, &analysis.predecessors, &analysis.out_states);
-        check_block(function, &function.blocks[block_id], &mut moved, &mut faults);
+        check_block(
+            function,
+            &function.blocks[block_id],
+            &mut moved,
+            &mut faults,
+        );
     }
 
     faults
@@ -181,7 +186,12 @@ fn fixed_point(
         let mut moved = join(block_id, predecessors, &out_states);
         // A scratch, discarded fault list — this call is purely to compute
         // the resulting state, never to report anything (see module docs).
-        check_block(function, &function.blocks[block_id], &mut moved, &mut Vec::new());
+        check_block(
+            function,
+            &function.blocks[block_id],
+            &mut moved,
+            &mut Vec::new(),
+        );
 
         let changed = match out_states.get(&block_id) {
             Some(existing) => *existing != moved,

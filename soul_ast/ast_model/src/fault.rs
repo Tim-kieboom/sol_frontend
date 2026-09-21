@@ -39,6 +39,9 @@ pub enum AstErrorKind {
     #[error("language {language} is not supported")]
     UnsupportedExternLanguage { language: Box<str> },
 
+    #[error("`extern \"C\" ( ... )` block must declare at least one function")]
+    EmptyExternBlock,
+
     #[error(
         "'mut' modifier cannot be applied to compound patterns; use per-binding 'mut' instead (e.g., (mut a, b))"
     )]

@@ -334,7 +334,10 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
     /// Every other type (already-`int`-or-wider integers, `bool`, `cstr`, an
     /// untyped literal already defaulted to `i32`/`f64` by
     /// `variadic_operand_soul_type`) is emitted as-is.
-    fn codegen_variadic_argument(&mut self, operand: &Operand) -> CodegenResult<BasicValueEnum<'ctx>> {
+    fn codegen_variadic_argument(
+        &mut self,
+        operand: &Operand,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
         let natural = self.variadic_operand_soul_type(operand);
 
         if matches!(natural, SoulType::Primitive(PrimitiveTypes::Float32)) {
@@ -373,12 +376,8 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 .ctx
                 .resolve_type(self.function.locals[place.local].ty)
                 .clone(),
-            Operand::Constant(ConstValue::Uint(_)) => {
-                SoulType::Primitive(PrimitiveTypes::Uint32)
-            }
-            Operand::Constant(ConstValue::Float(_)) => {
-                SoulType::Primitive(PrimitiveTypes::Float64)
-            }
+            Operand::Constant(ConstValue::Uint(_)) => SoulType::Primitive(PrimitiveTypes::Uint32),
+            Operand::Constant(ConstValue::Float(_)) => SoulType::Primitive(PrimitiveTypes::Float64),
             Operand::Constant(ConstValue::Bool(_)) => SoulType::Primitive(PrimitiveTypes::Boolean),
             Operand::Constant(ConstValue::Cstr(_)) => SoulType::Primitive(PrimitiveTypes::CStr),
             Operand::Constant(ConstValue::Str(_)) => SoulType::String,

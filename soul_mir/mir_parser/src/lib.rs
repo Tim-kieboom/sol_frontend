@@ -91,10 +91,7 @@ impl<'a> MirLowerer<'a> {
 
 fn lower_extern_signature(signature: &ast::InnerFunctionSignature) -> mir::ExternFunction {
     let return_type = (signature.return_type != ast::TypeId::NONE).then_some(signature.return_type);
-    let is_variadic = signature
-        .parameters
-        .last()
-        .is_some_and(|p| p.is_variadic);
+    let is_variadic = signature.parameters.last().is_some_and(|p| p.is_variadic);
     mir::ExternFunction {
         id: signature.id,
         parameters: signature

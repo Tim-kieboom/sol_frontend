@@ -220,7 +220,7 @@ fn function_call_with_args() {
 // ----------------------------------------------------------------
 #[test]
 fn extern_function_c() {
-    let (module, store, context) = parse(r#"extern "C" printf(fmt: &char): int"#);
+    let (module, store, context) = parse(r#"extern "C" printf(fmt: cstr): cint"#);
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,
@@ -236,6 +236,75 @@ fn extern_function_c() {
                 ast_model::FunctionKind::Signature(signature) => {
                     assert_eq!(signature.value.name.as_str(), "printf");
                     assert_eq!(signature.value.parameters.len(), 1);
+                }
+                _ => panic!("expected External function"),
+            }
+        }
+        _ => panic!("expected ExternalFunction statement"),
+    }
+}
+
+#[test]
+fn extern_function_c_with_varargs() {
+    let (module, store, context) = parse(r#"extern "C" printf(fmt: cstr, args: varargs): cint"#);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::ExternalFunction(id) => {
+            let func = &store.functions[*id];
+            match func {
+                ast_model::FunctionKind::Signature(signature) => {
+                    assert_eq!(signature.value.name.as_str(), "printf");
+                    assert_eq!(signature.value.parameters.len(), 2);
+                }
+                _ => panic!("expected External function"),
+            }
+        }
+        _ => panic!("expected ExternalFunction statement"),
+    }
+}
+
+#[test]
+fn extern_multiple_function_c() {
+    let (module, store, context) = parse(
+        "extern \"C\" (\n printf(fmt: cstr, args: varargs): cint\nsprintf(buf: RawPtr, format: cstr, args: varargs)\n)",
+    );
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.faults
+    );
+
+    let stmt = get_statement(&store, &module, 0);
+    match &stmt.node {
+        StatementKind::ExternalFunction(id) => {
+            let func = &store.functions[*id];
+            match func {
+                ast_model::FunctionKind::Signature(signature) => {
+                    assert_eq!(signature.value.name.as_str(), "printf");
+                    assert_eq!(signature.value.parameters.len(), 2);
+                }
+                _ => panic!("expected External function"),
+            }
+        }
+        _ => panic!("expected ExternalFunction statement"),
+    }
+
+    let stmt = get_statement(&store, &module, 1);
+    match &stmt.node {
+        StatementKind::ExternalFunction(id) => {
+            let func = &store.functions[*id];
+            match func {
+                ast_model::FunctionKind::Signature(signature) => {
+                    assert_eq!(signature.value.name.as_str(), "sprintf");
+                    assert_eq!(signature.value.parameters.len(), 3);
                 }
                 _ => panic!("expected External function"),
             }
@@ -650,7 +719,7 @@ fn multiple_this_parameters_is_rejected() {
 
 #[test]
 fn extern_function_unsupported_language_is_rejected() {
-    let (_, _, context) = parse(r#"extern "Rust" printf(fmt: &char): int {}"#);
+    let (_, _, context) = parse(r#"extern "Rust" printf(fmt: cstr): int {}"#);
     assert!(
         context.faults.count_severity(Severity::Error) > 0,
         "expected an error for an unsupported extern language"
@@ -668,7 +737,7 @@ fn extern_function_unsupported_language_is_rejected() {
 
 #[test]
 fn extern_function_missing_language_string_is_rejected() {
-    let (_, _, context) = parse("extern printf(fmt: &char): int {}");
+    let (_, _, context) = parse("extern printf(fmt: cstr): int {}");
     assert!(
         context.faults.count_severity(Severity::Error) > 0,
         "expected an error when extern is missing its language string literal"
@@ -677,8 +746,7 @@ fn extern_function_missing_language_string_is_rejected() {
 
 #[test]
 fn return_impl_trait() {
-    let (module, store, context, declares) =
-        parse_with_declares("makeDefault(): impl Display {}");
+    let (module, store, context, declares) = parse_with_declares("makeDefault(): impl Display {}");
     assert_eq!(
         context.faults.count_severity(Severity::Error),
         0,

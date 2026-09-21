@@ -116,11 +116,7 @@ impl<'a> NameResolver<'a> {
     /// are purely a lowering/codegen concern (`mir_parser`/`mir_codegen`),
     /// not something this check needs to rewrite the AST for.
     fn check_varargs_argument(&mut self, argument: ExpressionId) {
-        let span = self
-            .store
-            .expressions
-            .get(argument)
-            .map(|expr| expr.span);
+        let span = self.store.expressions.get(argument).map(|expr| expr.span);
 
         let Some(expr) = self.store.expressions.get(argument) else {
             return;
@@ -132,7 +128,9 @@ impl<'a> NameResolver<'a> {
         let is_varargs_literal = array
             .collection_type
             .and_then(|id| self.declares.get_type(id))
-            .is_some_and(|ty| matches!(ty, SoulType::Stub(stub) if stub.name.as_ref() == "varargs"));
+            .is_some_and(
+                |ty| matches!(ty, SoulType::Stub(stub) if stub.name.as_ref() == "varargs"),
+            );
         if !is_varargs_literal {
             self.log_error(AstErrorKind::VarargsArgumentRequired, span);
             return;
