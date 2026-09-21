@@ -10,168 +10,353 @@
 //! reference parameter — tracing finds the one true origin instead of
 //! guessing which parameter an output might be tied to).
 //!
-//! Handles the full concrete (M1) CFG shape now, including `for` loops
-//! (`/grill-me`'d twice to get here: first straight-line only, then `if`/
-//! `else`, now loops too). Only checks a function's *own* return value, not
-//! its callers: a reference-typed parameter is trusted as safe without
-//! verifying what the caller actually passed in — that's real
-//! interprocedural propagation, a separate, later slice (see `TODO.md`'s M2
-//! entry).
+//! Handles the full concrete (M1) CFG shape, `for` loops included
+//! (`/grill-me`'d twice to get here: first straight-line only, then
+//! `if`/`else`, then loops too), **and** interprocedural call-site tracing
+//! (`/grill-me`'d a fourth time — see "Interprocedural tracing" below): a
+//! reference-typed parameter is no longer trusted as unconditionally safe —
+//! its own safety is now tied to whatever the function's *callers* actually
+//! pass, verified transitively across the whole call graph.
 //!
 //! The backward trace, from wherever the return value is used, has exactly
-//! three outcomes:
+//! four outcomes now (three plus the new interprocedural one):
 //!  - It reaches a local with **no recorded assignment** at all, walking all
 //!    the way back to the function's own entry block with nothing found —
 //!    in code with no partial-move/partial-init tracking, this must be a
-//!    parameter (including `this`/`&this`/`&mut this`) — **safe**, trusted
-//!    without checking the caller (see above).
+//!    parameter (including `this`/`&this`/`&mut this`) — its own safety is
+//!    now **tied to that specific parameter index** (`Origin::TiedToParams`)
+//!    rather than unconditionally `Safe` — see "Interprocedural tracing".
 //!  - It reaches an `Rvalue::Ref { place, .. }` (a fresh reference
-//!    construction) whose `place`'s projection contains a `Deref` step
-//!    *anywhere* — **safe**. This single rule covers both "reborrowing
-//!    through an already-received reference" (`&this.field` when `this` is
-//!    `&T` — `resolve_field_place`'s own `auto_deref` already inserts the
-//!    `Deref`) and "dereferencing an owning heap pointer" (`&*p` for
-//!    `p: *T`) — both point at memory outside this function's own stack
-//!    frame, for the same underlying reason (indirection through *some*
-//!    pointer/reference means the pointee isn't this frame's own storage).
+//!    construction) whose `place`'s projection has a `Deref` as its very
+//!    *first* element (a bare local being directly dereferenced, e.g.
+//!    `&this.field` when `this: &T`, or `&*p`) — classified by `place.local`'s
+//!    own type: an **owning heap pointer** (`*T`) is unconditionally
+//!    `Safe` (heap memory doesn't depend on any caller-passed reference
+//!    staying valid); a **reference** (`&T`/`&mut T`) is only as safe as
+//!    whatever *that* local's own origin is — traced the same way a
+//!    bare-local alias would be, which (if it's itself a parameter) now also
+//!    ties to a parameter index instead of collapsing to `Safe`. A `Deref`
+//!    buried *later* in the projection (reached through a field first, e.g.
+//!    `o.ptrField.innerField`) isn't refined by this slice — still
+//!    unconditionally `Safe`, a known, narrower, explicitly accepted gap
+//!    (no exe test or unit test exercises this shape).
 //!  - It reaches an `Rvalue::Ref { place, .. }` whose projection contains
 //!    **no** `Deref` at all — **dangling**: `place.local`'s own storage (a
 //!    body-declared local, or a parameter's own by-value slot) belongs to
 //!    this function's frame, gone the moment it returns.
+//!  - It reaches a local that's the **destination of a `Call` terminator**
+//!    (not a `Statement::Assign` at all) — resolved via the callee's own
+//!    summary (see "Interprocedural tracing").
 //!
 //! Any other shape the trace meets along the way — an alias through a
-//! *projected* place (`Use(Copy(x.field))`), or a non-`Ref`/non-alias
-//! rvalue reaching a reference-typed local — isn't analyzed: the trace
-//! stops and nothing is reported for that path, the same "unfamiliar shape
-//! ⇒ skip, don't guess" discipline `move_check` itself uses. That discipline
-//! applies to the *whole* combined answer, not just one path: if any path
-//! the trace has to walk to answer "is this local's value always safe"
-//! turns out unfamiliar, the combined answer is unfamiliar too (`None`)
-//! rather than guessing from whichever paths *did* resolve — a false "safe"
-//! here would be a real unsoundness, not just a missed diagnostic.
+//! *projected* place (`Use(Copy(x.field))`), or a non-`Ref`/non-alias/
+//! non-`Call`-result rvalue reaching a reference-typed local — isn't
+//! analyzed: the trace stops and nothing is reported for that path, the
+//! same "unfamiliar shape ⇒ skip, don't guess" discipline `move_check`
+//! itself uses. That discipline applies to the *whole* combined answer, not
+//! just one path: if any path the trace has to walk to answer "is this
+//! local's value always safe" turns out unfamiliar, the combined answer is
+//! unfamiliar too (`None`) rather than guessing from whichever paths *did*
+//! resolve — a false "safe" here would be a real unsoundness, not just a
+//! missed diagnostic.
 //!
 //! At an `if`/`else` join, a value's origin is only trusted as safe when
 //! it's safe on **every** incoming path — the trace forks at the join and
-//! walks back through each predecessor independently, requiring all of them
-//! to resolve safe (mirrors requiring a moved-on-*any*-path value to be
-//! rejected in `move_check`, just for the opposite conclusion: here, only
-//! *all*-paths-safe is trusted).
+//! walks back through each predecessor independently, combining every
+//! path's own origin via `combine` (see below) rather than requiring a flat
+//! boolean.
 //!
 //! # `for` loops — real fixed-point convergence
 //!
-//! `/grill-me`'d at length before writing anything: a `for` loop's back edge
-//! means a block's own "value reaching here" can depend on itself (the loop
-//! body's own end feeds back into the loop header). A first design sketch
-//! reached for a per-block "in progress" marker defaulting straight to
-//! `Dangling` the moment a cycle was hit, with a fallback span on
-//! `BasicBlock` for the case with no real local to blame — abandoned once it
-//! became clear that's strictly *worse* than just doing what `move_check`'s
-//! own loop extension already does: a real fixed point.
+//! A `for` loop's back edge means a block's own "value reaching here" can
+//! depend on itself (the loop body's own end feeds back into the loop
+//! header). Mirrors `move_check`'s own two-phase discipline exactly (start
+//! optimistic, converge monotonically toward the conservative verdict,
+//! never report mid-convergence): round 0 treats every not-yet-settled
+//! `(LocalId, BlockId)` pair optimistically as `Safe`; a round after that
+//! falls back to whatever the *previous* round settled on for any pair
+//! still "in progress" on the current round's own call stack (a genuine
+//! cycle). Rounds repeat until one produces byte-for-byte the same table as
+//! the round before it. Sound and terminating for the same reason
+//! `move_check`'s own fixed point is: a loop header always has at least one
+//! predecessor *outside* the loop (the initial entry edge, never part of
+//! any cycle), so every reachable pair bottoms out in a real, non-circular
+//! answer somewhere, and each round can only ever move a pair's verdict
+//! toward the more conservative end of the `Origin` lattice, never back.
+//! Rather than a fine-grained worklist (discovering which `(LocalId,
+//! BlockId)` pairs even matter needs the same demand-driven recursive trace
+//! this module already has), this re-runs the *entire* demand-driven trace
+//! once per round — simpler, less efficient, the same trade this
+//! compiler's own established preference has consistently made throughout
+//! M2 (`move_check`'s own plain queue over a priority worklist).
 //!
-//! Mirrors `move_check`'s own two-phase discipline exactly (start optimistic,
-//! converge monotonically toward the conservative verdict, never report
-//! mid-convergence) — but `move_check`'s fixed point is a block-level
-//! Kildall worklist (only the *set* of blocks needing reprocessing has to be
-//! tracked, since "maybe moved" is a monotonically-growing set with a cheap,
-//! well-understood update rule). Escape-checking's `(LocalId, BlockId)`
-//! query space doesn't have an equally cheap incremental update — discovering
-//! *which* pairs even matter requires the same demand-driven recursive trace
-//! this module already has. So instead of a fine-grained worklist, this
-//! re-runs the *entire* demand-driven trace once per round: round 0 treats
-//! every not-yet-settled `(LocalId, BlockId)` pair optimistically as `Safe`
-//! (the same starting point `move_check`'s "nothing moved yet" uses); a
-//! round after that falls back to whatever the *previous* round settled on
-//! for any pair still "in progress" on the current round's own call stack
-//! (a genuine cycle). Rounds repeat until one produces byte-for-byte the
-//! same table as the round before it. This is sound and terminates: a loop
-//! header always has at least one predecessor *outside* the loop (the
-//! initial entry edge, never part of any cycle), so every reachable pair
-//! bottoms out in a real, non-circular answer somewhere, and each round can
-//! only ever move a pair's verdict from `Safe` toward `Dangling` (a
-//! predecessor `?`-propagating `None` or resolving to `Dangling` can only
-//! make a join's own result *more* conservative than the previous round's,
-//! never less) — a finite lattice, descending, so it settles.
+//! # Interprocedural tracing
 //!
-//! Less efficient than a targeted worklist, but far simpler, and this
-//! compiler's own established preference (`move_check`'s plain queue, not a
-//! priority worklist; escape-checking's own per-round recursion, not a
-//! hand-rolled dependency graph) has consistently favored correctness and
-//! clarity over micro-optimized dataflow scheduling.
+//! `/grill-me`'d at length before writing anything — the deferred half of
+//! escape-checking's own original scope cut (a reference-typed parameter
+//! was trusted as safe without ever checking what the caller passed in).
+//! The motivating example: `lifetime(obj: &Obj): &Obj { return obj }`,
+//! whose own body is straightforwardly safe in isolation, called as
+//! `lifetime(&Obj{})` — the *call site* passes a reference to a temporary
+//! that dies before the caller ever sees it, which this module could never
+//! catch without knowing what `lifetime` does with its own parameter.
+//!
+//! **Function summaries.** Each function's own `Origin` (the same lattice
+//! its return-value trace already produces) is computed once for the whole
+//! program and reused everywhere: `Origin::Safe` (doesn't depend on any
+//! caller-passed value), `Origin::Dangling(local)` (a real, already-reported
+//! intraprocedural bug — a caller's own trace treats this as unfamiliar
+//! (`None`) rather than cascading a *derived* fault into every caller; the
+//! bug is reported once, at its own source, not once per call site), or
+//! `Origin::TiedToParams(indices)` — the function's return value is only as
+//! safe as whichever of *its own* parameters (by index) the caller actually
+//! passes. A function can have more than one `Return` block; its own
+//! summary folds all of them together via `combine` (the same "worse wins"
+//! join the CFG-level trace already uses at branch points) — a caller can't
+//! know which return path executes, so it has to satisfy every one.
+//!
+//! **The call graph can be cyclic too** (direct or mutual recursion) — this
+//! compiler's own resolver/lowerer/codegen are all already structurally
+//! recursion-safe (no ordering dependency anywhere), even though nothing
+//! exercises it yet. Rather than gating recursive functions out (the
+//! "narrow first" precedent every other CFG-cycle slice used), this goes
+//! straight to real convergence, matching every prior "which rigor level"
+//! choice in this series: `converge_summaries` is a flat, un-nested outer
+//! fixed point — round 0 initializes every function's summary to the most
+//! permissive `Origin::Safe`; each subsequent round recomputes every
+//! function's own summary using the *previous* round's summaries as the
+//! read-only background table for any `Call` it traces through (including
+//! a self-call, which just reads its own previous-round entry — no special
+//! in-progress bookkeeping needed at this level, since there's no recursive
+//! descent *into* another function's own computation, just a flat lookup).
+//! Rounds repeat until the whole table stops changing. Slower than a
+//! topologically-ordered pass over the call graph's DAG-shaped part (it can
+//! take one extra round per "hop" in a call chain before precision fully
+//! propagates), but simpler, and the same trade already accepted for the
+//! CFG-level fixed point above.
+//!
+//! **Routing a `Call` result through the trace.** A block whose own
+//! terminator is `Call { id, arguments, destination: Some(place), .. }`
+//! defines `place.local` (whole-locals only, matching the module's own
+//! established scope) the instant the call returns — a definition site the
+//! trace previously never looked at (it only ever searched
+//! `Statement::Assign`s). `trace_from_block_start` now checks this first:
+//! if the block's own terminator is a matching `Call`, `place.local`'s
+//! origin comes from the callee's settled summary — `Safe`/`Dangling`
+//! pass straight through (`Dangling` becomes unfamiliar/`None`, per the
+//! no-cascading-faults rule above), `TiedToParams(indices)` recurses into
+//! tracing each tied argument's own origin (still whole-locals-only:
+//! `Operand::Copy(place)`/`Operand::Move(place)` with an empty projection
+//! only) within the *same* block (arguments are evaluated immediately
+//! before the call fires, so this searches the call's own block's
+//! statements in full), combining every tied argument's origin via
+//! `combine` — if `lifetime`'s `obj` parameter ties to index 0 and the call
+//! site passes `&Obj{}` (a fresh `Ref` with no `Deref`, i.e. dangling), the
+//! whole call's own origin comes out `Dangling`, exactly like any other
+//! locally-dangling `Ref` would.
+//!
+//! **Fault reporting is unaffected**: `check_escapes` still walks every
+//! `Terminator::Return` block in every function and reports a
+//! `DanglingReference` fault wherever the (now interprocedurally aware)
+//! settled origin is `Dangling` — the only change is that `Dangling` can
+//! now be discovered through a call chain, not just local aliasing.
 
 use std::collections::{HashMap, HashSet};
 
 use ast_model::{SolType, declare_store::DeclareStore};
 use mir_model::{self as mir, BlockId, LocalId};
-use sol_utils::fault::Fault;
+use sol_utils::{
+    FunctionId,
+    collections::vec_map::{VecMap, VecMapIndex},
+    fault::Fault,
+};
 
 use crate::fault::{MirErrorKind, MirFault};
 
 use super::move_check::successors;
 
-/// See the module's own docs. Returns one fault per return path whose value
-/// provably dangles — a function can have more than one `Terminator::Return`
-/// once `if`/`else` is in play (each `return`/implicit tail-return statement
-/// seals its own).
-pub fn check_escapes(function: &mir::Function, declares: &DeclareStore) -> Vec<MirFault> {
+/// See the module's own docs. Returns one fault per return path (across
+/// every function) whose value provably dangles — a function can have more
+/// than one `Terminator::Return` once `if`/`else` is in play (each
+/// `return`/implicit tail-return statement seals its own).
+pub fn check_escapes(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+) -> Vec<MirFault> {
+    let summaries = converge_summaries(functions, declares);
+
     let mut faults = Vec::new();
+    for (_, function) in functions.entries() {
+        let Some(return_local) = function.return_local else {
+            continue;
+        };
+        if !is_reference_typed(function, return_local, declares) {
+            continue;
+        }
 
-    let Some(return_local) = function.return_local else {
-        return faults;
-    };
-    let is_reference = matches!(
-        declares.get_type(function.locals[return_local].ty),
-        Some(SolType::Reference(_))
-    );
-    if !is_reference {
-        return faults;
-    }
+        let predecessors = build_predecessors(function);
+        let return_blocks = return_blocks_of(function);
+        let settled = converge(
+            return_local,
+            &return_blocks,
+            function,
+            &predecessors,
+            declares,
+            functions,
+            &summaries,
+        );
 
-    let predecessors = build_predecessors(function);
-    let return_blocks: Vec<BlockId> = function
-        .blocks
-        .entries()
-        .filter(|(_, block)| matches!(block.terminator, mir::Terminator::Return))
-        .map(|(block_id, _)| block_id)
-        .collect();
-
-    let settled = converge(return_local, &return_blocks, function, &predecessors);
-
-    for &block_id in &return_blocks {
-        if let Some(Some(Origin::Dangling(local))) = settled.get(&(return_local, block_id)) {
-            faults.push(Fault::error_with_kind(
-                MirErrorKind::DanglingReference,
-                Some(function.locals[*local].span),
-            ));
+        for &block_id in &return_blocks {
+            if let Some(Some(Origin::Dangling(local))) = settled.get(&(return_local, block_id)) {
+                faults.push(Fault::error_with_kind(
+                    MirErrorKind::DanglingReference,
+                    Some(function.locals[*local].span),
+                ));
+            }
         }
     }
 
     faults
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Origin {
+    /// Doesn't depend on any caller-supplied value — either a heap-pointer
+    /// deref, or (once every path a function's own return can take has been
+    /// folded together) a function with no reference-typed dependency at
+    /// all on its own callers.
     Safe,
     /// The local whose own storage doesn't outlive this function — used to
     /// look up its declaration span for the fault (mirrors `move_check`'s
     /// `UseAfterMove` — MIR statements don't carry per-statement spans yet).
     Dangling(LocalId),
+    /// Only as safe as whichever of *this function's own* parameters (by
+    /// index) the caller actually passes — see the module's own
+    /// "Interprocedural tracing" docs.
+    TiedToParams(HashSet<usize>),
+}
+
+/// The "worse wins" join every branch point (CFG-level `if`/`else`/`for`,
+/// and a function's own multiple `Return` blocks folding into one summary)
+/// uses: `Dangling` absorbs everything (a single bad path condemns the
+/// whole join), two `TiedToParams` sets union (either path could be the one
+/// that actually executes, so the caller has to satisfy both), and `Safe`
+/// is the identity element.
+fn combine(a: Origin, b: Origin) -> Origin {
+    match (a, b) {
+        (Origin::Dangling(local), _) | (_, Origin::Dangling(local)) => Origin::Dangling(local),
+        (Origin::Safe, other) | (other, Origin::Safe) => other,
+        (Origin::TiedToParams(mut a_set), Origin::TiedToParams(b_set)) => {
+            a_set.extend(b_set);
+            Origin::TiedToParams(a_set)
+        }
+    }
 }
 
 type Table = HashMap<(LocalId, BlockId), Option<Origin>>;
+type Summaries = HashMap<FunctionId, Origin>;
 
-/// Repeatedly traces every `(return_local, return_block)` pair (and whatever
-/// upstream `(LocalId, BlockId)` pairs that demands, transitively) to a
-/// shared, round-settled table — see the module's own docs on why this is a
-/// real, sound fixed point, not just a heuristic. `return_blocks` is fixed,
-/// deterministic input, so every round discovers exactly the same *set* of
-/// `(LocalId, BlockId)` keys (only their *values* can still be settling) —
-/// that's what makes a plain `Table` equality check a valid convergence
-/// test.
+fn is_reference_typed(function: &mir::Function, local: LocalId, declares: &DeclareStore) -> bool {
+    matches!(
+        declares.get_type(function.locals[local].ty),
+        Some(SolType::Reference(_))
+    )
+}
+
+fn return_blocks_of(function: &mir::Function) -> Vec<BlockId> {
+    function
+        .blocks
+        .entries()
+        .filter(|(_, block)| matches!(block.terminator, mir::Terminator::Return))
+        .map(|(block_id, _)| block_id)
+        .collect()
+}
+
+/// The real fixed point over the whole call graph — see the module's own
+/// "Interprocedural tracing" docs on why this is flat (no per-function
+/// in-progress recursion needed) and why it's sound despite the call graph
+/// potentially being cyclic.
+fn converge_summaries(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+) -> Summaries {
+    let mut summaries: Summaries = functions
+        .entries()
+        .map(|(id, _)| (id, Origin::Safe))
+        .collect();
+    loop {
+        let mut next: Summaries = HashMap::new();
+        for (id, function) in functions.entries() {
+            next.insert(id, compute_function_origin(function, declares, functions, &summaries));
+        }
+        if next == summaries {
+            return next;
+        }
+        summaries = next;
+    }
+}
+
+/// One function's own combined `Origin`, folding every one of its `Return`
+/// blocks together — a caller can't know which one executes, so it has to
+/// satisfy all of them. `None` (unfamiliar) anywhere folds to `Origin::Safe`
+/// for the *summary*'s own purposes — the same "prefer under- over
+/// over-reporting" discipline `check_escapes` itself already applies to a
+/// single function; this just extends it one level up, so an unresolved
+/// intraprocedural shape never makes a *caller* more conservative than the
+/// callee's own (unreported) uncertainty would justify.
+fn compute_function_origin(
+    function: &mir::Function,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
+) -> Origin {
+    let Some(return_local) = function.return_local else {
+        return Origin::Safe;
+    };
+    if !is_reference_typed(function, return_local, declares) {
+        return Origin::Safe;
+    }
+
+    let predecessors = build_predecessors(function);
+    let return_blocks = return_blocks_of(function);
+    let settled = converge(
+        return_local,
+        &return_blocks,
+        function,
+        &predecessors,
+        declares,
+        functions,
+        summaries,
+    );
+
+    let mut combined = Origin::Safe;
+    for &block_id in &return_blocks {
+        let origin = settled
+            .get(&(return_local, block_id))
+            .cloned()
+            .flatten()
+            .unwrap_or(Origin::Safe);
+        combined = combine(combined, origin);
+    }
+    combined
+}
+
+/// Repeatedly traces every `(return_local, return_block)` pair (and
+/// whatever upstream `(LocalId, BlockId)` pairs that demands, transitively)
+/// to a shared, round-settled table — see the module's own docs on why
+/// this is a real, sound fixed point, not just a heuristic. `return_blocks`
+/// is fixed, deterministic input, so every round discovers exactly the
+/// same *set* of `(LocalId, BlockId)` keys (only their *values* can still
+/// be settling) — that's what makes a plain `Table` equality check a valid
+/// convergence test.
 fn converge(
     return_local: LocalId,
     return_blocks: &[BlockId],
     function: &mir::Function,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
 ) -> Table {
     let mut previous_round: Table = HashMap::new();
     loop {
@@ -183,6 +368,9 @@ fn converge(
                 block_id,
                 function,
                 predecessors,
+                declares,
+                functions,
+                summaries,
                 &previous_round,
                 &mut in_progress,
                 &mut this_round,
@@ -196,63 +384,170 @@ fn converge(
 }
 
 /// The value `local` holds at the *start* of `block_id` (i.e. before any of
-/// that block's own statements run). Three-way memoization within a single
-/// round: `this_round` (already fully settled this round — reused, not
-/// recomputed), `in_progress` (currently being computed higher up *this same
-/// round's* own call stack — a genuine back-edge cycle, resolved via
-/// `previous_round`'s own settled answer, `Safe` if this is round 0 and
-/// nothing settled yet), or neither (compute it now).
+/// that block's own statements run). Checks first whether `block_id`'s own
+/// terminator is a whole-place `Call` defining `local` (see the module's
+/// own "Routing a `Call` result through the trace" docs) — if not, falls
+/// through to `trace_within_block`'s ordinary statement search. Three-way
+/// memoization within a single round, exactly mirroring the discipline
+/// `move_check`'s own fixed point uses: a `this_round` hit is reused, an
+/// `in_progress` hit (a genuine cycle) falls back to `previous_round`'s
+/// settled answer (`Safe` if this is round 0 and nothing settled there
+/// yet), and only the outermost frame for a given key ever writes into
+/// `this_round`.
+#[allow(clippy::too_many_arguments)]
 fn trace_from_block_start(
     local: LocalId,
     block_id: BlockId,
     function: &mir::Function,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
     previous_round: &Table,
     in_progress: &mut HashSet<(LocalId, BlockId)>,
     this_round: &mut Table,
 ) -> Option<Origin> {
     let key = (local, block_id);
-    if let Some(&settled) = this_round.get(&key) {
-        return settled;
+    if let Some(settled) = this_round.get(&key) {
+        return settled.clone();
     }
     if in_progress.contains(&key) {
-        return previous_round
-            .get(&key)
-            .copied()
-            .unwrap_or(Some(Origin::Safe));
+        return previous_round.get(&key).cloned().unwrap_or(Some(Origin::Safe));
     }
 
     in_progress.insert(key);
-    let statement_count = function.blocks[block_id].statements.len();
-    let result = trace_within_block(
+    let result = match call_destination_origin(
         local,
         block_id,
-        statement_count,
         function,
         predecessors,
+        declares,
+        functions,
+        summaries,
         previous_round,
         in_progress,
         this_round,
-    );
+    ) {
+        Some(origin) => origin,
+        None => {
+            let statement_count = function.blocks[block_id].statements.len();
+            trace_within_block(
+                local,
+                block_id,
+                statement_count,
+                function,
+                predecessors,
+                declares,
+                functions,
+                summaries,
+                previous_round,
+                in_progress,
+                this_round,
+            )
+        }
+    };
     in_progress.remove(&key);
-    this_round.insert(key, result);
+    this_round.insert(key, result.clone());
     result
+}
+
+/// If `block_id`'s own terminator is a whole-place `Call` whose destination
+/// is exactly `local`, resolves `local`'s origin via the callee's settled
+/// summary — `Some(origin)` (`origin` itself `None` if unresolvable, e.g.
+/// the callee's own summary is `Dangling` — see the module's own docs on
+/// why that doesn't cascade). `None` (the outer `Option`) means the
+/// terminator isn't a matching `Call` at all — the caller should fall
+/// through to the ordinary statement search.
+#[allow(clippy::too_many_arguments)]
+fn call_destination_origin(
+    local: LocalId,
+    block_id: BlockId,
+    function: &mir::Function,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
+    previous_round: &Table,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut Table,
+) -> Option<Option<Origin>> {
+    let mir::Terminator::Call {
+        id,
+        arguments,
+        destination: Some(place),
+        ..
+    } = &function.blocks[block_id].terminator
+    else {
+        return None;
+    };
+    if place.local != local || !place.projection.is_empty() {
+        return None;
+    }
+
+    let Some(summary) = summaries.get(id) else {
+        return Some(None);
+    };
+    let origin = match summary {
+        Origin::Dangling(_) => None,
+        Origin::Safe => Some(Origin::Safe),
+        Origin::TiedToParams(indices) => {
+            let statement_count = function.blocks[block_id].statements.len();
+            let mut combined = Origin::Safe;
+            let mut sound = true;
+            for &index in indices {
+                let arg_origin = arguments.get(index).and_then(|operand| match operand {
+                    mir::Operand::Copy(place) | mir::Operand::Move(place)
+                        if place.projection.is_empty() =>
+                    {
+                        trace_within_block(
+                            place.local,
+                            block_id,
+                            statement_count,
+                            function,
+                            predecessors,
+                            declares,
+                            functions,
+                            summaries,
+                            previous_round,
+                            in_progress,
+                            this_round,
+                        )
+                    }
+                    _ => None,
+                });
+                match arg_origin {
+                    Some(origin) => combined = combine(combined, origin),
+                    None => {
+                        sound = false;
+                        break;
+                    }
+                }
+            }
+            if sound { Some(combined) } else { None }
+        }
+    };
+    Some(origin)
 }
 
 /// Searches `block_id`'s own statements *before* `before_index`, in reverse,
 /// for a bare-local assignment to `local`. Found: follows the same
-/// alias-chain-or-classify-`Ref` rule the straight-line version always used
-/// (continuing the search within the same block, from that assignment's own
-/// index, for an alias). Not found: falls through to whatever reaches this
-/// block's own start — this block's predecessors, forked and require-all-
-/// safe if there's more than one, or `Origin::Safe` (an unassigned local —
-/// a parameter) if there are none at all (the function's own entry block).
+/// alias-chain-or-classify-`Ref` rule (continuing the search within the
+/// same block, from that assignment's own index, for an alias). Not found:
+/// falls through to whatever reaches this block's own start — this block's
+/// predecessors, forked and combined via `combine` if there's more than
+/// one, or a `TiedToParams` origin naming `local`'s own parameter index if
+/// there are none at all (the function's own entry block) and `local`
+/// really is one of its parameters.
+#[allow(clippy::too_many_arguments)]
 fn trace_within_block(
     local: LocalId,
     block_id: BlockId,
     before_index: usize,
     function: &mir::Function,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
     previous_round: &Table,
     in_progress: &mut HashSet<(LocalId, BlockId)>,
     this_round: &mut Table,
@@ -280,6 +575,9 @@ fn trace_within_block(
                         index,
                         function,
                         predecessors,
+                        declares,
+                        functions,
+                        summaries,
                         previous_round,
                         in_progress,
                         this_round,
@@ -288,17 +586,19 @@ fn trace_within_block(
             }
             mir::Rvalue::Ref {
                 place: ref_place, ..
-            } => {
-                let escapes_this_frame = ref_place
-                    .projection
-                    .iter()
-                    .any(|elem| matches!(elem, mir::PlaceElem::Deref));
-                Some(if escapes_this_frame {
-                    Origin::Safe
-                } else {
-                    Origin::Dangling(ref_place.local)
-                })
-            }
+            } => classify_ref(
+                ref_place,
+                block_id,
+                index,
+                function,
+                predecessors,
+                declares,
+                functions,
+                summaries,
+                previous_round,
+                in_progress,
+                this_round,
+            ),
             _ => None,
         };
     }
@@ -306,31 +606,86 @@ fn trace_within_block(
     let preds = predecessors.get(&block_id).filter(|preds| !preds.is_empty());
     let Some(preds) = preds else {
         // No predecessor recorded assignment reaches here — the function's
-        // own entry block, `local` unassigned: a parameter, safe.
-        return Some(Origin::Safe);
+        // own entry block, `local` unassigned: a parameter (see the
+        // module's own "Interprocedural tracing" docs — no longer an
+        // unconditional `Safe`). `LocalId` values start at 1 (0 is reserved
+        // as `LocalId::ERROR`), and parameters are allocated first, so a
+        // parameter's own 0-based index is `local.index() - 1`.
+        return Some(if local.index() >= 1 && local.index() <= function.arg_count {
+            Origin::TiedToParams(HashSet::from([local.index() - 1]))
+        } else {
+            Origin::Safe
+        });
     };
 
-    let mut dangling = None;
+    let mut combined = Origin::Safe;
     for &pred in preds {
-        match trace_from_block_start(
+        let pred_origin = trace_from_block_start(
             local,
             pred,
             function,
             predecessors,
+            declares,
+            functions,
+            summaries,
             previous_round,
             in_progress,
             this_round,
-        )? {
-            Origin::Safe => {}
-            Origin::Dangling(dangling_local) => {
-                dangling.get_or_insert(dangling_local);
-            }
-        }
+        )?;
+        combined = combine(combined, pred_origin);
     }
-    Some(match dangling {
-        Some(dangling_local) => Origin::Dangling(dangling_local),
-        None => Origin::Safe,
-    })
+    Some(combined)
+}
+
+/// Classifies a fresh `Rvalue::Ref { place: ref_place, .. }`: no `Deref`
+/// anywhere in `ref_place`'s own projection ⇒ dangling (`ref_place.local`'s
+/// own storage belongs to this frame). A `Deref` as the projection's very
+/// *first* element ⇒ classify by `ref_place.local`'s own type — an owning
+/// heap pointer is unconditionally safe, a reference recurses into tracing
+/// `ref_place.local`'s own origin (see the module's own docs on why a
+/// `Deref` reached any other way isn't refined by this slice).
+#[allow(clippy::too_many_arguments)]
+fn classify_ref(
+    ref_place: &mir::Place,
+    block_id: BlockId,
+    at_index: usize,
+    function: &mir::Function,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    declares: &DeclareStore,
+    functions: &VecMap<FunctionId, mir::Function>,
+    summaries: &Summaries,
+    previous_round: &Table,
+    in_progress: &mut HashSet<(LocalId, BlockId)>,
+    this_round: &mut Table,
+) -> Option<Origin> {
+    let deref_position = ref_place
+        .projection
+        .iter()
+        .position(|elem| matches!(elem, mir::PlaceElem::Deref));
+    match deref_position {
+        None => Some(Origin::Dangling(ref_place.local)),
+        Some(0) => match declares.get_type(function.locals[ref_place.local].ty) {
+            Some(SolType::Pointer(_)) => Some(Origin::Safe),
+            Some(SolType::Reference(_)) => trace_within_block(
+                ref_place.local,
+                block_id,
+                at_index,
+                function,
+                predecessors,
+                declares,
+                functions,
+                summaries,
+                previous_round,
+                in_progress,
+                this_round,
+            ),
+            _ => None,
+        },
+        // A `Deref` exists somewhere in the projection but isn't the first
+        // element (reached through a field first) — not refined by this
+        // slice, a known, narrower gap; unconditionally safe as before.
+        Some(_) => Some(Origin::Safe),
+    }
 }
 
 /// Every block's direct predecessors, derived from every other block's own

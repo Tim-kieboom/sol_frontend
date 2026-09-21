@@ -282,12 +282,70 @@ that landing first, in order.
       isolates the back edge specifically. All 3 new tests passed on the first implementation attempt.
       Full `cargo test --workspace` (137 `mir_parser` tests, up from 135; same unrelated pre-existing
       `ast_parser` failure, unaffected) and all 35 exe tests pass unchanged.
-  - [ ] **Interprocedural call-site tracing for escape-checking** — the deferred half of the user's
+  - [x] **Interprocedural call-site tracing for escape-checking** — the deferred half of the user's
         own original motivating example (`lifetime(obj: &Obj): &Obj { return obj }` called as
-        `lifetime(&Obj{})`): today a reference-typed parameter is trusted as safe the moment
-        `trace_origin` reaches it, without checking what any actual caller passed in. Needs tracing
-        into a callee's own return-value dependency on its reference parameters, then checking each
-        call site's actual arguments against that.
+        `lifetime(&Obj{})`). `/grill-me`'d four separate times before writing anything — this turned
+        out to be the largest single slice in this whole series:
+    - **Mechanism confirmed**: extend the existing backward trace itself to recurse through
+      `Terminator::Call` (consulting the callee's own summary, then tracing whichever argument(s) it
+      ties to), rather than a separate, unconditional per-call-site check — the latter would flag a
+      dangling result that's created and immediately discarded, never actually read, a real false
+      positive this codebase's whole "prefer under- over over-reporting" discipline argues against.
+      Matches escape-checking's own very first slice, which treated "chase through intermediate
+      locals" as core scope from day one, not a narrowing.
+    - **Call-graph cycles (recursion) confirmed to need real convergence**, same rigor level as every
+      CFG-cycle choice already made this series — even though this compiler's resolver/lowerer/
+      codegen are all already structurally recursion-safe, nothing has ever exercised it, so the
+      call graph a real program builds could genuinely be cyclic (self- or mutual recursion).
+    - **Reborrow-through-a-reference-parameter refinement included**, widening scope beyond the
+      original ask: the pre-existing "any `Deref` in a `Ref`'s own place ⇒ unconditionally `Safe`"
+      rule conflated two different cases — dereferencing an *owning* heap pointer (genuinely safe
+      regardless of caller) and reborrowing through a *reference* parameter (only as safe as whatever
+      the caller passed for *that* parameter, the exact same class of problem this whole slice is
+      about). Scoped to `Deref` as the projection's own *first* element only (the two cases every
+      existing test actually exercises, `&this.field` and `&*p`) — a `Deref` reached through a field
+      first (e.g. `o.ptrField.innerField`) stays unconditionally `Safe`, an explicitly accepted,
+      narrower gap no test exercises.
+    - **Integration**: replaced `check_escapes`'s own machinery outright (its signature changed from
+      one function to the whole program's `VecMap<FunctionId, mir::Function>`) rather than adding a
+      parallel, duplicated `check_interprocedural_escapes` — the new call-aware trace is a strict
+      superset of the old one, and every other refactor this series (`overlap_check`'s `analyze()`
+      extraction, for instance) already leaned toward consolidating over duplicating. Touched all 13
+      pre-existing `check_escapes` unit tests (each now wraps its one function in a `VecMap`) and
+      `mir_run`'s own wiring (a single whole-program call, not a per-function loop) — the largest
+      blast radius of any change in this series, confirmed explicitly before starting.
+    - **Mechanism, concretely**: `Origin` gained `TiedToParams(HashSet<usize>)` (replacing the old
+      flat `Safe` for "reached an unassigned parameter"); a new `combine(a, b)` join (`Dangling`
+      absorbs, two `TiedToParams` sets union, `Safe` is the identity) generalizes the old boolean
+      "require all paths safe" rule and is reused both at CFG-level branch points and to fold a
+      function's own multiple `Return` blocks into one summary. `converge_summaries` is a *flat*
+      outer fixed point over the whole call graph (round 0 = every function `Safe`; each round
+      recomputes every function's own summary reading the *previous* round's table for any `Call` it
+      routes through, including a self-call — no per-function in-progress recursion needed at this
+      level, since it's a flat lookup, not a recursive descent into another function's own
+      computation) — slower than a topologically-ordered DAG pass (~1 extra round per call-chain
+      hop), simpler, the same trade already accepted for the CFG-level fixed point.
+    - **A real off-by-one bug found and fixed while testing** (not by design review — the first
+      version of every new test failed with zero faults instead of one): `LocalId` values start at 1,
+      not 0 (`LocalId::ERROR` reserves 0), so the "is this local one of the function's own parameters"
+      check needs `local.index() - 1` as the 0-based parameter index once `1 <= local.index() <=
+      arg_count`, not a bare `local.index() < arg_count`. Caught immediately by the new tests
+      resolving to `Safe` instead of `TiedToParams` — exactly the kind of bug a test-then-verify
+      discipline exists to catch.
+    - Proven via 4 new `mir_parser` unit tests (the core motivating example — a dangling temporary
+      passed through a tied parameter; the same shape called safely instead; a genuine two-hop call
+      chain, proving real transitive propagation through an intermediate function; self-recursion,
+      proving the call-graph fixed point actually converges on a cyclic graph rather than hanging or
+      guessing wrong) plus 1 new `mir_run` integration test. All 13 pre-existing `check_escapes` tests
+      passed unchanged after the signature migration. Full `cargo test --workspace` (146 `mir_parser`
+      tests, up from 137; 11 `mir_run` tests, up from 10; same unrelated pre-existing `ast_parser`
+      failure, unaffected) and all 35 exe tests pass unchanged.
+    - **This closes the fifth and final checklist item** this `/grill-me` series set as the working
+      definition of "M2 borrow checker done" (see this section's own opening note) — all five are now
+      done. What's left for *real* borrow/lifetime-conflict checking beyond that self-imposed bar:
+      per-array-element (`Index`) disjointness for overlap-checking, and the narrower
+      Deref-not-first-element gap this slice explicitly left in escape-checking's own reborrow
+      refinement — both logged as deliberate deferrals, not gaps this pass found by surprise.
   - [x] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
         (rustc's `cannot move out of x because it is borrowed`). `/grill-me`'d first: settled that
         checking "is place `x` moved while a borrow of `x` is still live" doesn't need real

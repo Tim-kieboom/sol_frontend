@@ -247,6 +247,35 @@ fn a_dangling_reference_return_is_flagged_through_the_full_pipeline() {
 }
 
 #[test]
+fn an_interprocedural_dangling_return_is_flagged_through_the_full_pipeline() {
+    // Proves the wiring for escape-checking's interprocedural slice (see
+    // `mir_parser::escape_check`'s own docs), not just `check_escapes` in
+    // isolation: `lifetime`'s own body is safe on its own (it just passes
+    // its parameter through), but `wrapper` calls it with a reference to a
+    // temporary that dies before `wrapper` ever returns.
+    let mut ast = build_ast(
+        "struct Obj {}\nlifetime(obj: &Obj): &Obj { return obj }\nwrapper(): &Obj {\n    t := Obj{}\n    p := &t\n    return lifetime(p)\n}\n",
+    );
+
+    let (_, context) = create_mir(&mut ast);
+
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        1,
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        context
+            .faults
+            .iter()
+            .any(|fault| matches!(fault.kind(), MirErrorKind::DanglingReference)),
+        "{:#?}",
+        context.faults.iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn an_overlapping_mutable_borrow_is_flagged_through_the_full_pipeline() {
     // Proves the wiring for `mir_parser::borrow_checker::overlap_check`, not
     // just `check_borrow_overlaps` in isolation: `mutRef` and `ref` both

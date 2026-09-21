@@ -69,14 +69,15 @@ pub fn to_mir(
     }
 
     // Escape checking (see `mir_parser::escape_check`) — does a function
-    // return a reference to storage that doesn't outlive it. A separate
-    // concern from move-checking (aliasing vs. lifetime), so its own pass;
-    // `lowerer` has already been consumed above, freeing its `&mut
-    // DeclareStore` borrow, so `ast.declares` can be read here.
-    for function in functions.values() {
-        for fault in borrow_checker::check_escapes(function, &ast.declares) {
-            context.faults.push(fault);
-        }
+    // return a reference to storage that doesn't outlive it, including
+    // interprocedurally (a call-graph-wide fixed point over every
+    // function's own summary — see that module's own docs). A separate
+    // concern from move-checking (aliasing vs. lifetime); `lowerer` has
+    // already been consumed above, freeing its `&mut DeclareStore` borrow,
+    // so `ast.declares` can be read here. Whole-program, not per-function,
+    // so it's a single call rather than a loop.
+    for fault in borrow_checker::check_escapes(&functions, &ast.declares) {
+        context.faults.push(fault);
     }
 
     // Overlap checking (see `mir_parser::borrow_checker::overlap_check`) —

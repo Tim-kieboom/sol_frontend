@@ -166,8 +166,10 @@ pub enum MirErrorKind {
     /// Points at the referenced local's own declaration span, for the same
     /// reason `UseAfterMove` does — MIR statements don't carry their own
     /// per-statement spans yet. Handles the full concrete (M1) CFG shape,
-    /// `for` loops included; only a function's own return value is checked,
-    /// not what its callers pass in (see `escape_check`'s own docs).
+    /// `for` loops included, and is interprocedural: a reference-typed
+    /// parameter's own safety is tied to whatever the caller actually
+    /// passes, verified transitively across the whole call graph (including
+    /// recursive calls) — see `escape_check`'s own docs.
     #[error("returns a reference to a local that doesn't outlive this function")]
     DanglingReference,
 

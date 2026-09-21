@@ -10,7 +10,7 @@ use sol_resolver::name_resolve;
 use sol_tokenizer::to_token_stream;
 use sol_utils::{
     FunctionId, Mutable,
-    collections::{crate_store::CrateStore, module_store::ModuleStore},
+    collections::{crate_store::CrateStore, module_store::ModuleStore, vec_map::VecMap},
     compiler_options::{CompilerOptions, MirOptions},
     sol_names::PrimitiveTypes,
 };
@@ -106,6 +106,30 @@ fn lower_source_with_declares(
     let mir = lower_function(&ast.crates.store, &mut ast.declares, function_id)
         .expect("expected successful lowering");
     (mir, ast.declares)
+}
+
+/// `check_escapes` is now whole-program (interprocedural — see that
+/// module's own docs), so every call site needs a `VecMap` even for a
+/// single function's own test.
+fn function_map(function: mir_model::Function) -> VecMap<FunctionId, mir_model::Function> {
+    std::iter::once((function.id, function)).collect()
+}
+
+/// Lowers every function declared in `source` (not just one by name) — for
+/// interprocedural `check_escapes` tests, which need more than one function
+/// in the same `VecMap` to exercise a real call graph.
+fn lower_all_with_declares(source: &str) -> (VecMap<FunctionId, mir_model::Function>, DeclareStore) {
+    let mut ast = resolve_source(source);
+    let ids: Vec<FunctionId> = ast.crates.store.functions.entries().map(|(id, _)| id).collect();
+    let functions = ids
+        .into_iter()
+        .map(|id| {
+            let function = lower_function(&ast.crates.store, &mut ast.declares, id)
+                .expect("expected successful lowering");
+            (function.id, function)
+        })
+        .collect();
+    (functions, ast.declares)
 }
 
 fn assert_rejected_matching(
@@ -3289,7 +3313,7 @@ fn check_escapes_flags_a_direct_reference_to_a_body_local() {
     let (mir, declares) =
         lower_source_with_declares("f(): &int {\n    x := 1\n    return &x\n}\n", "f");
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3309,7 +3333,7 @@ fn check_escapes_flags_a_reference_routed_through_an_intermediate_local() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3328,7 +3352,7 @@ fn check_escapes_allows_returning_a_received_reference_parameter_unchanged() {
     // this function's own body in isolation, it's accepted.
     let (mir, declares) = lower_source_with_declares("f(p: &int): &int {\n    return p\n}\n", "f");
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "returning an already-received reference parameter should be accepted, got {:#?}",
@@ -3345,7 +3369,7 @@ fn check_escapes_allows_reborrowing_through_a_reference_parameter() {
     let (mir, declares) =
         lower_source_with_declares("f(p: &int): &int {\n    return &*p\n}\n", "f");
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "reborrowing through an existing reference should be accepted, got {:#?}",
@@ -3362,7 +3386,7 @@ fn check_escapes_allows_dereferencing_an_owning_heap_pointer() {
     let (mir, declares) =
         lower_source_with_declares("f(p: *int): &int {\n    return &*p\n}\n", "f");
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "dereferencing an owning heap pointer should be accepted, got {:#?}",
@@ -3381,7 +3405,7 @@ fn check_escapes_now_flags_a_dangling_return_reached_through_a_bodyless_if_branc
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3404,7 +3428,7 @@ fn check_escapes_flags_a_dangling_return_reachable_only_through_one_of_two_branc
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3426,7 +3450,7 @@ fn check_escapes_flags_a_value_only_made_safe_on_one_incoming_path() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3446,7 +3470,7 @@ fn check_escapes_allows_a_value_made_safe_on_every_incoming_path() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "expected a value safe on every incoming path to be accepted, got {:#?}",
@@ -3465,7 +3489,7 @@ fn check_escapes_now_flags_a_dangling_return_reached_through_a_for_loop() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3485,7 +3509,7 @@ fn check_escapes_allows_a_value_reassigned_safely_inside_a_for_loop() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "expected a value reassigned safely on every iteration to be accepted, got {:#?}",
@@ -3511,7 +3535,7 @@ fn check_escapes_flags_a_value_that_only_dangles_via_the_loop_back_edge() {
         "f",
     );
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert_eq!(
         faults.len(),
         1,
@@ -3526,12 +3550,97 @@ fn check_escapes_ignores_functions_not_returning_a_reference() {
     let (mir, declares) =
         lower_source_with_declares("f(): int {\n    x := 1\n    return x\n}\n", "f");
 
-    let faults = crate::borrow_checker::check_escapes(&mir, &declares);
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
         "a function not returning a reference has nothing to check, got {:#?}",
         faults
     );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_argument_passed_through_a_tied_parameter() {
+    // The core motivating example for interprocedural tracing: `lifetime`'s
+    // own body is safe in isolation (it just passes its parameter through),
+    // so its own summary is "tied to parameter 0" rather than dangling —
+    // but `wrapper` calls it with a reference to a temporary struct that
+    // dies before `wrapper` ever returns, so `wrapper`'s own return value
+    // is genuinely dangling. No prior slice could catch this: a
+    // reference-typed parameter used to be trusted as unconditionally safe.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj {}\nlifetime(obj: &Obj): &Obj { return obj }\nwrapper(): &Obj {\n    t := Obj{}\n    p := &t\n    return lifetime(p)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected wrapper's own dangling return (via lifetime's tied parameter) to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_argument_passed_through_a_tied_parameter() {
+    // Same call shape, but `wrapper` passes its own reference parameter
+    // through instead of a dangling temporary — `wrapper`'s own summary
+    // becomes tied to *its* parameter 0 in turn, but since nothing in this
+    // test ever calls `wrapper` with something dangling, no fault fires.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj {}\nlifetime(obj: &Obj): &Obj { return obj }\nwrapper(o: &Obj): &Obj {\n    return lifetime(o)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "passing a genuinely safe argument through a tied parameter should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_argument_propagated_through_a_two_hop_call_chain() {
+    // Proves real transitive propagation, not just a single call hop:
+    // `middle`'s own summary has to be derived from `lifetime`'s (tied to
+    // `middle`'s own parameter 0 in turn) before `outer`'s own call to
+    // `middle` with a dangling temporary can be recognized as unsafe. The
+    // flat, round-based call-graph fixed point takes roughly one extra
+    // round per hop to fully propagate — this is the case that actually
+    // exercises that.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj {}\nlifetime(obj: &Obj): &Obj { return obj }\nmiddle(x: &Obj): &Obj {\n    return lifetime(x)\n}\nouter(): &Obj {\n    t := Obj{}\n    p := &t\n    return middle(p)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected outer's own dangling return, propagated through two call hops, to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_argument_through_self_recursion() {
+    // Proves the call-graph fixed point actually handles a cyclic call
+    // graph (self-recursion) rather than hanging or silently giving a
+    // wrong answer — `recurse`'s own summary has to settle to "tied to
+    // parameter 0" despite depending on itself; `wrapper` then calls it
+    // with a dangling temporary.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj {}\nrecurse(obj: &Obj, n: int): &Obj {\n    if n > 0 {\n        return recurse(obj, n - 1)\n    }\n    return obj\n}\nwrapper(): &Obj {\n    t := Obj{}\n    p := &t\n    return recurse(p, 3)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected wrapper's own dangling return, through self-recursive `recurse`, to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
 }
 
 #[test]
