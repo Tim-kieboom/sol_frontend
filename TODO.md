@@ -62,7 +62,7 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
 - [x] `PlatformInfo::host()` — a real (if still Windows-only) platform-selection mechanism replacing
       ad hoc `new_windows_x86_64()` calls everywhere.
 
-### M2 — borrow/move checking (not started)
+### M2 — borrow/move checking (core checklist complete; deferred gaps remain)
 
 Scoped via `/grill-me`: "M2" is really a chain of prerequisite pieces, not one task —
 `mir_parser` doesn't lower dereference places, doesn't fix `&this`/`&mut this` receivers to
@@ -460,6 +460,68 @@ that landing first, in order.
       self-imposed bar: that interprocedural tracing, plus per-array-element (`Index`) disjointness for
       overlap-checking — both already logged above as their own explicit deferrals, not new gaps this
       pass found.
+  - [x] **Real per-edge drop elaboration for `*T`** — after the original 5-item checklist finished
+        (see the opening note above), `/grill-me`'d "what's next" among the deliberate deferrals still
+        open (`Index` disjointness, the Deref-not-first-element reborrow gap, and this) and picked this
+        one as the biggest correctness gap: a value moved on only one `if`/`else` branch still leaked
+        (never double-freed) on the untaken path, since `elaborate_drops` only ever had a single "maybe
+        moved" set to work with — moved-on-any-path and moved-on-every-path looked identical to it, so
+        it had to prune the shared `Drop` outright the moment *either* was true.
+    - **Mechanism corrected mid-interview**: the obvious-sounding fix ("split control flow so the
+      untaken path gets its own `Drop`") turned out to be the wrong shape entirely. Checked
+      `mir_codegen`'s own `SetDropFlag` handling first (`mir_codegen/src/function.rs`, pre-this-slice):
+      it codegen'd to nothing at all — "Move/drop tracking has no runtime effect yet." Since the MIR
+      already carries `SetDropFlag(local, true/false)` statements at exactly the right points (every
+      whole-place reinit and every bare-variable move, regardless of type), the real fix is a *runtime*
+      drop flag: keep one `Drop` site, but gate the actual `free()` on a runtime check instead of
+      statically pruning or duplicating the site. Confirmed against Rust's own actual solution to this
+      exact problem, which also uses a runtime flag, not CFG splitting.
+    - **Fast path confirmed kept**: `elaborate_drops` still statically prunes to a no-op `Goto` when a
+      local is moved on *every* incoming path (the cheap, common case), and leaves a `Drop` plain and
+      unconditional when it's *never* moved on any path (no runtime check needed at all) — the new
+      runtime-flag machinery only engages for the genuinely ambiguous "moved on some but not all paths"
+      case, not universally.
+    - **New prerequisite surfaced and built**: `move_check`'s dataflow only tracked one "maybe moved"
+      set before this — no way to distinguish "moved on any path" from "moved on every path" existed at
+      all. Extended to a definite/maybe pair: "maybe" joins via union (unchanged, still what
+      `check_moves` reads for use-after-move); "definite" joins via *intersection*, starting from the
+      universal set (every local in the function) as the identity for an as-yet-unprocessed predecessor,
+      mirroring "maybe"'s empty-set identity — this is what lets the fixed point converge to the correct
+      answer instead of transiently overclaiming something as definite before all its predecessors are
+      known. Within one block's own straight-line statements the two sets move in lockstep (a move
+      inserts into both, a whole-place reinit clears both); they only diverge at a CFG join, via the two
+      different join rules.
+    - **Type scope narrowed twice during the interview**: first to "owned `*T` and `[]T`" (the two
+      heap-owning types), then `[]T` was dropped entirely after checking `mir_codegen/src/types.rs`
+      directly — `ArrayKind::HeapArray` is rejected by `is_lowerable` outright
+      (`unreachable!("already rejected above by is_lowerable")`), so `[]T` has no runtime behavior to
+      fix yet and no way to even test it. Final scope: `*T` only. A struct/array that merely *owns* a
+      `*T` field (recursive drop) is also out of scope — it keeps leaking on the untaken path exactly as
+      before, an explicit, agreed-to deferral, not a gap found by surprise.
+    - `mir_model::Terminator::Drop` gained a `guarded: bool` field. `mir_parser::function`'s own
+      lowering always emits `guarded: false`; `elaborate_drops` is what sets it, reading both the
+      "definite" and "maybe" sets to choose between pruning to `Goto`, leaving it unconditional, or
+      setting `guarded: true`.
+    - `mir_codegen::FunctionCodegen` gained `drop_flags: HashMap<LocalId, PointerValue>` — one `i1`
+      alloca per `*T` local, seeded `true` right after allocation (needed because an owning *parameter*
+      never gets an explicit `SetDropFlag` from the lowerer at all — `push_assign` is only ever called
+      for a user-written assignment, not parameter binding — so this is what keeps a guarded `Drop` of an
+      untouched owning parameter from reading uninitialized alloca contents). `Statement::SetDropFlag`
+      now actually stores into this alloca (a no-op for any local without one, i.e. anything not `*T`,
+      matching `codegen_drop`'s own type gate); a `guarded` `Drop` loads the flag and conditionally
+      branches to a small extra block that calls `codegen_drop` before rejoining the original target,
+      versus branching straight past it when the flag is false.
+    - Proven via one rewritten `mir_parser` unit test (`a_conditional_move_in_only_one_if_branch_no_
+      longer_leaks_on_the_untaken_path` — previously asserted the leak as accepted behavior; now asserts
+      the `Drop` survives with `guarded: true`) plus two new exe-level tests exercising the actual
+      codegen path at runtime on both outcomes: `37_conditional_drop_guarded_moved.sol` (flag ends up
+      false, proving no double free) and `38_conditional_drop_guarded_not_moved.sol` (flag stays true,
+      proving the real free still runs on the untaken-in-the-old-code path). Full
+      `cargo test --workspace` (same 146 `mir_parser` tests, one rewritten not added; same unrelated
+      pre-existing `ast_parser` failure) and all 38 exe tests (up from 36) pass.
+    - Still explicitly open after this: the struct/array-owning-a-`*T`-field case just deferred above,
+      plus the two older deferrals (`Index` disjointness for overlap-checking, the Deref-not-first-
+      element reborrow gap) — none touched by this slice.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
