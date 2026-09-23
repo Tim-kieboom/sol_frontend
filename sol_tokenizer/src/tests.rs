@@ -99,7 +99,7 @@ fn lex_identifier_and_number() {
     let tokens = lexer_to_vec("x = 42");
 
     let expected = vec![
-        TokenKind::Ident("x".to_string()),
+        TokenKind::Ident("x".into()),
         TokenKind::Symbol(Symbol::Assign),
         TokenKind::Literal(TokenLiteral::Number(Number::Uint(42))),
     ];
@@ -139,9 +139,9 @@ fn skip_line_comments() {
 
     let expected = vec![
         TokenKind::EndLine,
-        TokenKind::Ident("foo".to_string()),
+        TokenKind::Ident("foo".into()),
         TokenKind::EndLine,
-        TokenKind::Ident("bar".to_string()),
+        TokenKind::Ident("bar".into()),
         TokenKind::EndLine,
     ];
 
@@ -250,7 +250,7 @@ fn lex_new_keywords() {
 fn lex_capitalized_union_stays_identifier() {
     let tokens = lexer_to_vec("Union");
 
-    let expected = vec![TokenKind::Ident("Union".to_string())];
+    let expected = vec![TokenKind::Ident("Union".into())];
     assert_eq!(tokens, expected);
 }
 
@@ -259,9 +259,9 @@ fn lex_right_arrow_symbol() {
     let tokens = lexer_to_vec("a->b");
 
     let expected = vec![
-        TokenKind::Ident("a".to_string()),
+        TokenKind::Ident("a".into()),
         TokenKind::Symbol(Symbol::RightArrow),
-        TokenKind::Ident("b".to_string()),
+        TokenKind::Ident("b".into()),
     ];
 
     assert_eq!(tokens, expected);
@@ -356,7 +356,7 @@ fn well_formed_string_and_char_literals_are_accepted() {
         tokens,
         vec![
             TokenKind::Literal(TokenLiteral::String(
-                sol_utils::literal::StringLiteral::Str("hello".to_string())
+                sol_utils::literal::StringLiteral::Str("hello".into())
             )),
             TokenKind::Literal(TokenLiteral::Char('a')),
         ]

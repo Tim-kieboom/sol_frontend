@@ -773,13 +773,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             }
 
             // if not value is probably named_tuple expression
-            let ty = match self.try_parse_type() {
-                Ok(ty) => ty,
-                Err(TryError::IsErr(err)) => return TryErr(err),
-                Err(TryError::IsNotValue(err)) => {
-                    return TryNotValue(err);
-                }
-            };
+            let ty = self.try_parse_type().merge_to_result().try_err()?;
 
             let default = if self.current_is(&ASSIGN) {
                 self.bump();

@@ -192,6 +192,11 @@ impl From<SharedStr> for Rc<str> {
         value.0
     }
 }
+impl PartialEq<str> for SharedStr {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
 impl serde::Serialize for SharedStr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

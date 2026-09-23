@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use sol_utils::SharedStr;
+
 /// A literal value in the Sol language.
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Literal {
@@ -8,8 +10,8 @@ pub enum Literal {
     Float(f64),
     Bool(bool),
     Char(char),
-    Str(String),
-    Cstr(String),
+    Str(SharedStr),
+    Cstr(SharedStr),
 }
 impl Debug for Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

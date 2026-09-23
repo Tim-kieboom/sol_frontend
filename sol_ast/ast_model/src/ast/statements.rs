@@ -3,7 +3,7 @@ use crate::{
     NodeId, TypeId,
 };
 use sol_utils::{
-    FunctionId, Ident, Mutable, TypeModifier, bitflags,
+    FunctionId, Ident, Mutable, SharedStr, TypeModifier, bitflags,
     collections::{
         array::{Arr, RcArr},
         sol_import_path::SolImportPath,
@@ -161,7 +161,7 @@ pub struct Import {
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportPath {
-    pub lib_name: Option<String>,
+    pub lib_name: Option<SharedStr>,
     pub module: SolImportPath,
     pub kind: ImportKind,
 }

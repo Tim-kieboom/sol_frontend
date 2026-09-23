@@ -1,4 +1,4 @@
-use std::{iter, sync::LazyLock};
+use std::iter;
 
 use crate::{
     fault::AstResult,
@@ -12,7 +12,7 @@ use ast_model::{
 use sol_tokenizer::model::TokenKind;
 use sol_utils::{fault::Fault, span::Span};
 
-static ASSIGNMENT_TOKENS: LazyLock<Vec<TokenKind>> = LazyLock::new(|| {
+pub fn create_assignment_tokens() -> Vec<TokenKind> {
     AssignType::SYMBOL_VALUES
         .iter()
         .copied()
@@ -22,11 +22,11 @@ static ASSIGNMENT_TOKENS: LazyLock<Vec<TokenKind>> = LazyLock::new(|| {
         .chain(iter::once(CURLY_CLOSE))
         .chain(iter::once(TokenKind::EndFile))
         .collect()
-});
+}
 
 impl<'a, 'f> Parser<'a, 'f> {
     pub(crate) fn parse_assign_or_expression(&mut self, start_span: Span) -> AstResult<Statement> {
-        let lvalue = self.parse_expression_id(&ASSIGNMENT_TOKENS)?;
+        let lvalue = self.parse_expression_id(self.assignment_tokens)?;
         if self.current_is_any(STAMENT_END_TOKENS) {
             return Ok(Statement::from_expression(
                 &self.forest.store,

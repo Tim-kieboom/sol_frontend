@@ -4,7 +4,7 @@ pub mod types;
 use std::fmt::Display;
 
 use crate::model::{keyword::KeyWord, types::Types};
-use sol_utils::{literal::TokenLiteral, sol_names::Symbol, span::Span};
+use sol_utils::{SharedStr, literal::TokenLiteral, sol_names::Symbol, span::Span};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TokenKind {
@@ -14,7 +14,7 @@ pub enum TokenKind {
     Literal(TokenLiteral),
     Keyword(KeyWord),
     Symbol(Symbol),
-    Ident(String),
+    Ident(SharedStr),
     Types(Types),
     EndLine,
     EndFile,

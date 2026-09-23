@@ -64,7 +64,7 @@ impl<'a> FunctionLowerer<'a> {
             BinaryOperatorKind::Mul => "attempt to multiply with overflow",
             _ => unreachable!("lower_checked_binary_op is only called for Add/Sub/Mul"),
         };
-        let msg = mir::Operand::Constant(mir::ConstValue::Str(msg_text.to_string()));
+        let msg = mir::Operand::Constant(mir::ConstValue::Str(msg_text.into()));
 
         let next = self.new_block();
         self.seal(
@@ -180,7 +180,7 @@ impl<'a> FunctionLowerer<'a> {
     /// continuation block as the new cursor. Shared by every "trap if this
     /// bad condition holds" check `lower_checked_div` builds.
     pub(super) fn assert_false(&mut self, cond: mir::Operand, msg_text: &str, span: Span) {
-        let msg = mir::Operand::Constant(mir::ConstValue::Str(msg_text.to_string()));
+        let msg = mir::Operand::Constant(mir::ConstValue::Str(msg_text.into()));
         let next = self.new_block();
         self.seal(
             mir::Terminator::Assert {

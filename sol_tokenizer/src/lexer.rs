@@ -122,7 +122,7 @@ impl<'a> Lexer<'a> {
                 } else if let Ok(types) = Types::from_str(ident_str) {
                     return Ok(TokenKind::Types(types));
                 } else {
-                    return Ok(TokenKind::Ident(ident_str.to_string()));
+                    return Ok(TokenKind::Ident(ident_str.into()));
                 }
             }
         };
@@ -131,7 +131,7 @@ impl<'a> Lexer<'a> {
             let string = match tag {
                 StringTag::CStr => {
                     self.next_char();
-                    StringLiteral::Cstr(self.lex_string(line)?)
+                    StringLiteral::Cstr(self.lex_string(line)?.into())
                 }
                 StringTag::F => {
                     self.next_char();
@@ -158,7 +158,7 @@ impl<'a> Lexer<'a> {
                 TokenKind::EndLine
             }
             '"' => {
-                let string = StringLiteral::Str(self.lex_string(line)?);
+                let string = StringLiteral::Str(self.lex_string(line)?.into());
                 TokenKind::Literal(TokenLiteral::String(string))
             }
             '\'' => TokenKind::Literal(TokenLiteral::Char(self.lex_char(line)?)),

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use ast_model::{Import, ImportItem, ImportKind, ImportPath, Statement, StatementKind};
 use sol_tokenizer::model::{TokenKind, keyword::KeyWord};
 use sol_utils::{
-    Ident, collections::sol_import_path::SolImportPath, fault::Fault, sol_names::Symbol,
+    Ident, SharedStr, collections::sol_import_path::SolImportPath, fault::Fault, sol_names::Symbol,
 };
 
 use crate::{
@@ -132,7 +132,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
     fn parse_import_path(
         &mut self,
-    ) -> Result<(SolImportPath, Option<String>), crate::fault::AstFault> {
+    ) -> Result<(SolImportPath, Option<SharedStr>), crate::fault::AstFault> {
         const IS_EXTERNAL: bool = true;
         const IS_INTERNAL: bool = false;
         const CRATE: TokenKind = TokenKind::Keyword(KeyWord::Crate);

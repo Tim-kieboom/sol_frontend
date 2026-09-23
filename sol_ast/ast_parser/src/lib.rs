@@ -8,7 +8,7 @@ use sol_utils::{
     span::ModuleId,
 };
 
-use crate::parser::Parser;
+use crate::{parse::statements::create_assignment_tokens, parser::Parser};
 
 pub use ast_model::fault;
 mod parse;
@@ -25,12 +25,13 @@ pub struct ParseInfo<'f> {
     pub crate_source_folder: PathBuf,
 
     pub modules: &'f mut ModuleStore,
-    pub context: &'f mut CrateContext<crate::fault::AstErrorKind>,
     pub forest: &'f mut CrateForest,
     pub crate_store: &'f CrateStore,
     pub declares: &'f mut DeclareStore,
+    pub context: &'f mut CrateContext<crate::fault::AstErrorKind>,
 }
 
 pub fn parse_module<'a, 'f>(input: TokenStream<'a>, name: String, info: ParseInfo<'f>) {
-    Parser::parse(input, name, info)
+    let assignment_tokens = create_assignment_tokens();
+    Parser::parse(input, name, info, &assignment_tokens)
 }

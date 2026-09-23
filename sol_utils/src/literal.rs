@@ -1,4 +1,4 @@
-use crate::sol_names::PrimitiveTypes;
+use crate::{SharedStr, sol_names::PrimitiveTypes};
 use std::fmt::{Debug, Write};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -10,8 +10,8 @@ pub enum Number {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StringLiteral {
-    Str(String),
-    Cstr(String),
+    Str(SharedStr),
+    Cstr(SharedStr),
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

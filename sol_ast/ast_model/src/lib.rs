@@ -5,7 +5,7 @@ use crate::{
     scope::ScopeBuilder,
 };
 use sol_utils::{
-    CrateContext, FunctionId, Ident,
+    CrateContext, FunctionId, Ident, SharedStr,
     collections::{
         vec_map::{VecMap, VecMapIndex},
         vec_set::VecSet,
@@ -39,7 +39,7 @@ pub struct ExternalCrateData {
 pub struct CrateForest {
     pub store: AstStore,
     pub modules: AstModuleStore,
-    pub external: HashMap<String, ExternalCrateData>,
+    pub external: HashMap<SharedStr, ExternalCrateData>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

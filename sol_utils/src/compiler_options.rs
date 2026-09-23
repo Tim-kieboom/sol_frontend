@@ -139,6 +139,7 @@ pub enum PanicMode {
     /// faster, at the cost of losing whatever crash-dump/reporting tooling
     /// relies on the abort signal.
     Exit,
+    Backtrace,
 }
 impl PanicMode {
     pub const fn const_default() -> Self {
@@ -149,6 +150,7 @@ impl PanicMode {
     /// variant names (`abort`, `exit`).
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            _ if value.eq_ignore_ascii_case("backtrace") => Some(Self::Backtrace),
             _ if value.eq_ignore_ascii_case("abort") => Some(Self::Abort),
             _ if value.eq_ignore_ascii_case("exit") => Some(Self::Exit),
             _ => None,

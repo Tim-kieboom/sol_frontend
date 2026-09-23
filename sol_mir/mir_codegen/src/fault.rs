@@ -92,6 +92,9 @@ pub enum CodegenErrorKind {
     /// rejection of the input.
     #[error("LLVM builder operation failed: {message}")]
     LlvmBuilderError { message: Box<str> },
+
+    #[error("{thing} is not yet implemented")]
+    NotYetImplemented { thing: Box<str> },
 }
 
 impl From<UnclassifiedKind> for CodegenErrorKind {

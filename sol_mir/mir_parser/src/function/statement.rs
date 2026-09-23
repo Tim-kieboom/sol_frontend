@@ -461,7 +461,7 @@ impl<'a> FunctionLowerer<'a> {
     fn lower_assert_intrinsic(&mut self, call: &ast::FunctionCall, span: Span) -> MirResult<()> {
         let cond_expr = self.intrinsic_sole_argument(call, IntrinsicFunction::Assert, span)?;
         let cond = self.lower_bool_condition(cond_expr)?;
-        let msg = mir::Operand::Constant(mir::ConstValue::Str("assertion failed".to_string()));
+        let msg = mir::Operand::Constant(mir::ConstValue::Str("assertion failed".into()));
 
         let next = self.new_block();
         self.seal(

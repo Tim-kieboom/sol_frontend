@@ -13,9 +13,9 @@ const ENTRY_MOD_NAME: &str = "crate";
 
 pub struct AstRequest<'a> {
     pub source_folder: PathBuf,
+    pub crate_store: &'a CrateStore,
     pub benchmark: &'a mut Benchmark,
     pub module_store: &'a mut ModuleStore,
-    pub crate_store: &'a CrateStore,
 }
 
 pub fn to_ast<'a>(
@@ -24,11 +24,12 @@ pub fn to_ast<'a>(
     _options: &CompilerOptions,
 ) -> AstTree {
     let AstRequest {
-        source_folder,
         benchmark,
+        source_folder,
         module_store,
         crate_store,
     } = request;
+
     let root = module_store.get_root_id();
     let mut ast = AstTree::new(root);
 

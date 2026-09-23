@@ -10,7 +10,9 @@ use inkwell::{
     values::{BasicValueEnum, FunctionValue, PointerValue},
 };
 use mir_model::{BlockId, ConstValue, LocalId, Operand, Place, Terminator};
-use sol_utils::{FunctionId, compiler_options::PanicMode, sol_names::PrimitiveTypes, span::Span};
+use sol_utils::{
+    FunctionId, compiler_options::PanicMode, fault::Fault, sol_names::PrimitiveTypes, span::Span,
+};
 
 use crate::{
     err,
@@ -619,6 +621,14 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             .map_err(llvm_err)?;
 
         match self.ctx.options.panic_mode {
+            PanicMode::Backtrace => {
+                return Err(Fault::error_with_kind(
+                    CodegenErrorKind::NotYetImplemented {
+                        thing: "PanicMode backtrace".into(),
+                    },
+                    None,
+                ));
+            }
             PanicMode::Abort => {
                 // abort() skips libc's normal at-exit cleanup entirely, so
                 // the message printf just wrote would otherwise be lost in

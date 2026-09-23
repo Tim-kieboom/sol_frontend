@@ -201,11 +201,11 @@ impl<'a, 'f> Parser<'a, 'f> {
             modules: self.modules,
             forest: self.forest,
             declares: self.declares,
-            crate_source_folder: self.crate_source_path.clone(),
             crate_store: self.crate_store,
+            crate_source_folder: self.crate_source_path.clone(),
         };
 
-        Parser::parse(tokens, name, info);
+        Parser::parse(tokens, name, info, self.assignment_tokens);
         if let Some(module) = self.modules_mut().get_mut(parent) {
             module.modules.insert(module_id);
         }

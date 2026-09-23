@@ -91,6 +91,12 @@ fn inputs() -> Vec<Input> {
             main_path: src.join("testCompiler.sol"),
             content: std::fs::read_to_string(src.join("testCompiler.sol")).unwrap(),
         },
+        Input {
+            label: "big (big.sol, 20862 lines)",
+            source_folder: src.clone(),
+            main_path: src.join("big.sol"),
+            content: std::fs::read_to_string(src.join("big.sol")).unwrap(),
+        },
     ]
 }
 

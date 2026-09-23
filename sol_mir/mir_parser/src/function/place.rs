@@ -348,7 +348,7 @@ impl<'a> FunctionLowerer<'a> {
             ),
         );
 
-        let msg = mir::Operand::Constant(mir::ConstValue::Str("index out of bounds".to_string()));
+        let msg = mir::Operand::Constant(mir::ConstValue::Str("index out of bounds".into()));
         let next = self.new_block();
         self.seal(
             mir::Terminator::Assert {

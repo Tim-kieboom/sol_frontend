@@ -5,6 +5,7 @@ use ast_model::{
 use sol_tokenizer::TokenStream;
 #[cfg(debug_assertions)]
 use sol_tokenizer::model::Token;
+use sol_tokenizer::model::TokenKind;
 use sol_utils::{CrateContext, collections::vec_set::VecSet, sol_error_internal};
 use sol_utils::{
     collections::{crate_store::CrateStore, module_store::ModuleStore},
@@ -40,21 +41,27 @@ pub(crate) struct Current {
 #[derive(Debug)]
 pub(crate) struct Parser<'a, 'f> {
     #[cfg(debug_assertions)]
-    pub(crate) debug: DebugViewer,
+    pub debug: DebugViewer,
 
-    pub(crate) id: ModuleId,
-    pub(crate) current: Current,
-    pub(crate) source_path: PathBuf,
-    pub(crate) tokens: TokenStream<'a>,
-    pub(crate) crate_source_path: PathBuf,
-    pub(crate) modules: &'f mut ModuleStore,
-    pub(crate) context: &'f mut CrateContext<crate::fault::AstErrorKind>,
-    pub(crate) forest: &'f mut CrateForest,
-    pub(crate) crate_store: &'f CrateStore,
-    pub(crate) declares: &'f mut DeclareStore,
+    pub id: ModuleId,
+    pub current: Current,
+    pub source_path: PathBuf,
+    pub tokens: TokenStream<'a>,
+    pub crate_source_path: PathBuf,
+    pub modules: &'f mut ModuleStore,
+    pub forest: &'f mut CrateForest,
+    pub crate_store: &'f CrateStore,
+    pub declares: &'f mut DeclareStore,
+    pub assignment_tokens: &'f Vec<TokenKind>,
+    pub context: &'f mut CrateContext<crate::fault::AstErrorKind>,
 }
 impl<'a, 'f> Parser<'a, 'f> {
-    pub fn parse(tokens: TokenStream<'a>, name: String, info: ParseInfo<'f>) {
+    pub fn parse(
+        tokens: TokenStream<'a>,
+        name: String,
+        info: ParseInfo<'f>,
+        assignment_tokens: &'f Vec<TokenKind>,
+    ) {
         let id = info.id;
         let parent = info.parent;
 
@@ -68,7 +75,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         };
         info.forest.modules_mut().insert(id, module);
 
-        let mut this = Self::new(tokens, info);
+        let mut this = Self::new(tokens, info, assignment_tokens);
 
         #[cfg(debug_assertions)]
         {
@@ -99,7 +106,11 @@ impl<'a, 'f> Parser<'a, 'f> {
         self.forest.modules()
     }
 
-    fn new(tokens: TokenStream<'a>, info: ParseInfo<'f>) -> Self {
+    fn new(
+        tokens: TokenStream<'a>,
+        info: ParseInfo<'f>,
+        assignment_tokens: &'f Vec<TokenKind>,
+    ) -> Self {
         #[cfg(debug_assertions)]
         let debug = {
             use sol_tokenizer::model::TokenKind;
@@ -117,6 +128,7 @@ impl<'a, 'f> Parser<'a, 'f> {
 
             tokens,
             id: info.id,
+            assignment_tokens,
             context: info.context,
             modules: info.modules,
             forest: info.forest,

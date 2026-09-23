@@ -26,6 +26,7 @@ mod import;
 mod objects;
 mod use_block;
 mod variable;
+pub use assign::create_assignment_tokens;
 
 impl<'a, 'f> Parser<'a, 'f> {
     pub(crate) fn parse_global_statements(&mut self) -> Vec<StatementId> {
@@ -262,7 +263,7 @@ impl<'a, 'f> Parser<'a, 'f> {
             let token = self.bump_consume();
             let name_text = match token.kind {
                 TokenKind::Ident(ident) => ident,
-                TokenKind::Keyword(keyword) => keyword.as_str().to_string(),
+                TokenKind::Keyword(keyword) => keyword.as_str().into(),
                 _ => {
                     return Err(self.get_expect_ident_error("attribute name"));
                 }
