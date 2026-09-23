@@ -14,10 +14,15 @@ use inkwell::{
     types::BasicTypeEnum,
     values::{FunctionValue, PointerValue},
 };
-use mir_model::{BlockId, ExternFunction, Function, LocalId, Place, PlaceElem, Statement};
+use mir_model::{
+    BlockId, ExternFunction, Function, LocalId, Place, PlaceElem, Statement, Terminator,
+};
 use sol_utils::{
     FunctionId,
-    collections::vec_map::{VecMap, VecMapIndex},
+    collections::{
+        vec_map::{VecMap, VecMapIndex},
+        vec_set::VecSet,
+    },
     span::ModuleId,
 };
 
@@ -74,6 +79,25 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
         let entry = self.ctx.context.append_basic_block(fn_value, "entry");
         builder.position_at_end(entry);
 
+        // Only a local that actually has at least one `guarded` `Drop`
+        // somewhere in this function ever needs runtime flag storage at all
+        // — `elaborate_drops` already proved every other `*T` local's own
+        // `Drop`(s) either definitely do or definitely don't run, with no
+        // runtime check involved (see that pass's own docs), so allocating a
+        // flag for those would just be dead storage nothing ever reads.
+        let guarded_locals: VecSet<LocalId> = function
+            .blocks
+            .entries()
+            .filter_map(|(_, block)| match &block.terminator {
+                Terminator::Drop {
+                    place,
+                    guarded: true,
+                    ..
+                } if place.projection.is_empty() => Some(place.local),
+                _ => None,
+            })
+            .collect();
+
         let mut locals: VecMap<LocalId, PointerValue<'ctx>> = VecMap::new();
         let mut drop_flags: VecMap<LocalId, PointerValue<'ctx>> = VecMap::new();
         let bool_ty = self.ctx.context.bool_type();
@@ -93,7 +117,7 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
             // for parameter binding) — this is what makes a guarded `Drop` of
             // an untouched owning parameter still see a correct, defined
             // flag value rather than uninitialized alloca contents.
-            if matches!(resolved_ty, SolType::Pointer(_)) {
+            if matches!(resolved_ty, SolType::Pointer(_)) && guarded_locals.contains(local_id) {
                 let flag_ptr = builder
                     .build_alloca(bool_ty, &format!("_{}_drop_flag", local_id.index()))
                     .map_err(llvm_err)?;

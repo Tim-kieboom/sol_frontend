@@ -502,7 +502,7 @@ that landing first, in order.
       lowering always emits `guarded: false`; `elaborate_drops` is what sets it, reading both the
       "definite" and "maybe" sets to choose between pruning to `Goto`, leaving it unconditional, or
       setting `guarded: true`.
-    - `mir_codegen::FunctionCodegen` gained `drop_flags: HashMap<LocalId, PointerValue>` — one `i1`
+    - `mir_codegen::FunctionCodegen` gained `drop_flags: VecMap<LocalId, PointerValue>` — one `i1`
       alloca per `*T` local, seeded `true` right after allocation (needed because an owning *parameter*
       never gets an explicit `SetDropFlag` from the lowerer at all — `push_assign` is only ever called
       for a user-written assignment, not parameter binding — so this is what keeps a guarded `Drop` of an
@@ -519,9 +519,31 @@ that landing first, in order.
       proving the real free still runs on the untaken-in-the-old-code path). Full
       `cargo test --workspace` (same 146 `mir_parser` tests, one rewritten not added; same unrelated
       pre-existing `ast_parser` failure) and all 38 exe tests (up from 36) pass.
+    - **Follow-up fix, caught by inspecting the actual LLVM IR, not by review**: the first version of
+      this allocated a drop-flag alloca (plus its seeding `store`) for *every* `*T` local unconditionally
+      — including in a function like `consume(p: *int) {}`, whose own `Drop` of `p` is never `guarded` at
+      all (it's a single, unconditional scope exit), so the flag was written once and never read. Fixed
+      by scanning `function.blocks` up front for which locals actually have a `guarded: true` `Drop`
+      anywhere in that function (a `VecSet<LocalId>`, `guarded_locals`) and only allocating flag storage
+      for those — restores the "fast path has zero overhead" property the design was supposed to have.
     - Still explicitly open after this: the struct/array-owning-a-`*T`-field case just deferred above,
       plus the two older deferrals (`Index` disjointness for overlap-checking, the Deref-not-first-
       element reborrow gap) — none touched by this slice.
+    - [ ] **Future optimization, not scoped**: critical-edge splitting as a flag-free alternative for the
+          narrow case where it actually pays off — an *acyclic* join with exactly *one* conditionally-
+          moved value reaching it (this slice's own motivating example) can drop the runtime flag
+          entirely by giving each incoming edge its own small dedicated block that does or skips the
+          `Drop` before rejoining the shared continuation, rather than one shared guarded `Drop` reading
+          a flag. Confirmed *not* a general replacement for the flag mechanism during a follow-up
+          `/grill-me`: it stops being free the moment either (a) more than one conditionally-moved local
+          reaches the same join (edges would need splitting per *combination* of drop obligations —
+          2 values ⇒ 4 edge variants, 3 ⇒ 8) or (b) the join is reached through a loop back-edge (there's
+          no static edge count to split against "how many times around the loop"). Mirrors why rustc's
+          own `ElaborateDrops` isn't pure edge-splitting either: it runs the same definite/maybe dataflow
+          this slice just built, elaborates for free wherever the answer is definite, and only falls back
+          to a runtime flag for the genuinely ambiguous cases — edge-splitting would only ever be a size/
+          speed micro-optimization layered on top of that fallback for its one narrow acyclic single-
+          value case, not a replacement for it.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
