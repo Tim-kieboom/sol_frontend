@@ -10,7 +10,7 @@ fn empty_struct() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -31,7 +31,7 @@ fn struct_with_fields() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -62,7 +62,7 @@ fn struct_with_multiple_fields() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -82,7 +82,7 @@ fn struct_with_public_field() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -106,7 +106,7 @@ fn struct_with_bare_typed_fields() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -128,7 +128,7 @@ fn bare_typed_variable_declaration() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -149,7 +149,7 @@ fn struct_with_expression_bodied_method() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -177,7 +177,7 @@ fn struct_with_method() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -210,16 +210,16 @@ fn struct_body_rejects_assignment_statement() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::StatementNotAllowedInBody { kind }
                 if kind.as_ref() == "assignment"
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -230,16 +230,16 @@ fn struct_body_rejects_expression_statement() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::StatementNotAllowedInBody { kind }
                 if kind.as_ref() == "expression"
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -250,7 +250,7 @@ fn struct_recovers_after_a_rejected_statement_and_still_parses_later_fields() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -287,7 +287,7 @@ fn struct_with_type_alias() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

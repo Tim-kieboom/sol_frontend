@@ -1,5 +1,7 @@
 use std::fmt::{Debug, Display};
 
+use std::ops::{Index, IndexMut};
+
 use crate::span::Span;
 
 #[repr(u8)]
@@ -159,7 +161,7 @@ impl Fault<UnclassifiedKind> {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FaultCollector<K = UnclassifiedKind> {
-    pub faults: Vec<Fault<K>>,
+    faults: Vec<Fault<K>>,
 }
 
 impl<K> Default for FaultCollector<K> {
@@ -169,6 +171,12 @@ impl<K> Default for FaultCollector<K> {
 }
 
 impl<K> FaultCollector<K> {
+    pub fn len(&self) -> usize {
+        self.faults.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn push(&mut self, fault: Fault<K>) {
         self.faults.push(fault);
     }
@@ -188,6 +196,13 @@ impl<K> FaultCollector<K> {
         self.faults.iter().any(|d| d.severity == fail_level)
     }
 
+    pub fn fails_count(&self, fail_level: Severity) -> usize {
+        self.faults
+            .iter()
+            .filter(|d| d.severity == fail_level)
+            .count()
+    }
+
     pub fn into_unclassified(self) -> FaultCollector<UnclassifiedKind>
     where
         K: Into<UnclassifiedKind>,
@@ -195,6 +210,20 @@ impl<K> FaultCollector<K> {
         FaultCollector {
             faults: self.faults.into_iter().map(Fault::into_kind).collect(),
         }
+    }
+
+    pub fn extent<Iter>(&mut self, iter: Iter)
+    where
+        Iter: IntoIterator<Item = Fault<K>>,
+    {
+        self.faults.extend(iter);
+    }
+
+    pub fn as_slice(&self) -> &[Fault<K>] {
+        &self.faults
+    }
+    pub fn into_vec(self) -> Vec<Fault<K>> {
+        self.faults
     }
 }
 impl<K> IntoIterator for FaultCollector<K> {
@@ -213,6 +242,19 @@ impl FaultCollector<UnclassifiedKind> {
         for fault in faults.into_iter() {
             self.push(fault.into_kind());
         }
+    }
+}
+impl<K> IndexMut<usize> for FaultCollector<K> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.faults[index]
+    }
+}
+
+impl<K> Index<usize> for FaultCollector<K> {
+    type Output = Fault<K>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.faults[index]
     }
 }
 

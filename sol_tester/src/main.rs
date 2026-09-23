@@ -71,19 +71,18 @@ fn frontend(benchmark: &mut Benchmark) -> Result<bool> {
         codegen(&mir, &ast, benchmark, &module_store)?;
     }
 
-    for fault in all_faults.iter() {
-        display_fault(fault, &module_store, &config::PRINT_CONFIGS, &mut stdout())?;
+    if config::CONFIG.should_print_faults() {
+        for fault in all_faults.iter() {
+            display_fault(fault, &module_store, &config::PRINT_CONFIGS, &mut stdout())?;
+        }
+    }
+
+    if mir_failed {
+        let count = all_faults.fails_count(config::COMPILER_OPTIONS.fail_level);
+        eprintln!("{RED}compiler got {count} errors {DEFAULT}")
     }
 
     display_benchmark(benchmark, &config::PRINT_CONFIGS, &mut stdout())?;
-    // `mir_failed` is `all_faults` checked *after* MIR-level faults (if any)
-    // were folded in — it already reflects both AST- and MIR-level faults
-    // together (AST faults never get removed, so if `ast_failed` was true
-    // to begin with, `mir_failed` is trivially true too), so this is the
-    // correct overall pass/fail signal, unlike the old `!ast_failed` (which
-    // silently ignored any MIR-only failure, e.g. a borrow-checker
-    // rejection, and printed "success" for a program that never made it to
-    // codegen at all).
     Ok(!mir_failed)
 }
 

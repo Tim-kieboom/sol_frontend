@@ -14,7 +14,7 @@ fn expression_bodied_function() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -54,7 +54,7 @@ fn simple_function() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -85,7 +85,7 @@ fn function_with_params() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -110,7 +110,7 @@ fn function_with_return_type() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -138,7 +138,7 @@ fn function_with_body() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -165,7 +165,7 @@ fn function_call_no_args() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     println!("{store:#?}");
@@ -194,7 +194,7 @@ fn function_call_with_args() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -225,7 +225,7 @@ fn extern_function_c() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -251,7 +251,7 @@ fn extern_function_c_with_varargs() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -279,7 +279,7 @@ fn extern_multiple_function_c() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -323,7 +323,7 @@ fn function_with_this_ref() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -349,7 +349,7 @@ fn function_with_mut_this() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -375,7 +375,7 @@ fn function_with_this_consume() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -401,7 +401,7 @@ fn function_with_generics() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -430,7 +430,7 @@ fn function_with_parameter_default() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -457,7 +457,7 @@ fn pub_function() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -484,7 +484,7 @@ fn method_call() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -513,7 +513,7 @@ fn async_function() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -538,7 +538,7 @@ fn non_async_function_is_not_async() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -564,7 +564,7 @@ fn function_with_where_clause() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -596,7 +596,7 @@ fn function_with_multi_where_clause() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -635,7 +635,7 @@ fn param_impl_trait() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -670,15 +670,15 @@ fn non_default_parameter_after_default_parameter_is_rejected() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::NonDefaultParameterAfterDefault
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -708,12 +708,12 @@ fn multiple_this_parameters_is_rejected() {
         "expected an error when a signature declares 'this' more than once"
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::DuplicateThisParameter
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -725,13 +725,13 @@ fn extern_function_unsupported_language_is_rejected() {
         "expected an error for an unsupported extern language"
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::UnsupportedExternLanguage { language }
                 if language.as_ref() == "Rust"
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -751,7 +751,7 @@ fn return_impl_trait() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

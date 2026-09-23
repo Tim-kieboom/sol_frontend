@@ -10,7 +10,7 @@ fn use_block_empty() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -37,7 +37,7 @@ fn use_block_method() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -69,7 +69,7 @@ fn use_block_pub_method() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -93,7 +93,7 @@ fn use_block_multiple_methods() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -122,7 +122,7 @@ fn use_block_impl_block() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -154,7 +154,7 @@ fn use_block_with_generic_type() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -182,7 +182,7 @@ fn use_block_struct_inside() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -209,7 +209,7 @@ fn use_block_import_inside() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -237,7 +237,7 @@ fn use_block_type_alias_inside() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -262,7 +262,7 @@ fn use_block_inline_method() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -295,7 +295,7 @@ fn use_block_mixed_methods_and_impl() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -326,7 +326,7 @@ fn use_block_method_with_return_type() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -355,15 +355,15 @@ fn use_block_rejects_variable_statement() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     assert!(
-        context.faults.faults.iter().any(|fault| matches!(
+        context.faults.iter().any(|fault| matches!(
             fault.kind(),
             crate::fault::AstErrorKind::VariableNotAllowedInUseBlock
         )),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -383,7 +383,7 @@ fn use_block_recovers_after_rejected_statement_and_still_parses_later_method() {
         context.faults.count_severity(Severity::Error),
         1,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -434,7 +434,7 @@ fn use_block_method_with_params() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

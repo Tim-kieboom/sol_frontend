@@ -10,7 +10,7 @@ fn enum_empty() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -30,7 +30,7 @@ fn enum_normal_variants() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -60,7 +60,7 @@ fn enum_normal_variants_trailing_comma() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -78,7 +78,7 @@ fn enum_single_variant() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -100,7 +100,7 @@ fn enum_assigned_variants() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -145,7 +145,7 @@ fn enum_named_union_variants() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -181,7 +181,7 @@ fn enum_tuple_union_variants() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -225,7 +225,7 @@ fn enum_named_union_variant_single_field() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -248,7 +248,7 @@ fn enum_with_underlying_type() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -328,7 +328,7 @@ fn enum_named_union_variant_field_types() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

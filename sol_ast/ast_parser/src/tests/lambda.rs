@@ -10,7 +10,7 @@ fn simple_lambda() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -39,7 +39,7 @@ fn multi_param_lambda() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -69,7 +69,7 @@ fn discard_param_lambda() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -92,7 +92,7 @@ fn lambda_in_function_call() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -141,7 +141,7 @@ fn lambda_in_variable() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

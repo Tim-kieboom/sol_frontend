@@ -1,148 +1,19 @@
 //! Mutable/shared-borrow overlap checking — the third slice of M2's real
-//! borrow/lifetime-conflict work (see `docs/mir-design.md` and `TODO.md`'s
-//! M2 section), separate from escape-checking (does a reference outlive its
-//! target) and move-checking (was a place read after being moved out of):
-//! do two *live* borrows of the same local conflict? `/grill-me`'d at
-//! length before writing anything — settled scope:
+//! borrow/lifetime-conflict work (see `TODO.md`'s M2 section),
+//! separate from escape-checking (does a reference outlive its target)
+//! and move-checking (was a place read after being moved out of):
+//! do two *live* borrows of the same local conflict?
 //!
-//! - **Field-level disjointness for struct fields** (`/grill-me`'d again to
-//!   add this — see the "Per-field disjointness" section below): `&o.a` and
-//!   `&mut o.b` no longer wrongly conflict. `Index` projections (array
-//!   elements) are still coarsened to "same root ⇒ conflict," deferred to
-//!   its own later slice.
-//! - **Move-vs-borrow interaction** (does a move of `x` invalidate a live
-//!   borrow of `x`) is handled — see `check_move_while_borrowed`.
-//! - **The full concrete (M1) CFG shape is now handled**, `for` loops
-//!   included (`/grill-me`'d three times to get here: straight-line, then
-//!   `if`/`else`, now loops too).
-//! - **Conflict matrix**: `&mut` vs `&mut`, and `&mut` vs `&`, overlapping
-//!   in time — reject. `&` vs `&` overlapping — always fine (unlimited
-//!   simultaneous shared borrows, same as real Rust).
-//! - **Real NLL-accurate liveness, not a lexical-scope heuristic**: a
-//!   borrow's live range is its own definition point plus every point
-//!   forward-reachable from it (without passing through a redefinition of
-//!   the same local) where the local is still genuinely live (some future
-//!   read reaches it without an intervening redefinition) — not "until its
-//!   enclosing block ends." A borrow with zero further reads is live only
-//!   at its own creation point.
+//! Handles the full concrete (M1) CFG shape, loops included, with real
+//! NLL-accurate liveness (a borrow is live from its definition through every
+//! point a later read can still reach it, not just "until its enclosing
+//! block ends") and field-level disjointness for struct fields (`&o.a` and
+//! `&mut o.b` don't conflict; array-index projections still coarsen to
+//! "same root ⇒ conflict"). Conflict matrix: `&mut` vs `&mut`, and `&mut`
+//! vs `&`, overlapping in time — reject; `&` vs `&` — always fine.
 //!
-//! # Mechanism — two genuinely separate computations
-//!
-//! `/grill-me`'d again once `if`/`else` was in scope: the old straight-line
-//! version conflated two different questions into one linear scan (only
-//! possible because straight-line code has a single total order). Once a
-//! local can have more than one reaching generation, they have to be split:
-//!
-//! 1. **Alias tracing** (`value_of`) — finding which `Rvalue::Ref` a
-//!    generation's own value ultimately traces back to. Reuses
-//!    `escape_check`'s exact fork-at-a-join shape: reads a point's own
-//!    statements backward for the traced local's most recent assignment,
-//!    falling through to every predecessor block (forked) the moment
-//!    nothing is found in-block. Unlike `escape_check`'s "require every
-//!    path safe" join (a binary safe/dangling question), this asks "what
-//!    does this alias resolve to" — a richer answer than yes/no — so the
-//!    join rule generalizes to "require every path resolve to the *same*
-//!    `(place, mutable)` answer, else `None`" (still the same "unfamiliar/
-//!    disagreeing ⇒ skip, don't guess" discipline every M2 pass uses, just
-//!    generalized from a boolean to an equality check).
-//! 2. **Liveness** (`generation_live_points`) — a real backward dataflow
-//!    pass, computed once for the whole function and reused by every
-//!    generation, entirely separate from alias tracing. Two levels, the
-//!    standard textbook technique (avoids needing point-level successor
-//!    edges for the CFG-wide fixed point, only within a block):
-//!      - Block-level backward liveness (`live_in`/`live_out` per block, via
-//!        each block's own upward-exposed-uses/kill summary) — a single pass
-//!        over blocks in postorder (successors settle before predecessors)
-//!        suffices, since `if`/`else` alone is acyclic; no fixed-point loop
-//!        needed yet (mirrors `move_check`'s own pre-loop-support first
-//!        slice).
-//!      - An intra-block backward scan, seeded by each block's own
-//!        `live_out`, produces the exact per-point `live_in` set used below.
-//!
-//!    A specific generation's own live-point set is then a forward walk from
-//!    its definition, following real point-level successor edges (an
-//!    ordinary CFG walk, no fixed point needed for a DAG), stopping down any
-//!    path the moment either the local is no longer live there (dead, per
-//!    the already-computed sets above) or gets redefined (a new generation
-//!    begins there instead). A point reachable via more than one branch from
-//!    genuinely different generations (e.g. `if c { r = &a } else { r = &b
-//!    }` followed by a shared read of `r`) legitimately belongs to *both*
-//!    generations' own live sets — this is correct, not a bug: whichever
-//!    branch actually ran, its value is the one flowing through that shared
-//!    read, so both possibilities have to be treated as live.
-//!
-//! Two borrows (from possibly different generations, of possibly different
-//! locals) conflict when they resolve to the same root place, at least one
-//! is mutable, and their live-point sets share any point at all — set
-//! intersection, not integer-interval overlap, since a live range is no
-//! longer necessarily contiguous once it can span more than one branch.
-//!
-//! # `for` loops — two independent real fixed points
-//!
-//! `/grill-me`'d at length before writing anything: a `for` loop's back edge
-//! affects the alias-tracing and liveness computations in genuinely
-//! different ways, so each needed its own scoping decision rather than one
-//! blanket "make it cyclic-safe."
-//!
-//! **Liveness** was already a backward dataflow pass; extending it to a
-//! cyclic CFG is the same block-level Kildall worklist `move_check`'s own
-//! loop extension already uses, just run backward (`compute_block_liveness`
-//! reprocesses a block's *predecessors* — not successors — whenever its own
-//! `live_in` changes, converging to a fixed point instead of the old
-//! single postorder pass). Confirmed as a real precision requirement, not
-//! just style: a single non-iterating pass over a cyclic CFG would
-//! *under*-approximate liveness (a loop body's own "this is still needed"
-//! fact never gets to propagate back through the header more than once),
-//! which would only ever shrink a borrow's live range and cause *missed*
-//! conflicts — technically sound by this codebase's own established
-//! "prefer false negatives" discipline, but `move_check` and
-//! `escape_check`'s own loop extensions both chose the more rigorous fixed
-//! point even where a cheaper sound-but-imprecise shortcut existed, and this
-//! follows that same precedent rather than settling for less.
-//!
-//! **Alias tracing** (`value_of`) needed more than "mirror `escape_check`'s
-//! `converge`," though — a real design gap surfaced mid-interview. Unlike
-//! escape-checking's `Origin` (a `Safe`/`Dangling` lattice with an obvious
-//! optimistic starting point, `Safe`, that a cyclic fallback could default
-//! to), `value_of`'s join immediately collapses to `None` — via `?` — the
-//! moment *any* predecessor is unresolved. A fresh cyclic reference has
-//! nothing to fall back to in round 0 except `None`, so every round after
-//! that would keep reading back the *same* `None` it just wrote — "converging"
-//! instantly, but never recovering the real answer, buying no precision at
-//! all despite the extra rounds. Fixed with a third state distinct from both
-//! `Some(place, mutable)` and `None`: `Resolved::Unknown` — a join's
-//! identity element, simply skipped over rather than treated as a
-//! disagreement, so an in-progress cyclic reference no longer poisons the
-//! result before it's had a chance to settle. Only `Resolved::Disagreement`
-//! (two genuinely different real answers, or a value reaching an untracked
-//! parameter) is treated as absorbing/final, collapsed to `None` only once
-//! the whole table has converged.
-//!
-//! # Per-field disjointness
-//!
-//! `/grill-me`'d before writing anything: two settled scope cuts.
-//! **Field projections only** — `arr[i]` vs `arr[j]` can't be proven
-//! disjoint without real symbolic range analysis (an index is always a
-//! runtime local in this MIR, never a compile-time constant, per the
-//! bounds-checking design), so any `Index` step anywhere in either place's
-//! projection still falls back to today's coarse "same root ⇒ conflict"
-//! answer — deferred to its own later slice, not attempted here.
-//! **A prefix relationship is always overlapping** — `&o` (the whole
-//! struct) and `&mut o.a` (one of its fields) conflict exactly as before;
-//! only two *genuinely disjoint* field paths (differing at some `Field`
-//! index, with neither a prefix of the other) are newly accepted.
-//! `fields_disjoint` walks both projections in lockstep and can only ever
-//! *narrow* the set of flagged conflicts relative to the pre-this-slice
-//! baseline (an `Index` step, or a genuine prefix, always falls back to
-//! "not proven disjoint," never a new false negative) — the opposite
-//! direction from every other "unfamiliar shape ⇒ skip, don't guess" rule
-//! in this module, which defaults to *not* reporting; here the safe default
-//! is *still* reporting, since that's what the code already did before this
-//! slice existed. `check_move_while_borrowed` needed no changes at all: a
-//! tracked move's own place always has an *empty* projection (whole-locals
-//! only, already true before this slice), which is a prefix of every other
-//! place sharing its root — so a move of `o` already, correctly, conflicts
-//! with a borrow of any of `o`'s individual fields.
+//! `check_move_while_borrowed` handles the related move-vs-borrow question:
+//! does a move of `x` happen while a still-live borrow of `x` exists.
 
 use std::collections::VecDeque;
 
@@ -154,23 +25,104 @@ use sol_utils::{
 
 use crate::fault::{MirErrorKind, MirFault};
 
-use super::move_check::{postorder, successors};
+/// Checks `function` for two live borrows of the same place that conflict
+/// (a mutable borrow overlapping any other live borrow of that place).
+/// Returns one fault per conflicting pair.
+pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
+    let mut faults = vec![];
 
-/// Everything both `check_borrow_overlaps` and `check_move_while_borrowed`
-/// need: every tracked borrow (place, mutability, live-point set) plus the
-/// per-block point data each borrow's `live_points` was computed from —
-/// `check_move_while_borrowed` needs the latter to find where a whole-place
-/// `Move` actually occurs, something `Borrow` itself doesn't carry.
+    let Some((entry, _)) = function.blocks.entries().next() else {
+        return faults;
+    };
+
+    let mut exec_order = super::postorder(function, entry);
+    exec_order.reverse();
+    let block_rank: VecMap<BlockId, usize> = exec_order
+        .iter()
+        .enumerate()
+        .map(|(rank, &block)| (block, rank))
+        .collect();
+
+    let Analysis { borrows, .. } = analyze(function);
+
+    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
+    for borrow in &borrows {
+        by_place.entry(borrow.place).or_default().push(borrow);
+    }
+
+    for group in by_place.values() {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (a, b) = (group[i], group[j]);
+                if !(a.mutable || b.mutable) {
+                    continue; // shared vs. shared — always fine
+                }
+                if fields_disjoint(&a.projection, &b.projection) {
+                    continue;
+                }
+                if a.live_points.is_disjoint(&b.live_points) {
+                    continue;
+                }
+                let later = if rank_of(&block_rank, a.def) >= rank_of(&block_rank, b.def) {
+                    a
+                } else {
+                    b
+                };
+                faults.push(Fault::error_with_kind(
+                    MirErrorKind::OverlappingBorrows,
+                    Some(function.locals[later.local].span),
+                ));
+            }
+        }
+    }
+
+    faults
+}
+
+/// Checks `function` for a whole-place `Move` of a local while a still-live
+/// borrow of it exists (rustc's "cannot move out of x because it is
+/// borrowed") — a move conflicts with *any* live borrow of its target,
+/// mutable or shared, since it invalidates the underlying storage entirely.
+/// Returns one fault per such move.
+pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
+    let mut faults = Vec::new();
+    let Analysis {
+        points_per_block,
+        borrows,
+    } = analyze(function);
+
+    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
+    for borrow in &borrows {
+        by_place.entry(borrow.place).or_default().push(borrow);
+    }
+
+    for (block_id, points) in points_per_block.entries() {
+        for (index, point) in points.iter().enumerate() {
+            for &moved_local in &point.moves {
+                let Some(group) = by_place.get(moved_local) else {
+                    continue;
+                };
+                if group
+                    .iter()
+                    .any(|borrow| borrow.live_points.contains(&(block_id, index)))
+                {
+                    faults.push(Fault::error_with_kind(
+                        MirErrorKind::MoveWhileBorrowed,
+                        Some(function.locals[moved_local].span),
+                    ));
+                }
+            }
+        }
+    }
+
+    faults
+}
+
 struct Analysis<'a> {
     points_per_block: VecMap<BlockId, Vec<PointInfo<'a>>>,
     borrows: Vec<Borrow>,
 }
 
-/// Builds every tracked borrow in `function` — see the module's own docs
-/// for the two-computation mechanism (alias tracing, then liveness). Shared
-/// by every consumer of "what borrows exist and when are they live"; a
-/// consumer wanting cross-borrow *conflicts* (overlap, or a move while
-/// still needed) does its own pass over the result.
 fn analyze(function: &mir::Function) -> Analysis<'_> {
     let points_per_block = build_points_per_block(function);
     let predecessors = build_predecessors(function);
@@ -221,118 +173,10 @@ fn analyze(function: &mir::Function) -> Analysis<'_> {
     }
 }
 
-/// See the module's own docs.
-pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
-    let mut faults = Vec::new();
-
-    let Some((entry, _)) = function.blocks.entries().next() else {
-        return faults;
-    };
-
-    // Reverse postorder (entry-first) ranks blocks for the fault-reporting
-    // "which generation is later" tie break below. For a cyclic CFG this
-    // isn't a strict topological order any more, but it doesn't need to be
-    // — it's not load-bearing for correctness, just determinism.
-    let mut exec_order = postorder(function, entry);
-    exec_order.reverse();
-    let block_rank: VecMap<BlockId, usize> = exec_order
-        .iter()
-        .enumerate()
-        .map(|(rank, &block)| (block, rank))
-        .collect();
-
-    let Analysis { borrows, .. } = analyze(function);
-
-    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &borrows {
-        by_place.entry(borrow.place).or_default().push(borrow);
-    }
-
-    for group in by_place.values() {
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                if !(a.mutable || b.mutable) {
-                    continue; // shared vs. shared — always fine
-                }
-                if fields_disjoint(&a.projection, &b.projection) {
-                    continue;
-                }
-                if a.live_points.is_disjoint(&b.live_points) {
-                    continue;
-                }
-                let later = if rank_of(&block_rank, a.def) >= rank_of(&block_rank, b.def) {
-                    a
-                } else {
-                    b
-                };
-                faults.push(Fault::error_with_kind(
-                    MirErrorKind::OverlappingBorrows,
-                    Some(function.locals[later.local].span),
-                ));
-            }
-        }
-    }
-
-    faults
-}
-
-/// Move-vs-borrow checking: does a whole-place `Move` of some local `x`
-/// happen while a still-needed borrow of `x` is live — rustc's own "cannot
-/// move out of x because it is borrowed." Unlike `check_borrow_overlaps`'s
-/// own conflict matrix (unlimited simultaneous shared borrows are fine), a
-/// move invalidates the underlying storage entirely, so it conflicts with
-/// *any* live borrow of its target, mutable or shared — a shared borrow
-/// read after the move would also be dereferencing storage that's gone.
-/// Reuses `analyze`'s own already-computed borrows/live-points directly, no
-/// separate CFG-shape scoping needed (see the module's own docs).
-pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
-    let mut faults = Vec::new();
-    let Analysis {
-        points_per_block,
-        borrows,
-    } = analyze(function);
-
-    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &borrows {
-        by_place.entry(borrow.place).or_default().push(borrow);
-    }
-
-    for (block_id, points) in points_per_block.entries() {
-        for (index, point) in points.iter().enumerate() {
-            for &moved_local in &point.moves {
-                let Some(group) = by_place.get(moved_local) else {
-                    continue;
-                };
-                if group
-                    .iter()
-                    .any(|borrow| borrow.live_points.contains(&(block_id, index)))
-                {
-                    faults.push(Fault::error_with_kind(
-                        MirErrorKind::MoveWhileBorrowed,
-                        Some(function.locals[moved_local].span),
-                    ));
-                }
-            }
-        }
-    }
-
-    faults
-}
-
 fn rank_of(block_rank: &VecMap<BlockId, usize>, point: (BlockId, usize)) -> (usize, usize) {
     (block_rank.get(point.0).copied().unwrap_or(0), point.1)
 }
 
-/// Whether two borrows of the same root local can be proven disjoint — see
-/// the module's own "Per-field disjointness" docs. Walks both projections
-/// in lockstep: the first `Field` index they disagree on proves
-/// disjointness; either projection ending first (one is a prefix of the
-/// other) means they overlap; an `Index` step on either side (or, in
-/// principle, a `Deref` — never actually reachable here, since a borrow
-/// with one isn't tracked at all) gives up and conservatively reports "not
-/// proven disjoint," the same coarse answer this whole check gave before
-/// this slice existed.
 fn fields_disjoint(a: &[mir::PlaceElem], b: &[mir::PlaceElem]) -> bool {
     for (elem_a, elem_b) in a.iter().zip(b.iter()) {
         match (elem_a, elem_b) {
@@ -347,35 +191,15 @@ fn fields_disjoint(a: &[mir::PlaceElem], b: &[mir::PlaceElem]) -> bool {
     false
 }
 
-/// One flattened program point within its own block, in that block's own
-/// execution order.
 struct PointInfo<'a> {
-    /// A whole-place `Assign(local, rvalue)` happening at this point, if any
-    /// (a write through a projection isn't a fresh generation — see the
-    /// module's own docs, same convention `move_check`/`escape_check` use).
     assign: Option<(LocalId, &'a mir::Rvalue)>,
-    /// Every local read at this point, from the assignment's own rvalue or
-    /// (for the one point built per terminator) the terminator's operands —
-    /// `Copy` and `Move` alike (liveness doesn't care which).
     reads: Vec<LocalId>,
-    /// The subset of `reads` that are specifically a whole-place
-    /// `Operand::Move` (not `Copy`) — used only by
-    /// `check_move_while_borrowed`, which needs to distinguish a move from
-    /// an ordinary read; every other consumer of `PointInfo` only ever
-    /// wants `reads`.
     moves: Vec<LocalId>,
 }
 
 struct Borrow {
-    /// The local currently holding this borrow — used for the fault's span.
     local: LocalId,
-    /// The root local actually being borrowed.
     place: LocalId,
-    /// The field path from `place` down to what's actually borrowed (e.g.
-    /// `[Field(0)]` for `&o.a`) — never contains `Deref` (a borrow whose own
-    /// place has one isn't tracked at all, see the module's own docs).
-    /// Compared via `fields_disjoint`, not equality, when deciding whether
-    /// two borrows of the same root actually conflict.
     projection: Vec<mir::PlaceElem>,
     mutable: bool,
     def: (BlockId, usize),
@@ -407,10 +231,6 @@ fn collect_reads(rvalue: &mir::Rvalue) -> Vec<LocalId> {
     }
 }
 
-/// The whole-place local a `Move` operand consumes, if this operand is a
-/// `Move` at all (a `Copy`/`Constant` moves nothing) and its own place has
-/// no projection (whole-locals only, matching every other rule in this
-/// module) — used only by `check_move_while_borrowed`.
 fn collect_operand_moves(operand: &mir::Operand) -> Vec<LocalId> {
     match operand {
         mir::Operand::Move(place) if place.projection.is_empty() => vec![place.local],
@@ -429,8 +249,7 @@ fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
         mir::Rvalue::UnaryOp(_, operand)
         | mir::Rvalue::Cast(operand, _)
         | mir::Rvalue::HeapAlloc(_, operand, _) => collect_operand_moves(operand),
-        // Neither `Ref`'s nor `Len`'s own place is ever itself moved — a
-        // reference/measurement is inherently a borrow, not a consuming read.
+        // Neither `Ref`'s nor `Len`'s own place is ever itself moved.
         mir::Rvalue::Ref { .. } | mir::Rvalue::Len(_) => Vec::new(),
         mir::Rvalue::Aggregate(_, operands) => {
             operands.iter().flat_map(collect_operand_moves).collect()
@@ -438,9 +257,6 @@ fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
     }
 }
 
-/// Every block's own points, in execution order — same per-statement/
-/// per-reading-terminator shape the old flat `build_timeline` used, just
-/// keyed by block instead of concatenated into one global list.
 fn build_points_per_block(function: &mir::Function) -> VecMap<BlockId, Vec<PointInfo<'_>>> {
     let mut points_per_block = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
@@ -501,7 +317,7 @@ fn build_points_per_block(function: &mir::Function) -> VecMap<BlockId, Vec<Point
 fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>> {
     let mut predecessors: VecMap<BlockId, Vec<BlockId>> = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
-        for successor in successors(&block.terminator) {
+        for successor in super::successors(&block.terminator) {
             if function.blocks.get(successor).is_some() {
                 predecessors.entry(successor).or_default().push(block_id);
             }
@@ -510,8 +326,6 @@ fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>>
     predecessors
 }
 
-/// Per-block upward-exposed-use / kill summary — the standard two-level
-/// liveness technique's block-granularity input.
 struct BlockSummary {
     use_set: VecSet<LocalId>,
     def_set: VecSet<LocalId>,
@@ -533,14 +347,6 @@ fn summarize_block(points: &[PointInfo]) -> BlockSummary {
     BlockSummary { use_set, def_set }
 }
 
-/// Block-level backward liveness — a real fixed point (Kildall's worklist,
-/// the same shape `move_check`'s own loop extension uses, just run
-/// backward): a block is reprocessed whenever a *successor's* `live_in`
-/// changes (propagated by pushing that successor's own predecessors back
-/// onto the queue), and each reprocessing can only ever grow a block's own
-/// `live_in`, never shrink it — bounded by the finite number of
-/// `(block, local)` pairs, so this always terminates. See the module's own
-/// docs on why this needed to be a real fixed point, not a single pass.
 fn compute_block_liveness(
     function: &mir::Function,
     points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
@@ -557,10 +363,8 @@ fn compute_block_liveness(
     let Some((entry, _)) = function.blocks.entries().next() else {
         return live_out;
     };
-    // A good initial processing order (successors before predecessors)
-    // minimizes reprocessing but isn't load-bearing for correctness — the
-    // worklist converges to the same fixed point regardless of start order.
-    let initial_order = postorder(function, entry);
+
+    let initial_order = super::postorder(function, entry);
     let mut queued: VecSet<BlockId> = initial_order.iter().copied().collect();
     let mut queue: VecDeque<BlockId> = initial_order.into_iter().collect();
 
@@ -569,7 +373,7 @@ fn compute_block_liveness(
 
         let mut out = VecSet::new();
         if let Some(block) = function.blocks.get(block_id) {
-            for successor in successors(&block.terminator) {
+            for successor in super::successors(&block.terminator) {
                 if let Some(succ_in) = live_in.get(successor) {
                     out.extend(succ_in.entries());
                 }
@@ -625,14 +429,10 @@ fn compute_point_liveness(
     live_in
 }
 
-/// The three-state lattice `value_of`'s convergence needs — see the
-/// module's own docs on why `Unknown` (a join identity, simply skipped over
-/// rather than treated as a disagreement) has to exist as its own state,
-/// distinct from `Disagreement` (a genuinely final, settled "give up").
-/// `Value` carries the borrowed place's own field-projection alongside its
-/// root local and mutability (not just the root — see the module's own
-/// "Per-field disjointness" docs) — `Vec<PlaceElem>` isn't `Copy`, so unlike
-/// `escape_check`'s `Origin`, this only derives `Clone`.
+// The lattice `value_of`-style alias resolution converges over: `Unknown` is
+// the join identity (an in-progress cyclic reference, skipped rather than
+// treated as a disagreement); `Disagreement` is final (two different real
+// answers, or a value reaching an untracked parameter).
 #[derive(Clone, PartialEq, Eq)]
 enum Resolved {
     Unknown,
@@ -657,31 +457,17 @@ fn join_resolved(a: Resolved, b: Resolved) -> Resolved {
 
 type AliasTable = std::collections::HashMap<(LocalId, BlockId), Resolved>;
 
-/// Everything a single `converge_aliases` round's trace needs that stays
-/// fixed for its whole duration — bundled so the trace functions below
-/// (each already recursing into several of the others) don't have to carry
-/// every one of these individually as its own parameter.
 struct AliasCtx<'a> {
     points_per_block: &'a VecMap<BlockId, Vec<PointInfo<'a>>>,
     predecessors: &'a VecMap<BlockId, Vec<BlockId>>,
     previous_round: &'a AliasTable,
 }
 
-/// The mutable, per-round memoization state the trace functions thread
-/// through their recursion — see `AliasCtx` for the read-only half.
 struct AliasState<'a> {
     in_progress: &'a mut std::collections::HashSet<(LocalId, BlockId)>,
     this_round: &'a mut AliasTable,
 }
 
-/// Repeatedly classifies every generation's own alias chain against a
-/// shared, round-settled table — mirrors `escape_check`'s `converge`
-/// exactly in shape (round 0 starts every not-yet-settled pair at the
-/// lattice's own identity element, `Unknown`; a round after that falls back
-/// to the *previous* round's settled answer for any pair still "in
-/// progress" on the current round's own call stack; rounds repeat until one
-/// produces byte-for-byte the same table as the round before it), but with
-/// a different join and starting element — see the module's own docs.
 fn converge_aliases(
     points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
     predecessors: &VecMap<BlockId, Vec<BlockId>>,
@@ -695,10 +481,12 @@ fn converge_aliases(
             predecessors,
             previous_round: &previous_round,
         };
+
         let mut state = AliasState {
             in_progress: &mut in_progress,
             this_round: &mut this_round,
         };
+
         for (block_id, points) in points_per_block.entries() {
             for (index, point) in points.iter().enumerate() {
                 let Some((_, rvalue)) = point.assign else {
@@ -712,19 +500,15 @@ fn converge_aliases(
                 }
             }
         }
+
         if this_round == previous_round {
             return this_round;
         }
+
         previous_round = this_round;
     }
 }
 
-/// The value `local` holds at the *start* of `block_id`. Three-way
-/// memoization within a single round, exactly mirroring `escape_check`'s
-/// `trace_from_block_start`: a `this_round` hit is reused, an `in_progress`
-/// hit (a genuine cycle) falls back to `previous_round`'s settled answer
-/// (`Unknown` if nothing settled there yet), and only the outermost frame
-/// for a given key ever writes into `this_round`.
 fn resolve_from_block_start(
     local: LocalId,
     block_id: BlockId,
@@ -735,6 +519,7 @@ fn resolve_from_block_start(
     if let Some(settled) = state.this_round.get(&key) {
         return settled.clone();
     }
+
     if state.in_progress.contains(&key) {
         return ctx
             .previous_round
@@ -751,13 +536,6 @@ fn resolve_from_block_start(
     result
 }
 
-/// Searches `block_id`'s own points *before* `before_index`, in reverse, for
-/// a bare-local assignment to `local`. Found: classifies it (a fresh `Ref`
-/// directly, or an alias by continuing the search). Not found: forks across
-/// every predecessor (joined via `join_resolved`) or, with none at all, the
-/// function's own entry block — `local` unassigned, a parameter, not a
-/// tracked local-place borrow (`Resolved::Disagreement`, the same "settled,
-/// give up" state a genuine value mismatch produces).
 fn resolve_before_index(
     local: LocalId,
     block_id: BlockId,
@@ -780,6 +558,7 @@ fn resolve_before_index(
         .predecessors
         .get(block_id)
         .filter(|preds| !preds.is_empty());
+
     let Some(preds) = preds else {
         return Resolved::Disagreement;
     };
@@ -792,11 +571,6 @@ fn resolve_before_index(
     combined
 }
 
-/// Classifies one specific, already-known assignment's rvalue: a fresh,
-/// `Deref`-free `Rvalue::Ref` is a genuine borrow of its own `place` (root
-/// local plus field projection, kept — see the module's own "Per-field
-/// disjointness" docs); a bare-local alias continues the search via
-/// `resolve_before_index`; anything else isn't a tracked local-place borrow.
 fn classify_generation_resolved(
     rvalue: &mir::Rvalue,
     block_id: BlockId,
@@ -826,11 +600,6 @@ fn classify_generation_resolved(
     }
 }
 
-/// The generation's own final classification, read against the fully
-/// settled `converge_aliases` table. A fresh, throwaway `in_progress`/
-/// `this_round` pair is enough here — the settled table already has a
-/// direct, final answer for any block-start lookup this could reach, so no
-/// real cyclic recursion happens on this call.
 fn classify_generation(
     rvalue: &mir::Rvalue,
     block_id: BlockId,
@@ -846,11 +615,6 @@ fn classify_generation(
     classify_generation_resolved(rvalue, block_id, at_index, ctx, &mut state)
 }
 
-/// Every point forward-reachable from `(def_block, def_index)` without
-/// crossing a redefinition of `local`, restricted to points where `local`
-/// is actually still live (per the already-computed dataflow) — see the
-/// module's own docs on why a point reached via more than one branch from
-/// genuinely different generations is correct, not a bug.
 fn generation_live_points(
     local: LocalId,
     def_block: BlockId,
@@ -891,11 +655,6 @@ fn generation_live_points(
     result
 }
 
-/// The point(s) immediately following `(block_id, index)`: the next point
-/// in the same block, or — at a block's last point — the first point of
-/// each CFG-successor block, skipping transitively through any successor
-/// with no points of its own (an all-`Drop`/`Goto` scope-exit chain, the
-/// same shape `escape_check`'s backward walk falls through in reverse).
 fn point_successors(
     block_id: BlockId,
     index: usize,
@@ -912,16 +671,18 @@ fn point_successors(
     let Some(block) = function.blocks.get(block_id) else {
         return result;
     };
-    let mut stack = successors(&block.terminator);
+
+    let mut stack = super::successors(&block.terminator);
     while let Some(next) = stack.pop() {
         if visited.insert(next).is_some() {
             continue;
         }
+
         match points_per_block.get(next) {
             Some(pts) if !pts.is_empty() => result.push((next, 0)),
             _ => {
                 if let Some(next_block) = function.blocks.get(next) {
-                    stack.extend(successors(&next_block.terminator));
+                    stack.extend(super::successors(&next_block.terminator));
                 }
             }
         }

@@ -10,7 +10,7 @@ fn expression_literal_int() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -33,7 +33,7 @@ fn expression_literal_float() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -56,7 +56,7 @@ fn expression_literal_string() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -81,7 +81,7 @@ fn expression_literal_bool() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -104,7 +104,7 @@ fn expression_fstring() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -149,7 +149,7 @@ fn expression_fstring_fstr_tag() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -182,7 +182,7 @@ fn expression_fstring_multiple() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -220,7 +220,7 @@ fn expression_fstring_expression_at_start() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -252,7 +252,7 @@ fn expression_fstring_adjacent_expressions() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -290,7 +290,7 @@ fn expression_fstring_fstr_tag_with_trailing() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -322,7 +322,7 @@ fn expression_fstring_complex_expression() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
     let stmt = get_statement(&store, &module, 0);
     match &stmt.node {
@@ -398,7 +398,7 @@ fn expression_null() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

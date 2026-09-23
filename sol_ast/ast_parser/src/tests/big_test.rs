@@ -59,7 +59,7 @@ test() {
     heap := new(42)
     if true { return }
     match x {
-        1 => false 
+        1 => false
         _ => true
     }
     return 42
@@ -79,7 +79,7 @@ fn all_kinds() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let block = &store.blocks[module.global];

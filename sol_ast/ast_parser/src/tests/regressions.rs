@@ -59,7 +59,7 @@ fn assignment_as_last_block_statement_keeps_closing_brace() {
             error_count(source),
             0,
             "expected no parse errors for `{source}`: {:#?}",
-            parse(source).2.faults.faults
+            parse(source).2.faults.into_vec()
         );
         let (module, store, _) = parse(source);
         assert_eq!(
@@ -79,7 +79,7 @@ fn assignment_as_last_block_statement_keeps_closing_brace() {
         error_count(source),
         0,
         "expected no parse errors for `{source}`: {:#?}",
-        parse(source).2.faults.faults
+        parse(source).2.faults.into_vec()
     );
     let (module, store, _) = parse(source);
     assert_eq!(
@@ -102,7 +102,7 @@ fn primitive_type_receiver_method_call_parses() {
             error_count(source),
             0,
             "expected no parse errors for `{source}`: {:#?}",
-            parse(source).2.faults.faults
+            parse(source).2.faults.into_vec()
         );
         let (module, store, _) = parse(source);
         assert_eq!(
@@ -124,7 +124,7 @@ fn foreach_with_assignment_body() {
         error_count(source),
         0,
         "{:#?}",
-        parse(source).2.faults.faults
+        parse(source).2.faults.into_vec()
     );
     let (module, store, _) = parse(source);
     assert_eq!(
@@ -144,7 +144,7 @@ fn for_while_with_limit_inline() {
         error_count(source),
         0,
         "{:#?}",
-        parse(source).2.faults.faults
+        parse(source).2.faults.into_vec()
     );
     let (module, store, _) = parse(source);
     assert_eq!(
@@ -165,7 +165,7 @@ fn generic_type_in_expression_position() {
         error_count(source),
         0,
         "expected no parse errors for `{source}`: {:#?}",
-        parse(source).2.faults.faults
+        parse(source).2.faults.into_vec()
     );
     let (module, store, _) = parse(source);
     assert_eq!(
@@ -178,7 +178,7 @@ fn generic_type_in_expression_position() {
         error_count(source),
         0,
         "expected no parse errors for `{source}`: {:#?}",
-        parse(source).2.faults.faults
+        parse(source).2.faults.into_vec()
     );
     let (module, store, _) = parse(source);
     assert_eq!(

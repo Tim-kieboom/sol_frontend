@@ -16,6 +16,10 @@ use sol_utils::collections::module_store::ModuleStore;
 use crate::config;
 
 pub(crate) fn display_ast(tree: &AstTree) -> Result<()> {
+    if !config::CONFIG.print_debug_output() {
+        return Ok(());
+    }
+
     let mut output_path = config::CONFIG.output_path().join("ast");
     output_path.push("tree.solc");
 
@@ -52,6 +56,10 @@ pub(crate) fn display_mir(
     ast: &AstStore,
     declares: &DeclareStore,
 ) -> Result<()> {
+    if !config::CONFIG.print_debug_output() {
+        return Ok(());
+    }
+
     let mut output_path = config::CONFIG.output_path().join("mir");
     output_path.push("tree.solc");
 
@@ -72,6 +80,10 @@ pub(crate) fn display_mir(
 }
 
 pub(crate) fn display_tokenizer<'a>(tokens: &TokenStream<'a>, modules: &ModuleStore) -> Result<()> {
+    if !config::CONFIG.print_debug_output() {
+        return Ok(());
+    }
+
     inner_display_tokenizer(tokens, modules)
         .map_err(|err| anyhow::anyhow!("in display_tokenizer: {err}"))
 }

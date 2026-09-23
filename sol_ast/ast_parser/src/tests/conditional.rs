@@ -15,7 +15,7 @@ fn if_statement() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -56,7 +56,7 @@ fn if_else_statement() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -87,7 +87,7 @@ fn double_else_is_rejected() {
     assert!(
         context.faults.count_severity(Severity::Error) > 0,
         "expected an error for a second 'else' after 'else': {:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -119,7 +119,7 @@ fn match_statement() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -158,11 +158,10 @@ fn match_arm_missing_arrow_is_rejected() {
     assert!(
         context
             .faults
-            .faults
             .iter()
             .any(|fault| matches!(fault.kind(), crate::fault::AstErrorKind::ExpectedMatchArrow)),
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 }
 
@@ -185,7 +184,7 @@ fn return_void() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -205,7 +204,7 @@ fn return_with_value() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);
@@ -234,7 +233,7 @@ fn break_statement() {
         context.faults.count_severity(Severity::Error),
         0,
         "{:#?}",
-        context.faults.faults
+        context.faults.into_vec()
     );
 
     let stmt = get_statement(&store, &module, 0);

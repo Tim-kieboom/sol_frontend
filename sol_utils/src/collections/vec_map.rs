@@ -345,18 +345,12 @@ impl<'a, T> VacantEntry<'a, T> {
         self.slot.insert(value)
     }
 }
-impl<I: VecMapIndex, T: PartialEq> PartialEq for VecMap<I, T> {
+impl<I: VecMapIndex + PartialEq, T: PartialEq> PartialEq for VecMap<I, T> {
     fn eq(&self, other: &Self) -> bool {
-        fn index_to_usize<I: VecMapIndex, T>(tuple: (I, &T)) -> (usize, &T) {
-            (tuple.0.index(), tuple.1)
-        }
-
-        let self_iter = self.entries().map(index_to_usize);
-        let other_iter = other.entries().map(index_to_usize);
-        self_iter.eq(other_iter)
+        self.entries().eq(other.entries())
     }
 }
-impl<I: VecMapIndex, T: Eq> Eq for VecMap<I, T> {}
+impl<I: VecMapIndex + Eq, T: Eq> Eq for VecMap<I, T> {}
 impl<I: VecMapIndex + Debug, T> Index<I> for VecMap<I, T> {
     type Output = T;
 

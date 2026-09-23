@@ -82,6 +82,8 @@ fn parse_config() -> Configs {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonConfigs {
+    print_faults: bool,
+    print_debug_output: bool,
     main_path: String,
     source_path: String,
     output_path: String,
@@ -90,6 +92,8 @@ pub struct JsonConfigs {
 
 #[derive(Debug, Clone)]
 pub struct Configs {
+    print_faults: bool,
+    print_debug_output: bool,
     source_path: PathBuf,
     output_path: PathBuf,
     main_file_name: String,
@@ -98,10 +102,20 @@ pub struct Configs {
 impl Configs {
     pub fn new(json: JsonConfigs) -> Self {
         Self {
+            print_faults: json.print_faults,
+            print_debug_output: json.print_debug_output,
             main_file_name: json.main_path,
             source_path: Path::new(&json.project_path).join(json.source_path),
             output_path: Path::new(&json.project_path).join(json.output_path),
         }
+    }
+
+    pub fn print_debug_output(&self) -> bool {
+        self.print_debug_output
+    }
+
+    pub fn should_print_faults(&self) -> bool {
+        self.print_faults
     }
 
     pub fn to_main_path(&self) -> PathBuf {

@@ -649,6 +649,41 @@ that landing first, in order.
 
 ### M4 — everything else (not sequenced)
 
+- [ ] **`mir_codegen` performance audit** — a `big.sol` benchmark (14,211 lines) showed `codegen`
+      (70.55ms) taking 3x+ longer than `ast` (19.99ms), `name_resolve` (14.89ms), or `mir`
+      (19.51ms) out of a 124.94ms total. Investigated (read-only, no fix applied yet) and found the
+      likely causes, ranked by expected impact:
+  - **No caching in `llvm_type()`** (`sol_mir/mir_codegen/src/types.rs:95-165`, `stub_type` at
+    `:226`) — every call recursively re-derives the LLVM type from the `SolType`/struct fields from
+    scratch, including rebuilding a fresh `Vec<BasicTypeEnum>` and calling `context.struct_type(..)`
+    again, with no `TypeId -> BasicTypeEnum` memo anywhere on `CodegenCtx`/`ModuleCodegen`. Called
+    ~19 times across the crate, several per-statement/per-projection, so the same type gets
+    relowered thousands of times over a large file. Fix direction: cache by `TypeId` (e.g.
+    `RefCell<VecMap<TypeId, BasicTypeEnum>>`) and check it before the recursive walk.
+  - **`codegen_call` re-derives the whole callee signature per call site**
+    (`sol_mir/mir_codegen/src/terminator.rs:279-321`) instead of reusing the `FunctionType` already
+    attached to the callee's `FunctionValue` (declared once in `module.rs:87-120`). Every call
+    instruction re-walks the callee's MIR locals and re-lowers every parameter type via the
+    uncached `llvm_type` above — likely the single biggest contributor given how many call sites a
+    14k-line file has into a shared set of functions. Fix direction: use
+    `callee_value.get_type().get_param_types()` (inkwell) instead of re-deriving from MIR/Sol types.
+  - **Redundant per-operation type resolution** (`rvalue.rs:152-174` `codegen_binary`,
+    `function.rs:238-245` `local_type`, `rvalue.rs:487-494` `operand_type`) — a single binary op/
+    cast/call argument re-resolves and re-lowers the same local's type 3-4 times independently
+    (`operand_type` → `local_type` → `llvm_type`, plus `resolve_place` doing it again). Mostly
+    self-heals once the `llvm_type` cache above exists, but structurally these should resolve a
+    place's type once and thread it through.
+  - **Uncached per-occurrence string/global creation** (`terminator.rs:259-277` `location_string`,
+    `rvalue.rs:34-47` `codegen_string_constant`) — every `Assert` (bounds/overflow checks, pervasive
+    in arithmetic-heavy code) formats a fresh `file:line:col` string and adds a brand-new,
+    uniquely-named LLVM global rather than deduplicating by span/location. Lower priority than the
+    two above (constant-factor, not scaling with usage count), but a steady source of allocation +
+    LLVM name-table churn.
+  - **Missing `with_capacity`** (`function.rs:101-102`) — `locals`/`drop_flags` `VecMap`s are
+    built with `VecMap::new()` even though `function.locals.len()` is known up front; minor,
+    amortized-growth cost repeated once per function.
+  - Not yet implemented — this is a profiling lead, not a scoped task. Revisit once M2/M3 work
+    settles or codegen speed becomes a real bottleneck for a workflow.
 - [ ] Swap the runtime allocator from raw libc `malloc`/`free` to **mimalloc**, statically linked,
       as a single cross-platform default (decided via /grill-me). One allocator on every target
       rather than a per-platform choice — a Windows/Linux/macOS split was considered and rejected:

@@ -34,21 +34,18 @@ fn into_unclassified_preserves_message_severity_and_span() {
 
     let unclassified = collector.into_unclassified();
 
-    assert_eq!(unclassified.faults.len(), 2);
-    assert_eq!(
-        unclassified.faults[0].message(),
-        "something went wrong: oops"
-    );
-    assert_eq!(unclassified.faults[0].severity(), Severity::Error);
-    assert_eq!(unclassified.faults[1].message(), "a warning");
-    assert_eq!(unclassified.faults[1].severity(), Severity::Warning);
+    assert_eq!(unclassified.len(), 2);
+    assert_eq!(unclassified[0].message(), "something went wrong: oops");
+    assert_eq!(unclassified[0].severity(), Severity::Error);
+    assert_eq!(unclassified[1].message(), "a warning");
+    assert_eq!(unclassified[1].severity(), Severity::Warning);
 }
 
 #[test]
 fn into_unclassified_on_an_empty_collector_stays_empty() {
     let collector = FaultCollector::<TestErrorKind>::default();
     let unclassified = collector.into_unclassified();
-    assert!(unclassified.faults.is_empty());
+    assert!(unclassified.is_empty());
 }
 
 #[test]
@@ -60,8 +57,8 @@ fn faults_from_two_differently_typed_collectors_can_be_combined() {
     second.push_error("a plain message", None);
 
     let mut combined = first.into_unclassified();
-    combined.faults.extend(second.into_unclassified().faults);
+    combined.extent(second.into_iter());
 
-    assert_eq!(combined.faults.len(), 2);
+    assert_eq!(combined.len(), 2);
     assert_eq!(combined.count_severity(Severity::Error), 2);
 }

@@ -34,16 +34,6 @@ pub fn to_mir(
 ) -> MirProgram {
     let time = Instant::now();
 
-    // A trait's own interface method declaration (`FunctionKind::Signature`
-    // with `external: None` — the only source for that combination; the
-    // only *other* source of `FunctionKind::Signature` is an `extern "C"`
-    // declaration, always `external: Some(C)`) has nothing of its own to
-    // lower to a callable MIR shape — only its *implementations* do — so
-    // it's skipped here, before ever calling `lower_function` on it, rather
-    // than attempted and faulted on. `lower_function` itself still
-    // correctly rejects a bare signature-only call made directly (its own
-    // unit test exercises that) — this loop is what decides *whether* to
-    // ask it to lower a given function id in the first place.
     let mut lowerer = MirLowerer::new(&ast.crates.store, &mut ast.declares, options);
     for (id, kind) in ast.crates.store.functions.entries() {
         if let FunctionKind::Signature(signature) = kind
@@ -59,18 +49,6 @@ pub fn to_mir(
     benchmark.add_benchmark("mir", time.elapsed());
     let (mut functions, externs) = lowerer.into_functions_and_externs();
 
-    // Move checking and drop-elaboration (see `mir_parser::move_check`) are
-    // their own passes over already-lowered MIR, not part of lowering
-    // itself — a function that fails to lower never reaches here at all, so
-    // these only ever run on functions that already lowered successfully.
-    // `elaborate_drops` runs first: `mir_parser::function`'s own lowering
-    // always emits an unconditional `Drop` for every tracked owning local,
-    // move-unaware by design (see that module's own docs) — this is what
-    // turns some of those into a no-op once the real, whole-function
-    // dataflow proves the value might already be gone. Order relative to
-    // `check_moves` doesn't matter: `check_moves` never reads a `Drop`
-    // terminator's own shape, only `Operand`/`Assign` occurrences, which
-    // `elaborate_drops` never touches.
     for function in functions.values_mut() {
         borrow_checker::elaborate_drops(function);
     }
@@ -80,32 +58,16 @@ pub fn to_mir(
         }
     }
 
-    // Escape checking (see `mir_parser::escape_check`) — does a function
-    // return a reference to storage that doesn't outlive it, including
-    // interprocedurally (a call-graph-wide fixed point over every
-    // function's own summary — see that module's own docs). A separate
-    // concern from move-checking (aliasing vs. lifetime); `lowerer` has
-    // already been consumed above, freeing its `&mut DeclareStore` borrow,
-    // so `ast.declares` can be read here. Whole-program, not per-function,
-    // so it's a single call rather than a loop.
     for fault in borrow_checker::check_escapes(&functions, &ast.declares) {
         context.faults.push(fault);
     }
 
-    // Overlap checking (see `mir_parser::borrow_checker::overlap_check`) —
-    // do two live borrows of the same local conflict (`&mut` vs anything
-    // else). A third, separate concern from move-checking and
-    // escape-checking; doesn't need `declares` at all.
     for function in functions.values() {
         for fault in borrow_checker::check_borrow_overlaps(function) {
             context.faults.push(fault);
         }
     }
 
-    // Move-vs-borrow checking (see `check_move_while_borrowed`, the same
-    // module) — does a whole-place move happen while some still-needed
-    // borrow of that place is live. Reuses `overlap_check`'s own borrow
-    // tracking directly, so it's wired in right alongside it.
     for function in functions.values() {
         for fault in borrow_checker::check_move_while_borrowed(function) {
             context.faults.push(fault);
