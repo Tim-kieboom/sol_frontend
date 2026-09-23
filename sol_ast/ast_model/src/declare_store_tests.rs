@@ -81,10 +81,7 @@ fn well_known_type_ids_are_preinterned_by_new() {
     let declares = DeclareStore::new();
 
     assert_eq!(declares.get_type(TypeId::NONE), Some(&SolType::None));
-    assert_eq!(
-        declares.get_type(TypeId::ERROR_TYPE),
-        Some(&SolType::Error)
-    );
+    assert_eq!(declares.get_type(TypeId::ERROR_TYPE), Some(&SolType::Error));
     assert_eq!(
         declares.get_type(TypeId::PRIM_INT),
         Some(&SolType::Primitive(PrimitiveTypes::Int))

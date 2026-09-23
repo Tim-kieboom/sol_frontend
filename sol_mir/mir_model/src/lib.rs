@@ -261,10 +261,20 @@ pub enum Terminator {
         /// `None` = diverges (panics, or return type is `!`).
         target: Option<BlockId>,
     },
-    /// `Drop`'s scope-exit call, gated at runtime by the local's drop flag.
+    /// `Drop`'s scope-exit call. `mir_parser::function` always lowers this
+    /// with `guarded: false`; `move_check::elaborate_drops` is what decides
+    /// the real per-site answer afterward (see that pass's own docs): prune
+    /// to a no-op `Goto` when the local is definitely moved by this point on
+    /// every path, leave `guarded: false` when it's definitely *not* moved on
+    /// any path (the common case — codegen emits an unconditional drop, no
+    /// runtime check), or set `guarded: true` when neither is provable (moved
+    /// on some but not all paths) — codegen then gates the actual drop glue
+    /// on the local's own runtime drop flag (`SetDropFlag`) instead of
+    /// running it unconditionally.
     Drop {
         place: Place,
         target: BlockId,
+        guarded: bool,
     },
     /// `assert(cond)` / `panic(msg)`. Mirrors rustc's `Assert` terminator
     /// (minus `unwind`, since this compiler has no unwinding model): if

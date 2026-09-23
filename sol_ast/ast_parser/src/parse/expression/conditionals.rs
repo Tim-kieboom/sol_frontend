@@ -14,9 +14,7 @@ use ast_model::{
     NamedTupleMatchPattern, Statement, TupleMatchPattern,
 };
 use sol_tokenizer::model::{TokenKind, keyword::KeyWord};
-use sol_utils::{
-    Ident, TypeModifier, collections::try_result::ToResult, fault::Fault, span::Span,
-};
+use sol_utils::{Ident, TypeModifier, collections::try_result::ToResult, fault::Fault, span::Span};
 
 impl<'a, 'f> Parser<'a, 'f> {
     pub(crate) fn parse_if(&mut self) -> Result<Expression, crate::fault::AstFault> {

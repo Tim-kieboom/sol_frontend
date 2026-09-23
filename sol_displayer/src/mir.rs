@@ -315,8 +315,12 @@ impl<'a, W: Writer> Displayer<'a, W> {
                     None => self.push_str(" -> !")?,
                 }
             }
-            Terminator::Drop { place, target } => {
-                self.push_str("Drop:(")?;
+            Terminator::Drop {
+                place,
+                target,
+                guarded,
+            } => {
+                self.push_str(if *guarded { "Drop?:(" } else { "Drop:(" })?;
                 self.write_place(place)?;
                 push_fmt!(self, ") -> {}", block_str(*target))?;
             }

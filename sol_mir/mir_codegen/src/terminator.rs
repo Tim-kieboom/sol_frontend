@@ -61,11 +61,19 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
             // an owning `*T` is the only type with drop glue so far
             // (`codegen_drop` frees it; every other type is still a pure
             // scope-exit marker with no runtime effect).
-            Terminator::Drop { place, target } => {
-                self.codegen_drop(place)?;
-                self.builder
-                    .build_unconditional_branch(self.blocks[*target])
-                    .map_err(llvm_err)?;
+            Terminator::Drop {
+                place,
+                target,
+                guarded,
+            } => {
+                if *guarded {
+                    self.codegen_guarded_drop(place, *target)?;
+                } else {
+                    self.codegen_drop(place)?;
+                    self.builder
+                        .build_unconditional_branch(self.blocks[*target])
+                        .map_err(llvm_err)?;
+                }
             }
         }
         Ok(())
@@ -95,6 +103,52 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
         self.builder
             .build_call(free_fn, &[value.into()], "free_call")
             .map_err(llvm_err)?;
+        Ok(())
+    }
+
+    /// A `Drop` `move_check::elaborate_drops` couldn't statically settle
+    /// either way (moved on some but not all paths) — runs `codegen_drop`
+    /// behind a runtime check of the local's own drop flag instead of
+    /// unconditionally. `self.drop_flags` only holds an entry for a `*T`
+    /// local (the only type `codegen_drop` itself does anything for, per its
+    /// own docs); a `guarded` `Drop` for anything else falls back to the
+    /// plain unconditional path, since there's no flag to check and
+    /// `codegen_drop` is a no-op for it either way.
+    fn codegen_guarded_drop(&mut self, place: &Place, target: BlockId) -> CodegenResult<()> {
+        let Some(&flag_ptr) = self.drop_flags.get(place.local) else {
+            self.codegen_drop(place)?;
+            self.builder
+                .build_unconditional_branch(self.blocks[target])
+                .map_err(llvm_err)?;
+            return Ok(());
+        };
+
+        let bool_ty = self.ctx.context.bool_type();
+        let flag_value = self
+            .builder
+            .build_load(bool_ty, flag_ptr, "drop_flag")
+            .map_err(llvm_err)?;
+
+        let current_block = self.builder.get_insert_block().unwrap();
+        let do_drop_block = self
+            .ctx
+            .context
+            .insert_basic_block_after(current_block, "drop_guarded");
+
+        self.builder
+            .build_conditional_branch(
+                flag_value.into_int_value(),
+                do_drop_block,
+                self.blocks[target],
+            )
+            .map_err(llvm_err)?;
+
+        self.builder.position_at_end(do_drop_block);
+        self.codegen_drop(place)?;
+        self.builder
+            .build_unconditional_branch(self.blocks[target])
+            .map_err(llvm_err)?;
+
         Ok(())
     }
 

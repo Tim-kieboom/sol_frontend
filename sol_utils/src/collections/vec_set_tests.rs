@@ -58,6 +58,53 @@ fn test_vecset_index() {
 }
 
 #[test]
+fn test_vecset_extend() {
+    let mut set: TestSet = TestSet::new();
+    set.insert(TestIndex(0));
+    set.extend(vec![TestIndex(1), TestIndex(2)].into_iter());
+
+    assert_eq!(set.entries().count(), 3);
+    assert!(set.contains(TestIndex(0)));
+    assert!(set.contains(TestIndex(1)));
+    assert!(set.contains(TestIndex(2)));
+}
+
+#[test]
+fn test_vecset_extend_empty() {
+    let mut set: TestSet = TestSet::new();
+    set.extend(vec![].into_iter());
+    assert_eq!(set.entries().count(), 0);
+}
+
+#[test]
+fn test_vecset_intersection() {
+    let set1 = TestSet::from_vec(vec![TestIndex(0), TestIndex(1), TestIndex(2)]);
+    let set2 = TestSet::from_vec(vec![TestIndex(1), TestIndex(2), TestIndex(3)]);
+
+    let mut intersection: Vec<_> = set1.intersection(&set2).collect();
+    intersection.sort_by_key(|i| i.index());
+
+    assert_eq!(intersection, vec![TestIndex(1), TestIndex(2)]);
+}
+
+#[test]
+fn test_vecset_intersection_disjoint() {
+    let set1 = TestSet::from_vec(vec![TestIndex(0), TestIndex(1)]);
+    let set2 = TestSet::from_vec(vec![TestIndex(2), TestIndex(3)]);
+
+    assert_eq!(set1.intersection(&set2).count(), 0);
+}
+
+#[test]
+fn test_vecset_intersection_empty() {
+    let set1: TestSet = TestSet::new();
+    let set2 = TestSet::from_vec(vec![TestIndex(0)]);
+
+    assert_eq!(set1.intersection(&set2).count(), 0);
+    assert_eq!(set2.intersection(&set1).count(), 0);
+}
+
+#[test]
 fn test_vecset_serde() {
     let map = TestSet::from_vec(vec![(TestIndex(0)), (TestIndex(1)), (TestIndex(10))]);
     let json = serde_json::to_value(&map).unwrap();

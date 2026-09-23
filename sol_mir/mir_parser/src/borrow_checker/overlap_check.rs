@@ -58,6 +58,7 @@
 //!        slice).
 //!      - An intra-block backward scan, seeded by each block's own
 //!        `live_out`, produces the exact per-point `live_in` set used below.
+//!
 //!    A specific generation's own live-point set is then a forward walk from
 //!    its definition, following real point-level successor edges (an
 //!    ordinary CFG walk, no fixed point needed for a DAG), stopping down any
@@ -143,10 +144,13 @@
 //! place sharing its root — so a move of `o` already, correctly, conflicts
 //! with a borrow of any of `o`'s individual fields.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use mir_model::{self as mir, BlockId, LocalId};
-use sol_utils::fault::Fault;
+use sol_utils::{
+    collections::{vec_map::VecMap, vec_set::VecSet},
+    fault::Fault,
+};
 
 use crate::fault::{MirErrorKind, MirFault};
 
@@ -158,7 +162,7 @@ use super::move_check::{postorder, successors};
 /// `check_move_while_borrowed` needs the latter to find where a whole-place
 /// `Move` actually occurs, something `Borrow` itself doesn't carry.
 struct Analysis<'a> {
-    points_per_block: HashMap<BlockId, Vec<PointInfo<'a>>>,
+    points_per_block: VecMap<BlockId, Vec<PointInfo<'a>>>,
     borrows: Vec<Borrow>,
 }
 
@@ -174,21 +178,21 @@ fn analyze(function: &mir::Function) -> Analysis<'_> {
     let block_live_out = compute_block_liveness(function, &points_per_block, &predecessors);
     let point_live_in = compute_point_liveness(&points_per_block, &block_live_out);
     let settled_aliases = converge_aliases(&points_per_block, &predecessors);
+    let alias_ctx = AliasCtx {
+        points_per_block: &points_per_block,
+        predecessors: &predecessors,
+        previous_round: &settled_aliases,
+    };
 
     let mut borrows: Vec<Borrow> = Vec::new();
-    for (&block_id, points) in &points_per_block {
+    for (block_id, points) in points_per_block.entries() {
         for (index, point) in points.iter().enumerate() {
             let Some((local, rvalue)) = point.assign else {
                 continue;
             };
-            let Resolved::Value(place, projection, mutable) = classify_generation(
-                rvalue,
-                block_id,
-                index,
-                &points_per_block,
-                &predecessors,
-                &settled_aliases,
-            ) else {
+            let Resolved::Value(place, projection, mutable) =
+                classify_generation(rvalue, block_id, index, &alias_ctx)
+            else {
                 continue;
             };
             let mut live_points = generation_live_points(
@@ -231,7 +235,7 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
     // — it's not load-bearing for correctness, just determinism.
     let mut exec_order = postorder(function, entry);
     exec_order.reverse();
-    let block_rank: HashMap<BlockId, usize> = exec_order
+    let block_rank: VecMap<BlockId, usize> = exec_order
         .iter()
         .enumerate()
         .map(|(rank, &block)| (block, rank))
@@ -239,7 +243,7 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
 
     let Analysis { borrows, .. } = analyze(function);
 
-    let mut by_place: HashMap<LocalId, Vec<&Borrow>> = HashMap::new();
+    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
     for borrow in &borrows {
         by_place.entry(borrow.place).or_default().push(borrow);
     }
@@ -289,15 +293,15 @@ pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
         borrows,
     } = analyze(function);
 
-    let mut by_place: HashMap<LocalId, Vec<&Borrow>> = HashMap::new();
+    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
     for borrow in &borrows {
         by_place.entry(borrow.place).or_default().push(borrow);
     }
 
-    for (&block_id, points) in &points_per_block {
+    for (block_id, points) in points_per_block.entries() {
         for (index, point) in points.iter().enumerate() {
             for &moved_local in &point.moves {
-                let Some(group) = by_place.get(&moved_local) else {
+                let Some(group) = by_place.get(moved_local) else {
                     continue;
                 };
                 if group
@@ -316,8 +320,8 @@ pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
     faults
 }
 
-fn rank_of(block_rank: &HashMap<BlockId, usize>, point: (BlockId, usize)) -> (usize, usize) {
-    (block_rank.get(&point.0).copied().unwrap_or(0), point.1)
+fn rank_of(block_rank: &VecMap<BlockId, usize>, point: (BlockId, usize)) -> (usize, usize) {
+    (block_rank.get(point.0).copied().unwrap_or(0), point.1)
 }
 
 /// Whether two borrows of the same root local can be proven disjoint — see
@@ -375,7 +379,7 @@ struct Borrow {
     projection: Vec<mir::PlaceElem>,
     mutable: bool,
     def: (BlockId, usize),
-    live_points: HashSet<(BlockId, usize)>,
+    live_points: std::collections::HashSet<(BlockId, usize)>,
 }
 
 fn collect_operand_reads(operand: &mir::Operand) -> Vec<LocalId> {
@@ -437,8 +441,8 @@ fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
 /// Every block's own points, in execution order — same per-statement/
 /// per-reading-terminator shape the old flat `build_timeline` used, just
 /// keyed by block instead of concatenated into one global list.
-fn build_points_per_block(function: &mir::Function) -> HashMap<BlockId, Vec<PointInfo<'_>>> {
-    let mut points_per_block = HashMap::new();
+fn build_points_per_block(function: &mir::Function) -> VecMap<BlockId, Vec<PointInfo<'_>>> {
+    let mut points_per_block = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
         let mut points = Vec::new();
         for statement in &block.statements {
@@ -494,8 +498,8 @@ fn build_points_per_block(function: &mir::Function) -> HashMap<BlockId, Vec<Poin
     points_per_block
 }
 
-fn build_predecessors(function: &mir::Function) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>> {
+    let mut predecessors: VecMap<BlockId, Vec<BlockId>> = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
         for successor in successors(&block.terminator) {
             if function.blocks.get(successor).is_some() {
@@ -509,16 +513,16 @@ fn build_predecessors(function: &mir::Function) -> HashMap<BlockId, Vec<BlockId>
 /// Per-block upward-exposed-use / kill summary — the standard two-level
 /// liveness technique's block-granularity input.
 struct BlockSummary {
-    use_set: HashSet<LocalId>,
-    def_set: HashSet<LocalId>,
+    use_set: VecSet<LocalId>,
+    def_set: VecSet<LocalId>,
 }
 
 fn summarize_block(points: &[PointInfo]) -> BlockSummary {
-    let mut use_set = HashSet::new();
-    let mut def_set = HashSet::new();
+    let mut use_set = VecSet::new();
+    let mut def_set = VecSet::new();
     for point in points {
         for &read in &point.reads {
-            if !def_set.contains(&read) {
+            if !def_set.contains(read) {
                 use_set.insert(read);
             }
         }
@@ -539,16 +543,16 @@ fn summarize_block(points: &[PointInfo]) -> BlockSummary {
 /// docs on why this needed to be a real fixed point, not a single pass.
 fn compute_block_liveness(
     function: &mir::Function,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-) -> HashMap<BlockId, HashSet<LocalId>> {
-    let summaries: HashMap<BlockId, BlockSummary> = points_per_block
-        .iter()
-        .map(|(&block_id, points)| (block_id, summarize_block(points)))
+    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
+    predecessors: &VecMap<BlockId, Vec<BlockId>>,
+) -> VecMap<BlockId, VecSet<LocalId>> {
+    let summaries: VecMap<BlockId, BlockSummary> = points_per_block
+        .entries()
+        .map(|(block_id, points)| (block_id, summarize_block(points)))
         .collect();
 
-    let mut live_in: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
-    let mut live_out: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+    let mut live_in: VecMap<BlockId, VecSet<LocalId>> = VecMap::new();
+    let mut live_out: VecMap<BlockId, VecSet<LocalId>> = VecMap::new();
 
     let Some((entry, _)) = function.blocks.entries().next() else {
         return live_out;
@@ -557,39 +561,39 @@ fn compute_block_liveness(
     // minimizes reprocessing but isn't load-bearing for correctness — the
     // worklist converges to the same fixed point regardless of start order.
     let initial_order = postorder(function, entry);
-    let mut queued: HashSet<BlockId> = initial_order.iter().copied().collect();
+    let mut queued: VecSet<BlockId> = initial_order.iter().copied().collect();
     let mut queue: VecDeque<BlockId> = initial_order.into_iter().collect();
 
     while let Some(block_id) = queue.pop_front() {
-        queued.remove(&block_id);
+        queued.remove(block_id);
 
-        let mut out = HashSet::new();
+        let mut out = VecSet::new();
         if let Some(block) = function.blocks.get(block_id) {
             for successor in successors(&block.terminator) {
-                if let Some(succ_in) = live_in.get(&successor) {
-                    out.extend(succ_in.iter().copied());
+                if let Some(succ_in) = live_in.get(successor) {
+                    out.extend(succ_in.entries());
                 }
             }
         }
 
-        let Some(summary) = summaries.get(&block_id) else {
+        let Some(summary) = summaries.get(block_id) else {
             continue;
         };
         let mut inn = out.clone();
-        for def in &summary.def_set {
+        for def in summary.def_set.entries() {
             inn.remove(def);
         }
-        inn.extend(summary.use_set.iter().copied());
+        inn.extend(summary.use_set.entries());
 
-        let changed = match live_in.get(&block_id) {
+        let changed = match live_in.get(block_id) {
             Some(existing) => *existing != inn,
             None => true,
         };
         live_out.insert(block_id, out);
         if changed {
             live_in.insert(block_id, inn);
-            for &pred in predecessors.get(&block_id).into_iter().flatten() {
-                if queued.insert(pred) {
+            for &pred in predecessors.get(block_id).into_iter().flatten() {
+                if queued.insert(pred).is_none() {
                     queue.push_back(pred);
                 }
             }
@@ -600,16 +604,16 @@ fn compute_block_liveness(
 }
 
 fn compute_point_liveness(
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    block_live_out: &HashMap<BlockId, HashSet<LocalId>>,
-) -> HashMap<(BlockId, usize), HashSet<LocalId>> {
-    let mut live_in = HashMap::new();
-    for (&block_id, points) in points_per_block {
-        let mut live_out = block_live_out.get(&block_id).cloned().unwrap_or_default();
+    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
+    block_live_out: &VecMap<BlockId, VecSet<LocalId>>,
+) -> std::collections::HashMap<(BlockId, usize), VecSet<LocalId>> {
+    let mut live_in = std::collections::HashMap::new();
+    for (block_id, points) in points_per_block.entries() {
+        let mut live_out = block_live_out.get(block_id).cloned().unwrap_or_default();
         for index in (0..points.len()).rev() {
             let mut current = live_out.clone();
             if let Some((local, _)) = points[index].assign {
-                current.remove(&local);
+                current.remove(local);
             }
             for &read in &points[index].reads {
                 current.insert(read);
@@ -642,12 +646,33 @@ fn join_resolved(a: Resolved, b: Resolved) -> Resolved {
         (_, Resolved::Unknown) => a,
         (Resolved::Disagreement, _) | (_, Resolved::Disagreement) => Resolved::Disagreement,
         (Resolved::Value(..), Resolved::Value(..)) => {
-            if a == b { a } else { Resolved::Disagreement }
+            if a == b {
+                a
+            } else {
+                Resolved::Disagreement
+            }
         }
     }
 }
 
-type AliasTable = HashMap<(LocalId, BlockId), Resolved>;
+type AliasTable = std::collections::HashMap<(LocalId, BlockId), Resolved>;
+
+/// Everything a single `converge_aliases` round's trace needs that stays
+/// fixed for its whole duration — bundled so the trace functions below
+/// (each already recursing into several of the others) don't have to carry
+/// every one of these individually as its own parameter.
+struct AliasCtx<'a> {
+    points_per_block: &'a VecMap<BlockId, Vec<PointInfo<'a>>>,
+    predecessors: &'a VecMap<BlockId, Vec<BlockId>>,
+    previous_round: &'a AliasTable,
+}
+
+/// The mutable, per-round memoization state the trace functions thread
+/// through their recursion — see `AliasCtx` for the read-only half.
+struct AliasState<'a> {
+    in_progress: &'a mut std::collections::HashSet<(LocalId, BlockId)>,
+    this_round: &'a mut AliasTable,
+}
 
 /// Repeatedly classifies every generation's own alias chain against a
 /// shared, round-settled table — mirrors `escape_check`'s `converge`
@@ -658,14 +683,23 @@ type AliasTable = HashMap<(LocalId, BlockId), Resolved>;
 /// produces byte-for-byte the same table as the round before it), but with
 /// a different join and starting element — see the module's own docs.
 fn converge_aliases(
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
+    predecessors: &VecMap<BlockId, Vec<BlockId>>,
 ) -> AliasTable {
-    let mut previous_round: AliasTable = HashMap::new();
+    let mut previous_round = AliasTable::new();
     loop {
-        let mut this_round: AliasTable = HashMap::new();
-        let mut in_progress: HashSet<(LocalId, BlockId)> = HashSet::new();
-        for (&block_id, points) in points_per_block {
+        let mut this_round = AliasTable::new();
+        let mut in_progress = std::collections::HashSet::new();
+        let ctx = AliasCtx {
+            points_per_block,
+            predecessors,
+            previous_round: &previous_round,
+        };
+        let mut state = AliasState {
+            in_progress: &mut in_progress,
+            this_round: &mut this_round,
+        };
+        for (block_id, points) in points_per_block.entries() {
             for (index, point) in points.iter().enumerate() {
                 let Some((_, rvalue)) = point.assign else {
                     continue;
@@ -674,16 +708,7 @@ fn converge_aliases(
                     rvalue
                     && place.projection.is_empty()
                 {
-                    resolve_before_index(
-                        place.local,
-                        block_id,
-                        index,
-                        points_per_block,
-                        predecessors,
-                        &previous_round,
-                        &mut in_progress,
-                        &mut this_round,
-                    );
+                    resolve_before_index(place.local, block_id, index, &ctx, &mut state);
                 }
             }
         }
@@ -703,37 +728,26 @@ fn converge_aliases(
 fn resolve_from_block_start(
     local: LocalId,
     block_id: BlockId,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    previous_round: &AliasTable,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut AliasTable,
+    ctx: &AliasCtx,
+    state: &mut AliasState,
 ) -> Resolved {
     let key = (local, block_id);
-    if let Some(settled) = this_round.get(&key) {
+    if let Some(settled) = state.this_round.get(&key) {
         return settled.clone();
     }
-    if in_progress.contains(&key) {
-        return previous_round
+    if state.in_progress.contains(&key) {
+        return ctx
+            .previous_round
             .get(&key)
             .cloned()
             .unwrap_or(Resolved::Unknown);
     }
 
-    in_progress.insert(key);
-    let statement_count = points_per_block[&block_id].len();
-    let result = resolve_before_index(
-        local,
-        block_id,
-        statement_count,
-        points_per_block,
-        predecessors,
-        previous_round,
-        in_progress,
-        this_round,
-    );
-    in_progress.remove(&key);
-    this_round.insert(key, result.clone());
+    state.in_progress.insert(key);
+    let statement_count = ctx.points_per_block[block_id].len();
+    let result = resolve_before_index(local, block_id, statement_count, ctx, state);
+    state.in_progress.remove(&key);
+    state.this_round.insert(key, result.clone());
     result
 }
 
@@ -748,13 +762,10 @@ fn resolve_before_index(
     local: LocalId,
     block_id: BlockId,
     before_index: usize,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    previous_round: &AliasTable,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut AliasTable,
+    ctx: &AliasCtx,
+    state: &mut AliasState,
 ) -> Resolved {
-    let points = &points_per_block[&block_id];
+    let points = &ctx.points_per_block[block_id];
     for index in (0..before_index).rev() {
         let Some((assigned_local, rvalue)) = points[index].assign else {
             continue;
@@ -762,34 +773,20 @@ fn resolve_before_index(
         if assigned_local != local {
             continue;
         }
-        return classify_generation_resolved(
-            rvalue,
-            block_id,
-            index,
-            points_per_block,
-            predecessors,
-            previous_round,
-            in_progress,
-            this_round,
-        );
+        return classify_generation_resolved(rvalue, block_id, index, ctx, state);
     }
 
-    let preds = predecessors.get(&block_id).filter(|preds| !preds.is_empty());
+    let preds = ctx
+        .predecessors
+        .get(block_id)
+        .filter(|preds| !preds.is_empty());
     let Some(preds) = preds else {
         return Resolved::Disagreement;
     };
 
     let mut combined = Resolved::Unknown;
     for &pred in preds {
-        let pred_value = resolve_from_block_start(
-            local,
-            pred,
-            points_per_block,
-            predecessors,
-            previous_round,
-            in_progress,
-            this_round,
-        );
+        let pred_value = resolve_from_block_start(local, pred, ctx, state);
         combined = join_resolved(combined, pred_value);
     }
     combined
@@ -804,27 +801,15 @@ fn classify_generation_resolved(
     rvalue: &mir::Rvalue,
     block_id: BlockId,
     at_index: usize,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    previous_round: &AliasTable,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut AliasTable,
+    ctx: &AliasCtx,
+    state: &mut AliasState,
 ) -> Resolved {
     match rvalue {
         mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
             if !place.projection.is_empty() {
                 return Resolved::Disagreement;
             }
-            resolve_before_index(
-                place.local,
-                block_id,
-                at_index,
-                points_per_block,
-                predecessors,
-                previous_round,
-                in_progress,
-                this_round,
-            )
+            resolve_before_index(place.local, block_id, at_index, ctx, state)
         }
         mir::Rvalue::Ref { place, mutable } => {
             let has_deref = place
@@ -850,22 +835,15 @@ fn classify_generation(
     rvalue: &mir::Rvalue,
     block_id: BlockId,
     at_index: usize,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    settled: &AliasTable,
+    ctx: &AliasCtx,
 ) -> Resolved {
-    let mut in_progress = HashSet::new();
+    let mut in_progress = std::collections::HashSet::new();
     let mut scratch = AliasTable::new();
-    classify_generation_resolved(
-        rvalue,
-        block_id,
-        at_index,
-        points_per_block,
-        predecessors,
-        settled,
-        &mut in_progress,
-        &mut scratch,
-    )
+    let mut state = AliasState {
+        in_progress: &mut in_progress,
+        this_round: &mut scratch,
+    };
+    classify_generation_resolved(rvalue, block_id, at_index, ctx, &mut state)
 }
 
 /// Every point forward-reachable from `(def_block, def_index)` without
@@ -878,11 +856,11 @@ fn generation_live_points(
     def_block: BlockId,
     def_index: usize,
     function: &mir::Function,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
-    point_live_in: &HashMap<(BlockId, usize), HashSet<LocalId>>,
-) -> HashSet<(BlockId, usize)> {
-    let mut result = HashSet::new();
-    let mut visited = HashSet::new();
+    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
+    point_live_in: &std::collections::HashMap<(BlockId, usize), VecSet<LocalId>>,
+) -> std::collections::HashSet<(BlockId, usize)> {
+    let mut result = std::collections::HashSet::new();
+    let mut visited = std::collections::HashSet::new();
     let mut stack = point_successors(def_block, def_index, function, points_per_block);
 
     while let Some((block_id, index)) = stack.pop() {
@@ -892,16 +870,21 @@ fn generation_live_points(
         let Some(live) = point_live_in.get(&(block_id, index)) else {
             continue;
         };
-        if !live.contains(&local) {
+        if !live.contains(local) {
             continue;
         }
         result.insert((block_id, index));
 
-        let redefines = points_per_block[&block_id][index]
+        let redefines = points_per_block[block_id][index]
             .assign
             .is_some_and(|(assigned, _)| assigned == local);
         if !redefines {
-            stack.extend(point_successors(block_id, index, function, points_per_block));
+            stack.extend(point_successors(
+                block_id,
+                index,
+                function,
+                points_per_block,
+            ));
         }
     }
 
@@ -917,24 +900,24 @@ fn point_successors(
     block_id: BlockId,
     index: usize,
     function: &mir::Function,
-    points_per_block: &HashMap<BlockId, Vec<PointInfo<'_>>>,
+    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
 ) -> Vec<(BlockId, usize)> {
-    let points = &points_per_block[&block_id];
+    let points = &points_per_block[block_id];
     if index + 1 < points.len() {
         return vec![(block_id, index + 1)];
     }
 
     let mut result = Vec::new();
-    let mut visited = HashSet::new();
+    let mut visited = VecSet::new();
     let Some(block) = function.blocks.get(block_id) else {
         return result;
     };
     let mut stack = successors(&block.terminator);
     while let Some(next) = stack.pop() {
-        if !visited.insert(next) {
+        if visited.insert(next).is_some() {
             continue;
         }
-        match points_per_block.get(&next) {
+        match points_per_block.get(next) {
             Some(pts) if !pts.is_empty() => result.push((next, 0)),
             _ => {
                 if let Some(next_block) = function.blocks.get(next) {

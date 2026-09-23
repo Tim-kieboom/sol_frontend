@@ -128,9 +128,7 @@ impl<'a> NameResolver<'a> {
         let is_varargs_literal = array
             .collection_type
             .and_then(|id| self.declares.get_type(id))
-            .is_some_and(
-                |ty| matches!(ty, SolType::Stub(stub) if stub.name.as_ref() == "varargs"),
-            );
+            .is_some_and(|ty| matches!(ty, SolType::Stub(stub) if stub.name.as_ref() == "varargs"));
         if !is_varargs_literal {
             self.log_error(AstErrorKind::VarargsArgumentRequired, span);
             return;

@@ -543,10 +543,10 @@ impl Statement {
     pub fn try_set_async(&mut self, store: &mut AstStore, span: Span) -> SolResult<()> {
         match &mut self.node {
             StatementKind::Function(id) | StatementKind::ExternalFunction(id) => {
-                let kind = store.functions.get_mut(*id).ok_or(sol_error_internal!(
-                    format!("{id:?} not found"),
-                    Some(span)
-                ))?;
+                let kind = store
+                    .functions
+                    .get_mut(*id)
+                    .ok_or(sol_error_internal!(format!("{id:?} not found"), Some(span)))?;
                 kind.signature_mut().modifier |= FunctionModifier::ASYNC;
                 Ok(())
             }
@@ -571,10 +571,10 @@ impl Statement {
             | StatementKind::Union(_) => self.is_public = is_public,
 
             StatementKind::Function(id) | StatementKind::ExternalFunction(id) => {
-                let kind = store.functions.get_mut(*id).ok_or(sol_error_internal!(
-                    format!("{id:?} not found"),
-                    Some(span)
-                ))?;
+                let kind = store
+                    .functions
+                    .get_mut(*id)
+                    .ok_or(sol_error_internal!(format!("{id:?} not found"), Some(span)))?;
                 kind.signature_mut().modifier |= FunctionModifier::PUBLIC;
                 self.is_public = is_public;
             }

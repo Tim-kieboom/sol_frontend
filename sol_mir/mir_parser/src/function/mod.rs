@@ -384,6 +384,7 @@ impl<'a> FunctionLowerer<'a> {
                 mir::Terminator::Drop {
                     place: mir::Place::local(local),
                     target: next,
+                    guarded: false,
                 },
                 Some(next),
             );

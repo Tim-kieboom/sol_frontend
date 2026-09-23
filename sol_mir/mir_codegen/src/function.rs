@@ -39,6 +39,13 @@ pub(crate) struct FunctionCodegen<'ctx, 'a> {
     pub(crate) function: &'a Function,
     pub(crate) is_entry_point: bool,
     pub(crate) locals: VecMap<LocalId, PointerValue<'ctx>>,
+    /// Runtime drop-flag storage — only for a local whose type is `*T`
+    /// (`codegen_drop`'s only real, non-no-op case), and only ever *read* by
+    /// a `guarded` `Terminator::Drop` (see `move_check::elaborate_drops`'s
+    /// docs for when that happens). Absent for every other local: a struct/
+    /// array's own `Drop` is a no-op regardless of this flag's value, so
+    /// there's nothing worth tracking for it here.
+    pub(crate) drop_flags: VecMap<LocalId, PointerValue<'ctx>>,
     pub(crate) blocks: VecMap<BlockId, LlvmBlock<'ctx>>,
     pub(crate) function_values: &'a VecMap<FunctionId, FunctionValue<'ctx>>,
     pub(crate) functions: &'a VecMap<FunctionId, Function>,
@@ -68,14 +75,33 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
         builder.position_at_end(entry);
 
         let mut locals: VecMap<LocalId, PointerValue<'ctx>> = VecMap::new();
+        let mut drop_flags: VecMap<LocalId, PointerValue<'ctx>> = VecMap::new();
+        let bool_ty = self.ctx.context.bool_type();
         for (local_id, decl) in function.locals.entries() {
-            let ty = self
-                .ctx
-                .llvm_type(module, self.ctx.resolve_type(decl.ty), Some(decl.span))?;
+            let resolved_ty = self.ctx.resolve_type(decl.ty);
+            let ty = self.ctx.llvm_type(module, resolved_ty, Some(decl.span))?;
             let slot = builder
                 .build_alloca(ty, &format!("_{}", local_id.index()))
                 .map_err(llvm_err)?;
             locals.insert(local_id, slot);
+
+            // Seeded `true` ("currently owns a live value") right away: a
+            // body local's own first `SetDropFlag(local, true)` (emitted
+            // alongside its initializing `Assign`) overwrites this before any
+            // `Drop` of it can run, but an owning *parameter* never gets an
+            // explicit `SetDropFlag` at all (`push_assign` is never called
+            // for parameter binding) — this is what makes a guarded `Drop` of
+            // an untouched owning parameter still see a correct, defined
+            // flag value rather than uninitialized alloca contents.
+            if matches!(resolved_ty, SolType::Pointer(_)) {
+                let flag_ptr = builder
+                    .build_alloca(bool_ty, &format!("_{}_drop_flag", local_id.index()))
+                    .map_err(llvm_err)?;
+                builder
+                    .build_store(flag_ptr, bool_ty.const_int(1, false))
+                    .map_err(llvm_err)?;
+                drop_flags.insert(local_id, flag_ptr);
+            }
         }
 
         // Params are `locals[0..arg_count]` *by position*: the actual
@@ -133,6 +159,7 @@ impl<'ctx, 'a> ModuleCodegen<'ctx, 'a> {
             function,
             is_entry_point: name == "main",
             locals,
+            drop_flags,
             blocks,
         };
 
@@ -165,11 +192,22 @@ impl<'ctx, 'a> FunctionCodegen<'ctx, 'a> {
                 self.builder.build_store(ptr, value).map_err(llvm_err)?;
                 Ok(())
             }
-            // Move/drop tracking has no runtime effect yet (see
-            // `docs/mir-design.md`) — nothing to codegen for these until it does.
-            Statement::MarkMoved(_) | Statement::SetDropFlag(..) | Statement::StorageDead(_) => {
+            Statement::SetDropFlag(local, value) => {
+                // Only a `*T` local has flag storage at all (see
+                // `drop_flags`'s own docs) — a struct/array local still gets
+                // this statement emitted (the lowerer doesn't distinguish by
+                // type), but there's no flag to update for it.
+                if let Some(&flag_ptr) = self.drop_flags.get(*local) {
+                    let bool_ty = self.ctx.context.bool_type();
+                    self.builder
+                        .build_store(flag_ptr, bool_ty.const_int(u64::from(*value), false))
+                        .map_err(llvm_err)?;
+                }
                 Ok(())
             }
+            // Move tracking has no runtime effect (see `docs/mir-design.md`)
+            // — nothing to codegen for these.
+            Statement::MarkMoved(_) | Statement::StorageDead(_) => Ok(()),
         }
     }
 

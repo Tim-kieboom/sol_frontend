@@ -1,8 +1,8 @@
 use ast_model::{
     Argument, ArrayKind, ArrayType, Block, Constructor, Expression, ExpressionKind, ExternLanguage,
     Function, FunctionCall, FunctionCallee, FunctionKind, FunctionModifier, FunctionSignature,
-    FunctionSignatureHelper, FunctionThisKind, Generic, InnerFunctionSignature, Parameter,
-    SolType, Statement, TypeId,
+    FunctionSignatureHelper, FunctionThisKind, Generic, InnerFunctionSignature, Parameter, SolType,
+    Statement, TypeId,
 };
 use sol_tokenizer::model::{TokenKind, keyword::KeyWord};
 use sol_utils::{

@@ -84,6 +84,22 @@ impl<I: VecMapIndex> VecSet<I> {
     pub fn entries(&self) -> impl Iterator<Item = I> {
         self.map.keys()
     }
+
+    /// Extends this set by inserting multiple indices from an iterator.
+    pub fn extend<Iter>(&mut self, iter: Iter)
+    where
+        Iter: Iterator<Item = I>,
+    {
+        for index in iter {
+            self.insert(index);
+        }
+    }
+
+    /// Returns an iterator over indices present in both `self` and `other`.
+    pub fn intersection<'a>(&'a self, other: &'a Self) -> impl Iterator<Item = I> + 'a {
+        self.entries()
+            .filter(move |index| other.contains(I::new_index(index.index())))
+    }
 }
 impl<I: VecMapIndex> Index<I> for VecSet<I> {
     type Output = bool;
@@ -137,5 +153,10 @@ where
     {
         let list = Vec::<I>::deserialize(deserializer)?;
         Ok(VecSet::from_vec(list))
+    }
+}
+impl<I: VecMapIndex, const N: usize> From<[I; N]> for VecSet<I> {
+    fn from(value: [I; N]) -> Self {
+        VecSet::from_slice(&value)
     }
 }

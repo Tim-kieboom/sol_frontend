@@ -10,7 +10,9 @@ use sol_resolver::name_resolve;
 use sol_tokenizer::to_token_stream;
 use sol_utils::{
     FunctionId, Mutable,
-    collections::{crate_store::CrateStore, module_store::ModuleStore, vec_map::VecMap},
+    collections::{
+        crate_store::CrateStore, module_store::ModuleStore, vec_map::VecMap, vec_set::VecSet,
+    },
     compiler_options::{CompilerOptions, MirOptions},
     sol_names::PrimitiveTypes,
 };
@@ -118,9 +120,17 @@ fn function_map(function: mir_model::Function) -> VecMap<FunctionId, mir_model::
 /// Lowers every function declared in `source` (not just one by name) — for
 /// interprocedural `check_escapes` tests, which need more than one function
 /// in the same `VecMap` to exercise a real call graph.
-fn lower_all_with_declares(source: &str) -> (VecMap<FunctionId, mir_model::Function>, DeclareStore) {
+fn lower_all_with_declares(
+    source: &str,
+) -> (VecMap<FunctionId, mir_model::Function>, DeclareStore) {
     let mut ast = resolve_source(source);
-    let ids: Vec<FunctionId> = ast.crates.store.functions.entries().map(|(id, _)| id).collect();
+    let ids: Vec<FunctionId> = ast
+        .crates
+        .store
+        .functions
+        .entries()
+        .map(|(id, _)| id)
+        .collect();
     let functions = ids
         .into_iter()
         .map(|id| {
@@ -226,6 +236,7 @@ fn lowers_arithmetic_with_a_variable_and_a_return() {
     let mir_model::Terminator::Drop {
         place: dropped,
         target: drop_target,
+        ..
     } = &ok_block.terminator
     else {
         panic!(
@@ -1733,6 +1744,7 @@ fn block_tail_expression_with_no_return_or_semicolon_is_an_implicit_return() {
     let mir_model::Terminator::Drop {
         place: dropped,
         target,
+        ..
     } = &block.terminator
     else {
         panic!("expected Drop(x), got {:#?}", block.terminator);
@@ -1832,7 +1844,7 @@ fn multiple_body_locals_are_dropped_in_reverse_declaration_order() {
     });
     while let Some(id) = current {
         let block = &mir.blocks[id];
-        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+        let mir_model::Terminator::Drop { place, target, .. } = &block.terminator else {
             break;
         };
         drops.push(place.local);
@@ -1984,7 +1996,7 @@ fn return_inside_an_if_branch_drops_branch_then_enclosing_locals_in_order() {
     });
     while let Some(id) = current {
         let block = &mir.blocks[id];
-        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+        let mir_model::Terminator::Drop { place, target, .. } = &block.terminator else {
             break;
         };
         drops.push(place.local);
@@ -2316,7 +2328,7 @@ fn an_owning_pointer_parameter_is_dropped_at_its_own_functions_end() {
         lower_source("consume(v: *int) {}\n", "consume").expect("expected successful lowering");
 
     let drop_target = mir.blocks.entries().find_map(|(_, block)| {
-        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+        let mir_model::Terminator::Drop { place, target, .. } = &block.terminator else {
             return None;
         };
         Some((place.local, *target))
@@ -2347,21 +2359,20 @@ fn an_owning_pointer_parameter_is_dropped_at_its_own_functions_end() {
 }
 
 #[test]
-fn a_conditional_move_in_only_one_if_branch_still_leaks_on_the_untaken_path() {
+fn a_conditional_move_in_only_one_if_branch_no_longer_leaks_on_the_untaken_path() {
     // `p` is declared *outside* the `if`, and moved into `consume(p)` in
     // only the `then` branch — the `else` branch (here, simply absent)
     // never touches it. Both the `then` and `otherwise` edges converge on
     // the *same* single `Drop` site (the function's own top-level frame,
-    // unwound once at the end-of-body return) — `elaborate_drops`'s
-    // "maybe moved" analysis correctly sees `p` as maybe-moved reaching that
-    // shared site (it genuinely was, on the `cond == true` path) and prunes
-    // it, same outcome as before this pass existed. This is *not* the bug
-    // `elaborate_drops` fixes (see the test below for the case it does fix)
-    // — genuinely eliminating this leak needs a *different* `Drop` per
-    // incoming edge (splitting control flow so the `cond == false` path gets
-    // its own, still-live `Drop`), which nothing in this compiler does yet.
-    // Still a real, accepted imprecision (never a double free) — not
-    // implemented further here.
+    // unwound once at the end-of-body return): `p` is "maybe" but not
+    // "definitely" moved reaching that shared site (moved on the
+    // `cond == true` path, not on `cond == false`) — exactly the case the
+    // definite/maybe split exists for. Before that split, `elaborate_drops`
+    // only had "maybe" to go on and pruned the `Drop` outright, leaking `p`
+    // on the untaken path (this test used to assert exactly that, as the
+    // then-accepted imprecision). Now it keeps the `Drop`, marked `guarded`
+    // instead — codegen gates the actual `free()` on `p`'s own runtime drop
+    // flag, correct on both paths without needing a second `Drop` site.
     let mut mir = lower_source(
         "consume(p: *int) {}\nf(cond: bool) {\n    p := new(1)\n    if cond {\n        consume(p)\n    }\n}\n",
         "f",
@@ -2370,14 +2381,17 @@ fn a_conditional_move_in_only_one_if_branch_still_leaks_on_the_untaken_path() {
 
     crate::borrow_checker::elaborate_drops(&mut mir);
 
-    let has_drop = mir
-        .blocks
-        .entries()
-        .any(|(_, block)| matches!(block.terminator, mir_model::Terminator::Drop { .. }));
-    assert!(
-        !has_drop,
-        "expected p to still have no Drop at all (the still-open leak-not-crash \
-         imprecision for a conditionally-moved outer-scope local sharing one exit), got {:#?}",
+    let guarded_drop = mir.blocks.entries().find_map(|(_, block)| {
+        let mir_model::Terminator::Drop { guarded, .. } = &block.terminator else {
+            return None;
+        };
+        Some(*guarded)
+    });
+    assert_eq!(
+        guarded_drop,
+        Some(true),
+        "expected p's Drop to survive, marked guarded (moved on some but not \
+         all paths reaching it), got {:#?}",
         mir.blocks
     );
 }
@@ -2973,7 +2987,7 @@ fn break_inside_a_nested_if_drops_the_ifs_and_loops_frames_but_not_an_outer_one(
         })
         .map(|(id, _)| id)
         .collect();
-    let later_steps: std::collections::HashSet<mir_model::BlockId> = exit_chain_drops
+    let later_steps: VecSet<mir_model::BlockId> = exit_chain_drops
         .iter()
         .filter_map(|id| match &mir.blocks[*id].terminator {
             mir_model::Terminator::Drop { target, .. } => Some(*target),
@@ -2983,7 +2997,7 @@ fn break_inside_a_nested_if_drops_the_ifs_and_loops_frames_but_not_an_outer_one(
     let entry = exit_chain_drops
         .iter()
         .copied()
-        .find(|id| !later_steps.contains(id));
+        .find(|id| !later_steps.contains(*id));
 
     // Walk forward from the entry point, collecting exactly which locals
     // break's own chain drops, in order.
@@ -2991,7 +3005,7 @@ fn break_inside_a_nested_if_drops_the_ifs_and_loops_frames_but_not_an_outer_one(
     let mut current = entry;
     while let Some(id) = current {
         let block = &mir.blocks[id];
-        let mir_model::Terminator::Drop { place, target } = &block.terminator else {
+        let mir_model::Terminator::Drop { place, target, .. } = &block.terminator else {
             break;
         };
         drops.push(place.local);

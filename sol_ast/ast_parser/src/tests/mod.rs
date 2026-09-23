@@ -864,10 +864,7 @@ fn mut_reference_type_variable() {
     let int_id = declares.intern_type(SolType::Primitive(PrimitiveTypes::Int));
     assert_eq!(
         ty.map(|id| declares.get_type(id).unwrap().clone()),
-        Some(SolType::Reference(ReferenceType::new(
-            int_id,
-            Mutable::Mut
-        )))
+        Some(SolType::Reference(ReferenceType::new(int_id, Mutable::Mut)))
     );
 }
 

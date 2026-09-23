@@ -4,9 +4,7 @@ use ast_model::{
     UseBlock, VarPattern, Variable, scope::ScopeValue,
 };
 use ast_parser::fault::{AstErrorKind, AstFault};
-use sol_utils::{
-    FunctionId, Ident, fault::Fault, sol_error_internal, sol_names::PrimitiveTypes,
-};
+use sol_utils::{FunctionId, Ident, fault::Fault, sol_error_internal, sol_names::PrimitiveTypes};
 
 use crate::NameResolver;
 

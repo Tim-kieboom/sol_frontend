@@ -5,8 +5,7 @@ use crate::{
 use ast_model::{self as ast, SolType, operators::BinaryOperatorKind};
 use mir_model as mir;
 use sol_utils::{
-    TypeModifier, compiler_options::MirOptions, fault::Fault, sol_names::PrimitiveTypes,
-    span::Span,
+    TypeModifier, compiler_options::MirOptions, fault::Fault, sol_names::PrimitiveTypes, span::Span,
 };
 
 impl<'a> FunctionLowerer<'a> {

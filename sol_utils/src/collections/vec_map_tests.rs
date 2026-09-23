@@ -349,6 +349,75 @@ fn test_from_iterator() {
 }
 
 #[test]
+fn test_entry_or_insert_vacant() {
+    let mut map: TestMap<i32> = TestMap::new();
+    *map.entry(TestIndex(0)).or_insert(5) += 1;
+    assert_eq!(map.get(TestIndex(0)), Some(&6));
+}
+
+#[test]
+fn test_entry_or_insert_occupied() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.insert(TestIndex(0), 5);
+    *map.entry(TestIndex(0)).or_insert(100) += 1;
+    assert_eq!(map.get(TestIndex(0)), Some(&6));
+}
+
+#[test]
+fn test_entry_or_insert_with() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.entry(TestIndex(2)).or_insert_with(|| 42);
+    assert_eq!(map.get(TestIndex(2)), Some(&42));
+}
+
+#[test]
+fn test_entry_or_default() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.entry(TestIndex(1)).or_default();
+    assert_eq!(map.get(TestIndex(1)), Some(&0));
+}
+
+#[test]
+fn test_entry_and_modify_occupied() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.insert(TestIndex(0), 10);
+    map.entry(TestIndex(0)).and_modify(|v| *v += 1).or_insert(0);
+    assert_eq!(map.get(TestIndex(0)), Some(&11));
+}
+
+#[test]
+fn test_entry_and_modify_vacant() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.entry(TestIndex(0)).and_modify(|v| *v += 1).or_insert(7);
+    assert_eq!(map.get(TestIndex(0)), Some(&7));
+}
+
+#[test]
+fn test_entry_occupied_get_and_remove() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.insert(TestIndex(0), 3);
+
+    match map.entry(TestIndex(0)) {
+        Entry::Occupied(entry) => assert_eq!(*entry.get(), 3),
+        Entry::Vacant(_) => panic!("expected occupied entry"),
+    }
+
+    match map.entry(TestIndex(0)) {
+        Entry::Occupied(entry) => assert_eq!(entry.remove(), 3),
+        Entry::Vacant(_) => panic!("expected occupied entry"),
+    }
+    assert_eq!(map.get(TestIndex(0)), None);
+}
+
+#[test]
+fn test_entry_grows_vector() {
+    let mut map: TestMap<i32> = TestMap::new();
+    map.entry(TestIndex(5)).or_insert(1);
+    assert_eq!(map.cap(), 6);
+    assert_eq!(map.get(TestIndex(5)), Some(&1));
+}
+
+#[test]
 fn test_serde() {
     let map = TestMap::<i32>::from_vec(vec![
         (TestIndex(0), 1),

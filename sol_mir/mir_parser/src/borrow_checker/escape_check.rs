@@ -161,13 +161,14 @@
 //! settled origin is `Dangling` — the only change is that `Dangling` can
 //! now be discovered through a call chain, not just local aliasing.
 
-use std::collections::{HashMap, HashSet};
-
 use ast_model::{SolType, declare_store::DeclareStore};
 use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::{
     FunctionId,
-    collections::vec_map::{VecMap, VecMapIndex},
+    collections::{
+        vec_map::{VecMap, VecMapIndex},
+        vec_set::VecSet,
+    },
     fault::Fault,
 };
 
@@ -202,7 +203,6 @@ pub fn check_escapes(
             function,
             &predecessors,
             declares,
-            functions,
             &summaries,
         );
 
@@ -233,7 +233,7 @@ enum Origin {
     /// Only as safe as whichever of *this function's own* parameters (by
     /// index) the caller actually passes — see the module's own
     /// "Interprocedural tracing" docs.
-    TiedToParams(HashSet<usize>),
+    TiedToParams(VecSet<usize>),
 }
 
 /// The "worse wins" join every branch point (CFG-level `if`/`else`/`for`,
@@ -247,14 +247,33 @@ fn combine(a: Origin, b: Origin) -> Origin {
         (Origin::Dangling(local), _) | (_, Origin::Dangling(local)) => Origin::Dangling(local),
         (Origin::Safe, other) | (other, Origin::Safe) => other,
         (Origin::TiedToParams(mut a_set), Origin::TiedToParams(b_set)) => {
-            a_set.extend(b_set);
+            a_set.extend(b_set.entries());
             Origin::TiedToParams(a_set)
         }
     }
 }
 
-type Table = HashMap<(LocalId, BlockId), Option<Origin>>;
-type Summaries = HashMap<FunctionId, Origin>;
+type Table = std::collections::HashMap<(LocalId, BlockId), Option<Origin>>;
+type Summaries = VecMap<FunctionId, Origin>;
+
+/// Everything a single `converge` round's trace needs that stays fixed for
+/// its whole duration — bundled so the trace functions below (each already
+/// recursing into several of the others) don't have to carry every one of
+/// these individually as its own parameter.
+struct TraceCtx<'a> {
+    function: &'a mir::Function,
+    predecessors: &'a VecMap<BlockId, Vec<BlockId>>,
+    declares: &'a DeclareStore,
+    summaries: &'a Summaries,
+    previous_round: &'a Table,
+}
+
+/// The mutable, per-round memoization state the trace functions thread
+/// through their recursion — see `TraceCtx` for the read-only half.
+struct TraceState<'a> {
+    in_progress: &'a mut std::collections::HashSet<(LocalId, BlockId)>,
+    this_round: &'a mut Table,
+}
 
 fn is_reference_typed(function: &mir::Function, local: LocalId, declares: &DeclareStore) -> bool {
     matches!(
@@ -285,9 +304,9 @@ fn converge_summaries(
         .map(|(id, _)| (id, Origin::Safe))
         .collect();
     loop {
-        let mut next: Summaries = HashMap::new();
+        let mut next: Summaries = Summaries::new();
         for (id, function) in functions.entries() {
-            next.insert(id, compute_function_origin(function, declares, functions, &summaries));
+            next.insert(id, compute_function_origin(function, declares, &summaries));
         }
         if next == summaries {
             return next;
@@ -307,7 +326,6 @@ fn converge_summaries(
 fn compute_function_origin(
     function: &mir::Function,
     declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
     summaries: &Summaries,
 ) -> Origin {
     let Some(return_local) = function.return_local else {
@@ -325,7 +343,6 @@ fn compute_function_origin(
         function,
         &predecessors,
         declares,
-        functions,
         summaries,
     );
 
@@ -353,28 +370,27 @@ fn converge(
     return_local: LocalId,
     return_blocks: &[BlockId],
     function: &mir::Function,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    predecessors: &VecMap<BlockId, Vec<BlockId>>,
     declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
     summaries: &Summaries,
 ) -> Table {
-    let mut previous_round: Table = HashMap::new();
+    let mut previous_round = Table::new();
     loop {
-        let mut this_round: Table = HashMap::new();
-        let mut in_progress: HashSet<(LocalId, BlockId)> = HashSet::new();
+        let mut this_round = Table::new();
+        let mut in_progress = std::collections::HashSet::new();
+        let ctx = TraceCtx {
+            function,
+            predecessors,
+            declares,
+            summaries,
+            previous_round: &previous_round,
+        };
+        let mut state = TraceState {
+            in_progress: &mut in_progress,
+            this_round: &mut this_round,
+        };
         for &block_id in return_blocks {
-            trace_from_block_start(
-                return_local,
-                block_id,
-                function,
-                predecessors,
-                declares,
-                functions,
-                summaries,
-                &previous_round,
-                &mut in_progress,
-                &mut this_round,
-            );
+            trace_from_block_start(return_local, block_id, &ctx, &mut state);
         }
         if this_round == previous_round {
             return this_round;
@@ -394,60 +410,34 @@ fn converge(
 /// settled answer (`Safe` if this is round 0 and nothing settled there
 /// yet), and only the outermost frame for a given key ever writes into
 /// `this_round`.
-#[allow(clippy::too_many_arguments)]
 fn trace_from_block_start(
     local: LocalId,
     block_id: BlockId,
-    function: &mir::Function,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
-    summaries: &Summaries,
-    previous_round: &Table,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut Table,
+    ctx: &TraceCtx,
+    state: &mut TraceState,
 ) -> Option<Origin> {
     let key = (local, block_id);
-    if let Some(settled) = this_round.get(&key) {
+    if let Some(settled) = state.this_round.get(&key) {
         return settled.clone();
     }
-    if in_progress.contains(&key) {
-        return previous_round.get(&key).cloned().unwrap_or(Some(Origin::Safe));
+    if state.in_progress.contains(&key) {
+        return ctx
+            .previous_round
+            .get(&key)
+            .cloned()
+            .unwrap_or(Some(Origin::Safe));
     }
 
-    in_progress.insert(key);
-    let result = match call_destination_origin(
-        local,
-        block_id,
-        function,
-        predecessors,
-        declares,
-        functions,
-        summaries,
-        previous_round,
-        in_progress,
-        this_round,
-    ) {
+    state.in_progress.insert(key);
+    let result = match call_destination_origin(local, block_id, ctx, state) {
         Some(origin) => origin,
         None => {
-            let statement_count = function.blocks[block_id].statements.len();
-            trace_within_block(
-                local,
-                block_id,
-                statement_count,
-                function,
-                predecessors,
-                declares,
-                functions,
-                summaries,
-                previous_round,
-                in_progress,
-                this_round,
-            )
+            let statement_count = ctx.function.blocks[block_id].statements.len();
+            trace_within_block(local, block_id, statement_count, ctx, state)
         }
     };
-    in_progress.remove(&key);
-    this_round.insert(key, result.clone());
+    state.in_progress.remove(&key);
+    state.this_round.insert(key, result.clone());
     result
 }
 
@@ -458,25 +448,18 @@ fn trace_from_block_start(
 /// why that doesn't cascade). `None` (the outer `Option`) means the
 /// terminator isn't a matching `Call` at all — the caller should fall
 /// through to the ordinary statement search.
-#[allow(clippy::too_many_arguments)]
 fn call_destination_origin(
     local: LocalId,
     block_id: BlockId,
-    function: &mir::Function,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
-    summaries: &Summaries,
-    previous_round: &Table,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut Table,
+    ctx: &TraceCtx,
+    state: &mut TraceState,
 ) -> Option<Option<Origin>> {
     let mir::Terminator::Call {
         id,
         arguments,
         destination: Some(place),
         ..
-    } = &function.blocks[block_id].terminator
+    } = &ctx.function.blocks[block_id].terminator
     else {
         return None;
     };
@@ -484,34 +467,22 @@ fn call_destination_origin(
         return None;
     }
 
-    let Some(summary) = summaries.get(id) else {
+    let Some(summary) = ctx.summaries.get(*id) else {
         return Some(None);
     };
     let origin = match summary {
         Origin::Dangling(_) => None,
         Origin::Safe => Some(Origin::Safe),
         Origin::TiedToParams(indices) => {
-            let statement_count = function.blocks[block_id].statements.len();
+            let statement_count = ctx.function.blocks[block_id].statements.len();
             let mut combined = Origin::Safe;
             let mut sound = true;
-            for &index in indices {
+            for index in indices.entries() {
                 let arg_origin = arguments.get(index).and_then(|operand| match operand {
                     mir::Operand::Copy(place) | mir::Operand::Move(place)
                         if place.projection.is_empty() =>
                     {
-                        trace_within_block(
-                            place.local,
-                            block_id,
-                            statement_count,
-                            function,
-                            predecessors,
-                            declares,
-                            functions,
-                            summaries,
-                            previous_round,
-                            in_progress,
-                            this_round,
-                        )
+                        trace_within_block(place.local, block_id, statement_count, ctx, state)
                     }
                     _ => None,
                 });
@@ -538,21 +509,14 @@ fn call_destination_origin(
 /// one, or a `TiedToParams` origin naming `local`'s own parameter index if
 /// there are none at all (the function's own entry block) and `local`
 /// really is one of its parameters.
-#[allow(clippy::too_many_arguments)]
 fn trace_within_block(
     local: LocalId,
     block_id: BlockId,
     before_index: usize,
-    function: &mir::Function,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
-    summaries: &Summaries,
-    previous_round: &Table,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut Table,
+    ctx: &TraceCtx,
+    state: &mut TraceState,
 ) -> Option<Origin> {
-    let block = &function.blocks[block_id];
+    let block = &ctx.function.blocks[block_id];
     for (index, statement) in block.statements.as_slice()[..before_index]
         .iter()
         .enumerate()
@@ -569,41 +533,20 @@ fn trace_within_block(
                 if !alias.projection.is_empty() {
                     None
                 } else {
-                    trace_within_block(
-                        alias.local,
-                        block_id,
-                        index,
-                        function,
-                        predecessors,
-                        declares,
-                        functions,
-                        summaries,
-                        previous_round,
-                        in_progress,
-                        this_round,
-                    )
+                    trace_within_block(alias.local, block_id, index, ctx, state)
                 }
             }
             mir::Rvalue::Ref {
                 place: ref_place, ..
-            } => classify_ref(
-                ref_place,
-                block_id,
-                index,
-                function,
-                predecessors,
-                declares,
-                functions,
-                summaries,
-                previous_round,
-                in_progress,
-                this_round,
-            ),
+            } => classify_ref(ref_place, block_id, index, ctx, state),
             _ => None,
         };
     }
 
-    let preds = predecessors.get(&block_id).filter(|preds| !preds.is_empty());
+    let preds = ctx
+        .predecessors
+        .get(block_id)
+        .filter(|preds| !preds.is_empty());
     let Some(preds) = preds else {
         // No predecessor recorded assignment reaches here — the function's
         // own entry block, `local` unassigned: a parameter (see the
@@ -611,27 +554,18 @@ fn trace_within_block(
         // unconditional `Safe`). `LocalId` values start at 1 (0 is reserved
         // as `LocalId::ERROR`), and parameters are allocated first, so a
         // parameter's own 0-based index is `local.index() - 1`.
-        return Some(if local.index() >= 1 && local.index() <= function.arg_count {
-            Origin::TiedToParams(HashSet::from([local.index() - 1]))
-        } else {
-            Origin::Safe
-        });
+        return Some(
+            if local.index() >= 1 && local.index() <= ctx.function.arg_count {
+                Origin::TiedToParams(VecSet::from([local.index() - 1]))
+            } else {
+                Origin::Safe
+            },
+        );
     };
 
     let mut combined = Origin::Safe;
     for &pred in preds {
-        let pred_origin = trace_from_block_start(
-            local,
-            pred,
-            function,
-            predecessors,
-            declares,
-            functions,
-            summaries,
-            previous_round,
-            in_progress,
-            this_round,
-        )?;
+        let pred_origin = trace_from_block_start(local, pred, ctx, state)?;
         combined = combine(combined, pred_origin);
     }
     Some(combined)
@@ -644,19 +578,12 @@ fn trace_within_block(
 /// heap pointer is unconditionally safe, a reference recurses into tracing
 /// `ref_place.local`'s own origin (see the module's own docs on why a
 /// `Deref` reached any other way isn't refined by this slice).
-#[allow(clippy::too_many_arguments)]
 fn classify_ref(
     ref_place: &mir::Place,
     block_id: BlockId,
     at_index: usize,
-    function: &mir::Function,
-    predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    declares: &DeclareStore,
-    functions: &VecMap<FunctionId, mir::Function>,
-    summaries: &Summaries,
-    previous_round: &Table,
-    in_progress: &mut HashSet<(LocalId, BlockId)>,
-    this_round: &mut Table,
+    ctx: &TraceCtx,
+    state: &mut TraceState,
 ) -> Option<Origin> {
     let deref_position = ref_place
         .projection
@@ -664,21 +591,14 @@ fn classify_ref(
         .position(|elem| matches!(elem, mir::PlaceElem::Deref));
     match deref_position {
         None => Some(Origin::Dangling(ref_place.local)),
-        Some(0) => match declares.get_type(function.locals[ref_place.local].ty) {
+        Some(0) => match ctx
+            .declares
+            .get_type(ctx.function.locals[ref_place.local].ty)
+        {
             Some(SolType::Pointer(_)) => Some(Origin::Safe),
-            Some(SolType::Reference(_)) => trace_within_block(
-                ref_place.local,
-                block_id,
-                at_index,
-                function,
-                predecessors,
-                declares,
-                functions,
-                summaries,
-                previous_round,
-                in_progress,
-                this_round,
-            ),
+            Some(SolType::Reference(_)) => {
+                trace_within_block(ref_place.local, block_id, at_index, ctx, state)
+            }
             _ => None,
         },
         // A `Deref` exists somewhere in the projection but isn't the first
@@ -693,8 +613,8 @@ fn classify_ref(
 /// reachable-from-entry restriction — a backward trace only ever visits
 /// blocks reachable *from* wherever it starts, so an unreachable block
 /// simply never gets asked about).
-fn build_predecessors(function: &mir::Function) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>> {
+    let mut predecessors: VecMap<BlockId, Vec<BlockId>> = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
         for successor in successors(&block.terminator) {
             if function.blocks.get(successor).is_some() {

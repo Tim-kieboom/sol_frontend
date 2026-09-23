@@ -31,10 +31,7 @@ impl<'a> NameResolver<'a> {
     fn resolve_block(&mut self, block_id: BlockId) {
         self.try_go_to(block_id);
         let Some(block) = self.store.blocks.get(block_id) else {
-            self.log_fault(sol_error_internal!(
-                format!("{block_id:?} not found"),
-                None
-            ));
+            self.log_fault(sol_error_internal!(format!("{block_id:?} not found"), None));
             return;
         };
 

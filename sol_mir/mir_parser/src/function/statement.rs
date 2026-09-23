@@ -214,8 +214,7 @@ impl<'a> FunctionLowerer<'a> {
         let is_last_variadic = signature.parameters.last().is_some_and(|p| p.is_variadic);
 
         if is_last_variadic && signature.parameters.len() != call.arguments.len() {
-            let span = self.last_argument_span(call)
-                .unwrap_or(call.name.span());
+            let span = self.last_argument_span(call).unwrap_or(call.name.span());
 
             return Err(Fault::error_with_kind(
                 MirErrorKind::MissingVarargs,
