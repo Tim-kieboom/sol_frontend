@@ -187,10 +187,10 @@ pub enum MirErrorKind {
     OverlappingBorrows,
 
     /// `mir_parser::borrow_checker::overlap_check::check_move_while_borrowed`'s
-    /// own violation — a whole-place move of a local while some still-needed
-    /// borrow (mutable or shared) of that same local is live. Points at the
-    /// moved local's own declaration span, same reasoning as `UseAfterMove`.
-    /// Whole-locals only, same scope as `OverlappingBorrows`.
+    /// own violation — a move of a local, or of one of its fields, while
+    /// some still-needed borrow (mutable or shared) overlapping it is live.
+    /// Points at the moved local's own declaration span, same reasoning as
+    /// `UseAfterMove`.
     #[error("value is moved while it is still borrowed")]
     MoveWhileBorrowed,
 }

@@ -1,14 +1,16 @@
 //! Use-after-move checking — M2's move checker (see`TODO.md`'s M2 section).
 //! A forward dataflow pass over a function's whole
-//! CFG, loops included, tracking which locals have been moved and rejecting
-//! any read of a place after it was moved without an intervening
-//! whole-place reinitializing write.
+//! CFG, loops included, tracking which locals — and which fields of owned
+//! locals — have been moved, and rejecting any read of a place overlapping
+//! one after it was moved without an intervening reinitializing write.
+//! Moving a value out from behind a reference, owning pointer, or index is
+//! rejected outright.
 //!
 //! This is move-checking only: whether a place was read after being moved
 //! out of. Real borrow/lifetime-conflict checking (do two live borrows of
 //! the same place overlap) is a separate analysis this doesn't attempt.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::{
@@ -118,10 +120,20 @@ struct Analysis {
 // intersection at a join). `check_moves` only reads "maybe" (the sound
 // answer for a use); `elaborate_drops` reads both to tell apart "never
 // moved," "always moved," and "moved on some paths" for a given `Drop`.
+//
+// Partial moves (`consume(b.p)`) are tracked separately, "maybe" only, as
+// field paths: they never decide a whole local's `Drop`.
 #[derive(Clone, PartialEq, Eq, Default)]
 struct MoveState {
     maybe: VecSet<LocalId>,
     definite: VecSet<LocalId>,
+    maybe_fields: BTreeSet<FieldPath>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FieldPath {
+    local: LocalId,
+    fields: Vec<usize>,
 }
 
 fn analyze(function: &mir::Function) -> Option<Analysis> {
@@ -204,6 +216,7 @@ fn join(
     };
 
     let mut maybe = VecSet::new();
+    let mut maybe_fields = BTreeSet::new();
     let mut definite: Option<VecSet<LocalId>> = None;
     for pred in preds {
         let Some(state) = out_states.get(*pred) else {
@@ -211,6 +224,7 @@ fn join(
         };
 
         maybe.extend(state.maybe.entries());
+        maybe_fields.extend(state.maybe_fields.iter().cloned());
         definite = Some(match definite {
             None => state.definite.clone(),
             Some(acc) => acc.intersection(&state.definite).collect(),
@@ -222,6 +236,7 @@ fn join(
         // A predecessor not yet processed contributes nothing to "definite":
         // starting from the universal set (not empty) keeps that the case.
         definite: definite.unwrap_or_else(|| all_locals.clone()),
+        maybe_fields,
     }
 }
 
@@ -235,13 +250,7 @@ fn check_block(
         match statement {
             mir::Statement::Assign(place, rvalue) => {
                 check_rvalue(function, rvalue, state, faults);
-                // A whole-place write reinitializes the local. A write
-                // through a projection (`x.field = ..`) doesn't, so it's
-                // deliberately left in the moved sets.
-                if place.projection.is_empty() {
-                    state.maybe.remove(place.local);
-                    state.definite.remove(place.local);
-                }
+                reinitialize(place, state);
             }
             mir::Statement::MarkMoved(_)
             | mir::Statement::SetDropFlag(..)
@@ -287,7 +296,7 @@ fn check_rvalue(
             check_operand(function, operand, state, faults);
         }
         mir::Rvalue::Ref { place, .. } | mir::Rvalue::Len(place) => {
-            check_place(function, place, &state.maybe, faults);
+            check_place(function, place, state, faults);
         }
         mir::Rvalue::Aggregate(_, operands) => {
             for operand in operands {
@@ -304,15 +313,28 @@ fn check_operand(
     faults: &mut FaultCollector<MirErrorKind>,
 ) {
     match operand {
-        mir::Operand::Copy(place) => check_place(function, place, &state.maybe, faults),
+        mir::Operand::Copy(place) => check_place(function, place, state, faults),
         mir::Operand::Move(place) => {
+            let Some(fields) = field_path(&place.projection) else {
+                faults.push(Fault::error_with_kind(
+                    MirErrorKind::MoveOutOfBorrow,
+                    Some(function.locals[place.local].span),
+                ));
+                return;
+            };
+
             // Check against what was moved *before* this move, then fold
             // this one in — so a later read is what gets flagged, not this
             // move against itself.
-            check_place(function, place, &state.maybe, faults);
-            if place.projection.is_empty() {
+            check_place(function, place, state, faults);
+            if fields.is_empty() {
                 state.maybe.insert(place.local);
                 state.definite.insert(place.local);
+            } else {
+                state.maybe_fields.insert(FieldPath {
+                    local: place.local,
+                    fields,
+                });
             }
         }
         mir::Operand::Constant(_) => {}
@@ -322,16 +344,67 @@ fn check_operand(
 fn check_place(
     function: &mir::Function,
     place: &mir::Place,
-    maybe: &VecSet<LocalId>,
+    state: &MoveState,
     faults: &mut FaultCollector<MirErrorKind>,
 ) {
-    // Only the root local is checked: there's no partial-move tracking, so a
-    // moved local's fields are exactly as invalid as the local itself.
-    if maybe.contains(place.local) {
+    // Everything a place reaches lies under its leading field steps, so it
+    // overlaps a moved field exactly when one path is a prefix of the other.
+    let accessed = leading_fields(&place.projection);
+    let overlaps_moved_field = state
+        .maybe_fields
+        .iter()
+        .any(|moved| moved.local == place.local && is_prefix_either_way(&moved.fields, &accessed));
+
+    if state.maybe.contains(place.local) || overlaps_moved_field {
         let span = function.locals[place.local].span;
         faults.push(Fault::error_with_kind(
             MirErrorKind::UseAfterMove,
             Some(span),
         ));
     }
+}
+
+// A write reinitializes the whole local, or just the moved fields at or
+// under the written field path. A write through a reference or index
+// reinitializes nothing this function owns.
+fn reinitialize(place: &mir::Place, state: &mut MoveState) {
+    let Some(written) = field_path(&place.projection) else {
+        return;
+    };
+
+    if written.is_empty() {
+        state.maybe.remove(place.local);
+        state.definite.remove(place.local);
+    }
+    state
+        .maybe_fields
+        .retain(|moved| moved.local != place.local || !moved.fields.starts_with(&written));
+}
+
+// The field indices of a projection made only of `Field` steps, or `None`
+// if it goes through a reference, pointer, or index.
+fn field_path(projection: &[mir::PlaceElem]) -> Option<Vec<usize>> {
+    let mut fields = Vec::with_capacity(projection.len());
+    for elem in projection {
+        let mir::PlaceElem::Field(index) = elem else {
+            return None;
+        };
+        fields.push(*index);
+    }
+    Some(fields)
+}
+
+fn leading_fields(projection: &[mir::PlaceElem]) -> Vec<usize> {
+    let mut fields = Vec::new();
+    for elem in projection {
+        let mir::PlaceElem::Field(index) = elem else {
+            break;
+        };
+        fields.push(*index);
+    }
+    fields
+}
+
+fn is_prefix_either_way(a: &[usize], b: &[usize]) -> bool {
+    a.starts_with(b) || b.starts_with(a)
 }

@@ -661,9 +661,32 @@ that landing first, in order.
       (leaked to every read), `[*]`/recursive-summary weak updates.
   - [ ] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
         while closing the escape-checking item, not yet addressed:
-    - **Partial moves**: `move_eligible_operand` only moves a *bare* variable, so a projected
-      move-only source (`consume(container.item)` with `item: *T`) lowers to `Operand::Copy` —
-      two owners of one allocation, a double free at runtime.
+    - [x] **Partial moves** (`/grill-me`'d 2026-09-24). A projected move-only source
+      (`consume(b.p)`, `q := b.p` with `p: *T`) was lowered as `Operand::Copy`: two owners of one
+      allocation, and a use-after-free (`consume(b.p); return *b.p` compiled — exe test 39). The
+      double free was latent only because struct `Drop` frees no fields yet. Decisions:
+      - **Rust's split**: moving a field out of an owned local is a partial move (that field and
+        anything overlapping it — the whole struct, a borrow of it, an enclosing field — becomes
+        unusable; disjoint siblings stay usable; writing the field reinitializes it); moving out
+        from behind a reference, owning pointer, or index is rejected (new
+        `MirErrorKind::MoveOutOfBorrow`).
+      - **Per move path**: `move_check` tracks partial moves as field paths in a separate
+        "maybe" set, never in the whole-local maybe/definite sets `elaborate_drops` and runtime
+        drop flags read — so once recursive drop exists, a moved `b.p` won't suppress freeing
+        `b.q`.
+      - **Same slice**: `check_move_while_borrowed` sees projected moves too (a move of `b.p`
+        conflicts with a live `&b`/`&b.p`/alias, not `&b.q`, via `fields_disjoint`) — without
+        this the fix itself would have opened `r := &b; consume(b.p); *r.p` as a new hole.
+      - Lowering: `move_eligible_operand` now moves any field/index/deref place of a move-only
+        type (an unresolvable type counts as move-only), with no whole-local
+        `MarkMoved`/`SetDropFlag`.
+      - +18 tests (13 `check_moves`, 5 `check_move_while_borrowed`, guards included) plus 1
+        rewritten (`a_move_only_argument_reached_through_a_field_projection_is_moved`, which had
+        asserted the copy), exe tests 39 (rejected) and 40 (moved field freed once at runtime).
+        706/706 workspace, 40/40 exe, no new clippy warnings.
+      - **Deferred, logged**: recursive struct drop (a struct still frees none of its `*T`
+        fields — a leak, not unsound), and drop-before-assign (`b.p = new(..)` over a live
+        `b.p` leaks the old allocation).
     - **Overlap-checking's `Resolved::Disagreement`**: a borrow whose alias resolves to
       `Disagreement` (e.g. a reference reassigned to different places on two branches, or one
       reaching an untracked parameter) is simply not tracked, so an overlapping `&mut` goes

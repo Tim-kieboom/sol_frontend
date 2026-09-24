@@ -81,10 +81,11 @@ fn check_borrow_overlaps_with(function: &mir::Function, analysis: &Analysis) -> 
     faults
 }
 
-/// Checks `function` for a whole-place `Move` of a local while a still-live
-/// borrow of it exists (rustc's "cannot move out of x because it is
-/// borrowed") — a move conflicts with *any* live borrow of its target,
-/// mutable or shared, since it invalidates the underlying storage entirely.
+/// Checks `function` for a `Move` of a place while a still-live borrow
+/// overlapping it exists (rustc's "cannot move out of x because it is
+/// borrowed") — a move conflicts with *any* live borrow of its target or of
+/// an enclosing/enclosed field, mutable or shared, since it invalidates that
+/// storage entirely; a borrow of a disjoint sibling field is unaffected.
 /// Returns one fault per such move.
 pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
     check_move_while_borrowed_with(function, &analyze(function))
@@ -111,17 +112,19 @@ fn check_move_while_borrowed_with(function: &mir::Function, analysis: &Analysis)
 
     for (block_id, points) in analysis.points_per_block.entries() {
         for (index, point) in points.iter().enumerate() {
-            for &moved_local in &point.moves {
-                let Some(group) = by_place.get(moved_local) else {
+            for moved in &point.moves {
+                let Some(group) = by_place.get(moved.local) else {
                     continue;
                 };
-                if group
-                    .iter()
-                    .any(|borrow| borrow.live_points.contains(&(block_id, index)))
-                {
+                // Moving `b.p` only invalidates borrows overlapping it: `&b`
+                // and `&b.p` conflict, `&b.q` doesn't.
+                if group.iter().any(|borrow| {
+                    borrow.live_points.contains(&(block_id, index))
+                        && !fields_disjoint(&borrow.projection, &moved.projection)
+                }) {
                     faults.push(Fault::error_with_kind(
                         MirErrorKind::MoveWhileBorrowed,
-                        Some(function.locals[moved_local].span),
+                        Some(function.locals[moved.local].span),
                     ));
                 }
             }
@@ -207,7 +210,7 @@ fn fields_disjoint(a: &[mir::PlaceElem], b: &[mir::PlaceElem]) -> bool {
 struct PointInfo<'a> {
     assign: Option<(LocalId, &'a mir::Rvalue)>,
     reads: Vec<LocalId>,
-    moves: Vec<LocalId>,
+    moves: Vec<&'a mir::Place>,
 }
 
 struct Borrow {
@@ -244,14 +247,14 @@ fn collect_reads(rvalue: &mir::Rvalue) -> Vec<LocalId> {
     }
 }
 
-fn collect_operand_moves(operand: &mir::Operand) -> Vec<LocalId> {
+fn collect_operand_moves(operand: &mir::Operand) -> Vec<&mir::Place> {
     match operand {
-        mir::Operand::Move(place) if place.projection.is_empty() => vec![place.local],
-        mir::Operand::Move(_) | mir::Operand::Copy(_) | mir::Operand::Constant(_) => Vec::new(),
+        mir::Operand::Move(place) => vec![place],
+        mir::Operand::Copy(_) | mir::Operand::Constant(_) => Vec::new(),
     }
 }
 
-fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
+fn collect_moves(rvalue: &mir::Rvalue) -> Vec<&mir::Place> {
     match rvalue {
         mir::Rvalue::Use(operand) => collect_operand_moves(operand),
         mir::Rvalue::BinaryOp(_, left, right) | mir::Rvalue::CheckedBinaryOp(_, left, right) => {
@@ -292,7 +295,7 @@ fn build_points_per_block(function: &mir::Function) -> VecMap<BlockId, Vec<Point
             }
         }
 
-        let (terminator_reads, terminator_moves): (Vec<LocalId>, Vec<LocalId>) =
+        let (terminator_reads, terminator_moves): (Vec<LocalId>, Vec<&mir::Place>) =
             match &block.terminator {
                 mir::Terminator::Call { arguments, .. } => (
                     arguments.iter().flat_map(collect_operand_reads).collect(),

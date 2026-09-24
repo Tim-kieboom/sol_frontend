@@ -2460,11 +2460,9 @@ fn an_autocopy_primitive_argument_is_still_copied() {
 }
 
 #[test]
-fn a_move_only_argument_reached_through_a_field_projection_is_still_copied() {
-    // Scoped deliberately: `SetDropFlag` is per-`LocalId`, not per-place, so
-    // a field-projection move (`consume(container.item)`) has no sound way
-    // to express "only this one field moved" yet — see `lower_call_operand`'s
-    // docs. Falls through to a plain `Copy`, same as before Move existed.
+fn a_move_only_argument_reached_through_a_field_projection_is_moved() {
+    // A partial move: `c.item` itself is moved, with no whole-local
+    // `MarkMoved`/`SetDropFlag` bookkeeping for `c`.
     let mir = lower_source(
         "struct Session {\n    n: int\n}\nstruct Container {\n    item: Session\n}\nconsume(s: Session) {}\nf(c: Container) {\n    consume(c.item)\n}\n",
         "f",
@@ -2481,7 +2479,7 @@ fn a_move_only_argument_reached_through_a_field_projection_is_still_copied() {
         .expect("expected a Call terminator");
     assert!(matches!(
         &arguments[0],
-        Operand::Copy(place) if matches!(place.projection.as_slice(), [mir_model::PlaceElem::Field(0)])
+        Operand::Move(place) if matches!(place.projection.as_slice(), [mir_model::PlaceElem::Field(0)])
     ));
 }
 

@@ -358,17 +358,11 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     /// Lowers `expr_id` to an `Operand`, choosing `Move` over `Copy` when
-    /// it's a bare `Variable` of a move-only type (per `is_auto_copy`) —
-    /// `docs/mir-design.md`'s move/drop mechanics, deliberately scoped for
-    /// now to exactly this bare-variable case: `SetDropFlag` is per-
-    /// `LocalId`, not per-place, so a field/index/deref projection
-    /// (`consume(container.item)`) has no sound way to express "only this
-    /// one field moved" yet — that stays a plain `Copy` (falls through to
-    /// `lower_operand`, same as before this existed) until partial-move
-    /// tracking lands (see M2's TODO.md entry). Anything that isn't a bare
-    /// variable at all (a literal, a nested computation, a struct-
-    /// constructor literal, ...) has no existing place to move from in the
-    /// first place, so it falls through the same way.
+    /// it's a place (a variable, or a field/index/deref projection) of a
+    /// move-only type (per `is_auto_copy`) — `docs/mir-design.md`'s
+    /// move/drop mechanics. Anything that isn't a place at all (a literal, a
+    /// nested computation, a struct-constructor literal, ...) has no
+    /// existing place to move from, so it falls through to `lower_operand`.
     ///
     /// Shared by every "operand read at a point that can actually move its
     /// source" site: call arguments and the consuming-`this` receiver
@@ -411,31 +405,49 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    /// Shared move-vs-copy decision for a bare `Variable` operand — every
-    /// caller listed on `lower_move_aware_operand`'s docs needs the exact
-    /// same check. Returns `None` when `expr_id` isn't a bare `Variable` at
-    /// all (a literal, a nested computation, a struct-constructor literal,
-    /// a field/index/deref projection, ...) — none of those have an
-    /// existing place a caller could move out of in the first place, so
-    /// it's on the caller's own fallback (`lower_operand`/`lower_rvalue`) to
-    /// lower them. `Some(_)` means it is a bare variable: `Operand::Copy`
-    /// when `is_auto_copy` says so, otherwise `Operand::Move` plus the
-    /// `MarkMoved`/`SetDropFlag(local, false)` bookkeeping
-    /// `docs/mir-design.md`'s move/drop rules call for. Deliberately scoped
-    /// to exactly this bare-variable case: `SetDropFlag` is per-`LocalId`,
-    /// not per-place, so a field/index/deref projection
-    /// (`consume(container.item)`) has no sound way to express "only this
-    /// one field moved" yet — that needs partial-move tracking, which
-    /// doesn't exist (see M2's TODO.md entry).
+    /// Shared move-vs-copy decision for a place operand — every caller
+    /// listed on `lower_move_aware_operand`'s docs needs the exact same
+    /// check. Returns `None` when `expr_id` isn't a place at all (a literal,
+    /// a nested computation, a struct-constructor literal, ...) — it's on
+    /// the caller's own fallback (`lower_operand`/`lower_rvalue`) to lower
+    /// those. A bare variable gets `Operand::Copy` when `is_auto_copy` says
+    /// so, otherwise `Operand::Move` plus the `MarkMoved`/
+    /// `SetDropFlag(local, false)` bookkeeping `docs/mir-design.md`'s
+    /// move/drop rules call for. A field/index/deref projection of a
+    /// move-only type becomes an `Operand::Move` of that place with no
+    /// bookkeeping: drop flags are per-`LocalId`, and a partial move never
+    /// decides the whole local's `Drop` (see `move_check`, which also
+    /// rejects moves out from behind a reference, pointer, or index).
     fn move_eligible_operand(
         &mut self,
         expr_id: ast::ExpressionId,
     ) -> Option<MirResult<mir::Operand>> {
         let expr = &self.store.expressions[expr_id];
-        let ast::ExpressionKind::Variable(var) = &expr.node else {
-            return None;
+        match &expr.node {
+            ast::ExpressionKind::Variable(var) => Some(self.move_variable_operand(var, expr.span)),
+            ast::ExpressionKind::FieldAccess(_)
+            | ast::ExpressionKind::Index(_)
+            | ast::ExpressionKind::Deref(_) => Some(self.move_projected_operand(expr_id)),
+            _ => None,
+        }
+    }
+
+    // A place whose type can't be resolved is treated as move-only: a false
+    // move is a spurious diagnostic, a false copy a second owner.
+    fn move_projected_operand(&mut self, expr_id: ast::ExpressionId) -> MirResult<mir::Operand> {
+        let operand = self.lower_operand(expr_id)?;
+        let mir::Operand::Copy(place) = operand else {
+            return Ok(operand);
         };
-        Some(self.move_variable_operand(var, expr.span))
+
+        let auto_copy = self
+            .place_type(&place)
+            .is_some_and(|ty| self.declares.is_auto_copy(&ty));
+        if auto_copy {
+            Ok(mir::Operand::Copy(place))
+        } else {
+            Ok(mir::Operand::Move(place))
+        }
     }
 
     fn move_variable_operand(
