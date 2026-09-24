@@ -584,6 +584,143 @@ that landing first, in order.
           to a runtime flag for the genuinely ambiguous cases — edge-splitting would only ever be a size/
           speed micro-optimization layered on top of that fallback for its one narrow acyclic single-
           value case, not a replacement for it.
+  - [x] **Close escape-checking's soundness holes — the M2 exit criterion** (`/grill-me`'d
+        2026-09-24). M2 closes when no known soundness hole remains, which is unreachable while
+        unrecognized shapes default to `Safe`: `classify_ref`'s `_ => Safe`, every `None`
+        ("unknown ⇒ silent"), and `Pointer(_) => Safe`, which became a real use-after-free once
+        slice 3b/3c made `Drop` free owning locals *and* owning parameters (the old
+        `allows_dereferencing_an_owning_heap_pointer` test asserted exactly that bug as OK).
+        Decisions:
+    - Unrecognized shapes default to `Dangling`, never `Safe`/silent.
+    - An owning `*T` is treated like a local: a deref through it is `Dangling` unless the pointer
+      itself is reached through a reference parameter (`&*h.p` with `h: &Holder` stays safe).
+    - Every shape is traced for real, not blanket-rejected — each failing test has a safe,
+      parameter-sourced twin that must stay green, so "reject everything unfamiliar" can't pass.
+    - Writes through aliases are followed (`m := &mut h; m.r = ..`, `w[0] = ..` through a
+      `[&mut]` slice, callee writes through `&mut` params), with **strong** updates only for a
+      direct write or a must-alias target, **weak** (join with the old origin) otherwise.
+    - Callee summaries gain per-`&mut`-param **must-write / may-write** sets (mirroring
+      `move_check`'s definite/maybe pair) plus the origin stored, so an unconditional `set(hm, r)`
+      replaces the old value while a conditional one only joins. A callee storing its own local
+      into a `&mut` param is itself a new escape fault (no return needed).
+    - **Rewrite `escape_check` as a forward place-origin dataflow** (Kildall, like `move_check`),
+      replacing the demand-driven backward trace; the return check becomes one read of settled
+      state per `Return`. The backward trace structurally couldn't see alias writes.
+    - Place keys are bounded: all `Index` steps collapse to one `[*]` key (every index write is
+      weak — accepted), and paths are folded **per type**: the head's own fields (`n.r`) stay
+      distinct strong keys, while every path at/below the first repeated struct type
+      (`n.next.*`) folds onto one summary key that is only ever weakly updated (accepted false
+      positive: overwriting a tail field never clears a dangling value there).
+    - Failing tests written first in `mir_parser/src/tests/mod.rs` (18 failing, 12 twins/guards
+      passing): heap-pointer param/local, 2-field paths, field copy-out, projected call argument,
+      slice element, earlier-block field, alias/slice/callee writes, must-vs-may callee writes,
+      must-vs-may alias writes, recursive head/tail/summary updates, loop walking a list.
+    - Slice order (every commit green-or-better on the soundness tests, never a silent hole):
+      - [x] **Slice 1 — forward core** (absorbed the planned slice 2): `escape_check` is now a
+            directory module (`locations.rs`, `dataflow.rs`, `mod.rs`), a forward Kildall points-to
+            dataflow. **Deviated from the plan while building it**: syntactic place-path keys
+            couldn't pass the slice-element safe twin (`s := &a; &s[0].value` — the content under
+            `s`'s deref isn't keyed under `a`), so the state maps *abstract memory locations* to the
+            locations their stored references may point to. Bases: `Frame(local)` (a local's slot,
+            including what it owns inline or through `*T`), `Param(i)` (exactly what reference param
+            `i` points at), `ParamDeep(i)` (everything deeper reachable from it), `CallResult(block)`,
+            `Unknown(local)`; path steps `Field`/`[*]`/owned-`*T` deref, type-folded as agreed. A
+            write through a reference goes to every location it may point to — strong only when
+            exactly one non-summary target — so intra-function alias writes (`m.r = ..`,
+            `w[0] = ..`, a may-alias `m` after an `if`) are handled precisely and **the `&mut`-borrow
+            stopgap was never needed**. Also pulled forward from slice 3: the store-escape check
+            (a dangling reference left in `Param`/`ParamDeep` memory at a `return`), and the return
+            check now covers any return type containing references (structs, slices), not just
+            `&T`. Remaining **stopgap** (callee writes only): after a call, every reference
+            reachable through a `&mut`-containing argument is weakly joined with `Unknown(arg)`
+            (dangling); a write through a call's returned reference is leaked (visible to every
+            read). Fault message reworded to "a reference to a local escapes the function it
+            doesn't outlive" (exe test 36 updated). Result: 176/178 `mir_parser` tests, all 38 exe
+            tests; the 2 red are exactly the callee safe twins
+            (`allows_a_safe_reference_written_by_a_callee_through_a_mutable_parameter`,
+            `allows_a_dangling_field_overwritten_by_a_callee_that_always_writes`).
+      - [x] **Slice 2 — callee `&mut`-param write summaries**: a function's summary is now its
+            returned `Origin` plus `writes: Location → {targets, EveryReturn | SomeReturns}` for
+            every `Param`/`ParamDeep` location it leaves changed, in its own terms; a call replays
+            them translated to the caller's locations (strong only for `EveryReturn` + one
+            non-summary target), replacing the stopgap for every call except externs (which keep
+            it). New `Base::Incoming(location)` — "whatever the caller had stored here" — is the
+            default content of caller memory, so a summary can tell "wrote a new reference" from
+            "left the old one" (otherwise a conditional write translated to "may point anywhere
+            reachable from `&mut h`", including `h` itself: a false positive). Found while
+            testing: must-coverage can't be proven for a recursive callee starting from "writes
+            nothing", so summaries settle twice — once to discover the written locations, then
+            again from "each written on every return, with nothing yet" (greatest fixed point for
+            the must-part; the settled table is self-consistent either way). A first attempt kept
+            phase 1's targets and replayed the weak phase's `Incoming` markers as real writes — fixed
+            by clearing them. +4 tests (callee copies a field between arguments, dangling + safe;
+            recursive callee always/sometimes writes). 182/182 `mir_parser`, 688/688 workspace, 38/38
+            exe tests; no new clippy warnings.
+    - **Escape-checking has no known soundness hole left.** Remaining conservative spots (false
+      positives only): an extern handed a `&mut`, a write through a call's returned reference
+      (leaked to every read), `[*]`/recursive-summary weak updates.
+  - [x] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
+        while closing the escape-checking item, not yet addressed:
+    - [x] **Partial moves** (`/grill-me`'d 2026-09-24). A projected move-only source
+      (`consume(b.p)`, `q := b.p` with `p: *T`) was lowered as `Operand::Copy`: two owners of one
+      allocation, and a use-after-free (`consume(b.p); return *b.p` compiled — exe test 39). The
+      double free was latent only because struct `Drop` frees no fields yet. Decisions:
+      - **Rust's split**: moving a field out of an owned local is a partial move (that field and
+        anything overlapping it — the whole struct, a borrow of it, an enclosing field — becomes
+        unusable; disjoint siblings stay usable; writing the field reinitializes it); moving out
+        from behind a reference, owning pointer, or index is rejected (new
+        `MirErrorKind::MoveOutOfBorrow`).
+      - **Per move path**: `move_check` tracks partial moves as field paths in a separate
+        "maybe" set, never in the whole-local maybe/definite sets `elaborate_drops` and runtime
+        drop flags read — so once recursive drop exists, a moved `b.p` won't suppress freeing
+        `b.q`.
+      - **Same slice**: `check_move_while_borrowed` sees projected moves too (a move of `b.p`
+        conflicts with a live `&b`/`&b.p`/alias, not `&b.q`, via `fields_disjoint`) — without
+        this the fix itself would have opened `r := &b; consume(b.p); *r.p` as a new hole.
+      - Lowering: `move_eligible_operand` now moves any field/index/deref place of a move-only
+        type (an unresolvable type counts as move-only), with no whole-local
+        `MarkMoved`/`SetDropFlag`.
+      - +18 tests (13 `check_moves`, 5 `check_move_while_borrowed`, guards included) plus 1
+        rewritten (`a_move_only_argument_reached_through_a_field_projection_is_moved`, which had
+        asserted the copy), exe tests 39 (rejected) and 40 (moved field freed once at runtime).
+        706/706 workspace, 40/40 exe, no new clippy warnings.
+      - **Deferred, logged**: recursive struct drop (a struct still frees none of its `*T`
+        fields — a leak, not unsound), and drop-before-assign (`b.p = new(..)` over a live
+        `b.p` leaks the old allocation).
+    - [x] **Overlap-checking's `Resolved::Disagreement`** (`/grill-me`'d 2026-09-24). A borrow
+      only got tracked when its alias resolved to exactly one `Value`; everything else was
+      silently skipped: aliases joined across branches, every reborrow through a `Deref`,
+      references copied out of fields, reference parameters, call results. Decisions:
+      - **Loan-based conflicts (NLL-style), not ref-vs-ref**: applying ref-vs-ref honestly to
+        reborrows rejects `this.inner.grow()` then `this.count = 1`. A `Ref` creates a loan;
+        every reference derived from it carries it; a loan is live while a live local's value
+        (or caller-owned/leaked memory) still carries it. An access (read, write, new borrow,
+        move, or *using* a reference, which accesses its pointee) to memory overlapping a live
+        loan conflicts unless the access goes through that loan or both sides are shared. This
+        also newly catches plain reads/writes of a borrowed place (`r := &mut a; x := a.n`).
+        A loan whose creation conflicts isn't enforced afterwards, and accesses through it
+        aren't re-checked, so one mistake is reported once.
+      - **One shared engine (option (i))**: escape-checking's dataflow moved to
+        `borrow_checker/points_to/` (`locations.rs`, `dataflow.rs`, `mod.rs` with origins,
+        summaries and call-graph convergence); escape-checking keeps only its two fault checks.
+        Loans ride in the same `Targets` sets as `Base::Loan(LoanId)` markers (never memory),
+        so copies, joins, fields, call results and callee writes carry them for free; an extern
+        call result carries every argument's loans. `overlap_check.rs` was rewritten outright
+        (per-statement liveness + replaying each block's settled state); the old alias-tracing
+        machinery is gone. Checker APIs are now whole-program `(functions, declares)`, like
+        `check_escapes`.
+      - **Receiver autoref after the arguments** (instead of two-phase borrows): a `&mut this`
+        receiver whose path is a plain place (variables, fields, derefs — no index, so no side
+        effects) is borrowed right before the `Call`, so `c.set(c.get())` is accepted. This had
+        been an *existing* false positive under ref-vs-ref too.
+      - +15 tests (7 loan holes, 5 reborrow/through-the-loan guards, receiver-order lowering +
+        checker guard); 15 existing overlap/move-while-borrowed tests migrated to the
+        whole-program API, all keeping their verdicts. `OverlappingBorrows` reworded to "value is
+        accessed while a conflicting borrow of it is still live". 720/720 workspace, 40/40 exe,
+        no new clippy warnings.
+      - Known cost: `mir_run` converges callee summaries twice (once per checker).
+      - Found in passing, split off as a separate task: method calls on a bare reference-typed
+        receiver (`c.set(1)` with `c: &mut Counter`) don't resolve at all.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

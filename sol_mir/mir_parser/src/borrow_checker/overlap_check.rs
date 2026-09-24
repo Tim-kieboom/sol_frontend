@@ -1,333 +1,578 @@
-//! Mutable/shared-borrow overlap checking — the third slice of M2's real
-//! borrow/lifetime-conflict work (see `TODO.md`'s M2 section),
-//! separate from escape-checking (does a reference outlive its target)
-//! and move-checking (was a place read after being moved out of):
-//! do two *live* borrows of the same local conflict?
+//! Borrow-conflict checking — see `TODO.md`'s M2 section. Loan-based, in the
+//! style of rustc's NLL: a `Ref` creates a *loan* of a place, and every
+//! reference derived from it (copies, aliases joined across branches, the
+//! fields it's stored in, call results, reborrows) carries that loan — all
+//! tracked by the shared points-to dataflow (`points_to`). A loan is live
+//! while any live local's value, or memory the caller owns, still carries it.
 //!
-//! Handles the full concrete (M1) CFG shape, loops included, with real
-//! NLL-accurate liveness (a borrow is live from its definition through every
-//! point a later read can still reach it, not just "until its enclosing
-//! block ends") and field-level disjointness for struct fields (`&o.a` and
-//! `&mut o.b` don't conflict; array-index projections still coarsen to
-//! "same root ⇒ conflict"). Conflict matrix: `&mut` vs `&mut`, and `&mut`
-//! vs `&`, overlapping in time — reject; `&` vs `&` — always fine.
-//!
-//! `check_move_while_borrowed` handles the related move-vs-borrow question:
-//! does a move of `x` happen while a still-live borrow of `x` exists.
+//! An access to memory overlapping a live loan conflicts unless the access
+//! goes *through* that loan (a reborrow using its parent, or a write through
+//! the borrow itself) or both the access and the loan are shared. Moves are
+//! reported as their own kind of conflict (`check_move_while_borrowed`).
+//! A loan whose own creation already conflicts isn't enforced afterwards, so
+//! one mistake is reported once.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use ast_model::declare_store::DeclareStore;
 use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::{
+    FunctionId,
     collections::{vec_map::VecMap, vec_set::VecSet},
     fault::Fault,
 };
 
+use super::points_to::{
+    Analyzer, Base, FunctionAnalysis, LoanId, Location, PlaceAccess, State, Summaries, Targets,
+    converge_summaries,
+};
 use crate::fault::{MirErrorKind, MirFault};
 
-/// Checks `function` for two live borrows of the same place that conflict
-/// (a mutable borrow overlapping any other live borrow of that place).
-/// Returns one fault per conflicting pair.
-pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
-    check_borrow_overlaps_with(function, &analyze(function))
+/// Checks every function in `functions` for an access (a read, a write, or a
+/// new borrow) to memory a conflicting live borrow still covers. Returns one
+/// fault per conflicting access.
+pub fn check_borrow_overlaps(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+) -> Vec<MirFault> {
+    check_conflicts(functions, declares, Reported::Borrows)
 }
 
-fn check_borrow_overlaps_with(function: &mir::Function, analysis: &Analysis) -> Vec<MirFault> {
-    let mut faults = vec![];
-
-    let Some((entry, _)) = function.blocks.entries().next() else {
-        return faults;
-    };
-
-    let mut exec_order = super::postorder(function, entry);
-    exec_order.reverse();
-    let block_rank: VecMap<BlockId, usize> = exec_order
-        .iter()
-        .enumerate()
-        .map(|(rank, &block)| (block, rank))
-        .collect();
-
-    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &analysis.borrows {
-        by_place.entry(borrow.place).or_default().push(borrow);
-    }
-
-    for group in by_place.values() {
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                if !(a.mutable || b.mutable) {
-                    continue; // shared vs. shared — always fine
-                }
-                if fields_disjoint(&a.projection, &b.projection) {
-                    continue;
-                }
-                if a.live_points.is_disjoint(&b.live_points) {
-                    continue;
-                }
-                let later = if rank_of(&block_rank, a.def) >= rank_of(&block_rank, b.def) {
-                    a
-                } else {
-                    b
-                };
-                faults.push(Fault::error_with_kind(
-                    MirErrorKind::OverlappingBorrows,
-                    Some(function.locals[later.local].span),
-                ));
-            }
-        }
-    }
-
-    faults
-}
-
-/// Checks `function` for a whole-place `Move` of a local while a still-live
-/// borrow of it exists (rustc's "cannot move out of x because it is
-/// borrowed") — a move conflicts with *any* live borrow of its target,
-/// mutable or shared, since it invalidates the underlying storage entirely.
-/// Returns one fault per such move.
-pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
-    check_move_while_borrowed_with(function, &analyze(function))
+/// Checks every function in `functions` for a move of a value, or of one of
+/// its fields, while a live borrow still covers it. Returns one fault per
+/// such move.
+pub fn check_move_while_borrowed(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+) -> Vec<MirFault> {
+    check_conflicts(functions, declares, Reported::Moves)
 }
 
 /// Runs `check_borrow_overlaps` and `check_move_while_borrowed` off one
-/// shared `analyze` pass (liveness + alias tracing) — both otherwise
-/// recompute the same fixed point over `function`'s CFG independently, which
-/// is wasted work when a caller wants both anyway.
-pub fn check_overlaps_and_moves_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
-    let analysis = analyze(function);
-    let mut faults = check_borrow_overlaps_with(function, &analysis);
-    faults.extend(check_move_while_borrowed_with(function, &analysis));
-    faults
+/// shared analysis.
+pub fn check_overlaps_and_moves_while_borrowed(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+) -> Vec<MirFault> {
+    check_conflicts(functions, declares, Reported::All)
 }
 
-fn check_move_while_borrowed_with(function: &mir::Function, analysis: &Analysis) -> Vec<MirFault> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    Borrows,
+    Moves,
+    All,
+}
+
+fn check_conflicts(
+    functions: &VecMap<FunctionId, mir::Function>,
+    declares: &DeclareStore,
+    reported: Reported,
+) -> Vec<MirFault> {
+    let summaries = converge_summaries(functions, declares);
     let mut faults = Vec::new();
-
-    let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &analysis.borrows {
-        by_place.entry(borrow.place).or_default().push(borrow);
+    for function in functions.values() {
+        faults.extend(function_conflicts(function, declares, &summaries, reported));
     }
-
-    for (block_id, points) in analysis.points_per_block.entries() {
-        for (index, point) in points.iter().enumerate() {
-            for &moved_local in &point.moves {
-                let Some(group) = by_place.get(moved_local) else {
-                    continue;
-                };
-                if group
-                    .iter()
-                    .any(|borrow| borrow.live_points.contains(&(block_id, index)))
-                {
-                    faults.push(Fault::error_with_kind(
-                        MirErrorKind::MoveWhileBorrowed,
-                        Some(function.locals[moved_local].span),
-                    ));
-                }
-            }
-        }
-    }
-
     faults
 }
 
-struct Analysis<'a> {
-    points_per_block: VecMap<BlockId, Vec<PointInfo<'a>>>,
-    borrows: Vec<Borrow>,
-}
-
-fn analyze(function: &mir::Function) -> Analysis<'_> {
-    let points_per_block = build_points_per_block(function);
-    let predecessors = build_predecessors(function);
-
-    let block_live_out = compute_block_liveness(function, &points_per_block, &predecessors);
-    let point_live_in = compute_point_liveness(&points_per_block, &block_live_out);
-    let settled_aliases = converge_aliases(&points_per_block, &predecessors);
-    let alias_ctx = AliasCtx {
-        points_per_block: &points_per_block,
-        predecessors: &predecessors,
-        previous_round: &settled_aliases,
+fn function_conflicts(
+    function: &mir::Function,
+    declares: &DeclareStore,
+    summaries: &Summaries,
+    reported: Reported,
+) -> Vec<MirFault> {
+    let analysis = FunctionAnalysis::new(function, declares, summaries);
+    let in_states = analysis.analyzer().settled_in_states();
+    let mut checker = ConflictChecker {
+        analyzer: analysis.analyzer(),
+        function,
+        liveness: Liveness::compute(function),
+        loans: collect_loans(analysis.analyzer(), function, &in_states),
+        unenforced: BTreeSet::new(),
+        reported,
+        faults: Vec::new(),
     };
 
-    let mut borrows: Vec<Borrow> = Vec::new();
-    for (block_id, points) in points_per_block.entries() {
-        for (index, point) in points.iter().enumerate() {
-            let Some((local, rvalue)) = point.assign else {
-                continue;
-            };
-            let Resolved::Value(place, projection, mutable) =
-                classify_generation(rvalue, block_id, index, &alias_ctx)
-            else {
-                continue;
-            };
-            let mut live_points = generation_live_points(
-                local,
-                block_id,
-                index,
-                function,
-                &points_per_block,
-                &point_live_in,
-            );
-            live_points.insert((block_id, index));
-            borrows.push(Borrow {
-                local,
-                place,
-                projection,
-                mutable,
-                def: (block_id, index),
-                live_points,
-            });
-        }
+    for (block_id, state) in in_states.entries() {
+        checker.check_block(block_id, state.clone());
     }
-
-    Analysis {
-        points_per_block,
-        borrows,
-    }
+    checker.faults
 }
 
-fn rank_of(block_rank: &VecMap<BlockId, usize>, point: (BlockId, usize)) -> (usize, usize) {
-    (block_rank.get(point.0).copied().unwrap_or(0), point.1)
-}
-
-fn fields_disjoint(a: &[mir::PlaceElem], b: &[mir::PlaceElem]) -> bool {
-    for (elem_a, elem_b) in a.iter().zip(b.iter()) {
-        match (elem_a, elem_b) {
-            (mir::PlaceElem::Field(index_a), mir::PlaceElem::Field(index_b)) => {
-                if index_a != index_b {
-                    return true;
-                }
-            }
-            _ => return false,
-        }
-    }
-    false
-}
-
-struct PointInfo<'a> {
-    assign: Option<(LocalId, &'a mir::Rvalue)>,
-    reads: Vec<LocalId>,
-    moves: Vec<LocalId>,
-}
-
-struct Borrow {
-    local: LocalId,
-    place: LocalId,
-    projection: Vec<mir::PlaceElem>,
+struct Loan {
+    locations: Targets,
     mutable: bool,
-    def: (BlockId, usize),
-    live_points: std::collections::HashSet<(BlockId, usize)>,
 }
 
-fn collect_operand_reads(operand: &mir::Operand) -> Vec<LocalId> {
-    match operand {
-        mir::Operand::Copy(place) | mir::Operand::Move(place) => vec![place.local],
-        mir::Operand::Constant(_) => Vec::new(),
-    }
-}
-
-fn collect_reads(rvalue: &mir::Rvalue) -> Vec<LocalId> {
-    match rvalue {
-        mir::Rvalue::Use(operand) => collect_operand_reads(operand),
-        mir::Rvalue::BinaryOp(_, left, right) | mir::Rvalue::CheckedBinaryOp(_, left, right) => {
-            let mut reads = collect_operand_reads(left);
-            reads.extend(collect_operand_reads(right));
-            reads
-        }
-        mir::Rvalue::UnaryOp(_, operand)
-        | mir::Rvalue::Cast(operand, _)
-        | mir::Rvalue::HeapAlloc(_, operand, _) => collect_operand_reads(operand),
-        mir::Rvalue::Ref { place, .. } | mir::Rvalue::Len(place) => vec![place.local],
-        mir::Rvalue::Aggregate(_, operands) => {
-            operands.iter().flat_map(collect_operand_reads).collect()
-        }
-    }
-}
-
-fn collect_operand_moves(operand: &mir::Operand) -> Vec<LocalId> {
-    match operand {
-        mir::Operand::Move(place) if place.projection.is_empty() => vec![place.local],
-        mir::Operand::Move(_) | mir::Operand::Copy(_) | mir::Operand::Constant(_) => Vec::new(),
-    }
-}
-
-fn collect_moves(rvalue: &mir::Rvalue) -> Vec<LocalId> {
-    match rvalue {
-        mir::Rvalue::Use(operand) => collect_operand_moves(operand),
-        mir::Rvalue::BinaryOp(_, left, right) | mir::Rvalue::CheckedBinaryOp(_, left, right) => {
-            let mut moves = collect_operand_moves(left);
-            moves.extend(collect_operand_moves(right));
-            moves
-        }
-        mir::Rvalue::UnaryOp(_, operand)
-        | mir::Rvalue::Cast(operand, _)
-        | mir::Rvalue::HeapAlloc(_, operand, _) => collect_operand_moves(operand),
-        // Neither `Ref`'s nor `Len`'s own place is ever itself moved.
-        mir::Rvalue::Ref { .. } | mir::Rvalue::Len(_) => Vec::new(),
-        mir::Rvalue::Aggregate(_, operands) => {
-            operands.iter().flat_map(collect_operand_moves).collect()
+// Every `Ref` in `function`, with the memory it borrows.
+fn collect_loans(
+    analyzer: &Analyzer,
+    function: &mir::Function,
+    in_states: &VecMap<BlockId, State>,
+) -> BTreeMap<LoanId, Loan> {
+    let mut loans = BTreeMap::new();
+    for (block_id, state) in in_states.entries() {
+        let mut state = state.clone();
+        let block = &function.blocks[block_id];
+        for (index, statement) in block.statements.iter().enumerate() {
+            if let mir::Statement::Assign(_, mir::Rvalue::Ref { mutable, place }) = statement {
+                let locations = match analyzer.place_access(&state, place) {
+                    Some(access) => access.locations,
+                    None => Targets::from([Location::root(Base::Unknown(place.local))]),
+                };
+                let id = LoanId {
+                    block: block_id,
+                    index,
+                };
+                loans.insert(
+                    id,
+                    Loan {
+                        locations,
+                        mutable: *mutable,
+                    },
+                );
+            }
+            analyzer.step_statement(&mut state, block_id, index, statement);
         }
     }
+    loans
 }
 
-fn build_points_per_block(function: &mir::Function) -> VecMap<BlockId, Vec<PointInfo<'_>>> {
-    let mut points_per_block = VecMap::new();
-    for (block_id, block) in function.blocks.entries() {
-        let mut points = Vec::new();
-        for statement in &block.statements {
-            match statement {
-                mir::Statement::Assign(place, rvalue) => {
-                    let reads = collect_reads(rvalue);
-                    let moves = collect_moves(rvalue);
-                    let assign = place.projection.is_empty().then_some((place.local, rvalue));
-                    points.push(PointInfo {
-                        assign,
-                        reads,
-                        moves,
-                    });
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Read,
+    Write,
+    Move,
+}
+
+struct Access {
+    locations: Targets,
+    // Loans the access goes through: never in conflict with it.
+    through: Targets,
+    mode: Mode,
+    blame: LocalId,
+    // The loan this access creates, when it is a `Ref`.
+    creates: Option<LoanId>,
+}
+
+struct ConflictChecker<'a, 'ctx> {
+    analyzer: &'a Analyzer<'ctx>,
+    function: &'a mir::Function,
+    liveness: Liveness,
+    loans: BTreeMap<LoanId, Loan>,
+    unenforced: BTreeSet<LoanId>,
+    reported: Reported,
+    faults: Vec<MirFault>,
+}
+
+impl ConflictChecker<'_, '_> {
+    fn check_block(&mut self, block_id: BlockId, mut state: State) {
+        let block = &self.function.blocks[block_id];
+        for (index, statement) in block.statements.iter().enumerate() {
+            let accesses = self.statement_accesses(&state, block_id, index, statement);
+            self.check_point(&state, block_id, index, accesses);
+            self.analyzer
+                .step_statement(&mut state, block_id, index, statement);
+        }
+
+        let accesses = self.terminator_accesses(&state, &block.terminator);
+        self.check_point(&state, block_id, block.statements.len(), accesses);
+    }
+
+    fn check_point(
+        &mut self,
+        state: &State,
+        block_id: BlockId,
+        index: usize,
+        accesses: Vec<Access>,
+    ) {
+        if accesses.is_empty() {
+            return;
+        }
+        let live = self.live_loans(state, block_id, index);
+        for access in accesses {
+            self.check_access(&live, access);
+        }
+    }
+
+    // Loans still needed at a point: those carried by a local live there, or
+    // stored where they outlive the function.
+    fn live_loans(&self, state: &State, block_id: BlockId, index: usize) -> BTreeSet<LoanId> {
+        let mut carriers = self.analyzer.escaped_loans(state);
+        for &local in self.liveness.live_before(block_id, index) {
+            carriers.extend(self.analyzer.loans_held_by(state, local));
+        }
+        carriers.iter().filter_map(loan_id).collect()
+    }
+
+    fn check_access(&mut self, live: &BTreeSet<LoanId>, access: Access) {
+        let through: BTreeSet<LoanId> = access.through.iter().filter_map(loan_id).collect();
+        // Going through a loan already reported as conflicting only repeats
+        // that one mistake.
+        if through.iter().any(|id| self.unenforced.contains(id)) {
+            return;
+        }
+        let conflict = live.iter().any(|id| {
+            if self.unenforced.contains(id) || through.contains(id) {
+                return false;
+            }
+            let Some(loan) = self.loans.get(id) else {
+                return false;
+            };
+            (loan.mutable || access.mode != Mode::Read)
+                && overlaps_any(&loan.locations, &access.locations)
+        });
+        if !conflict {
+            return;
+        }
+
+        if let Some(created) = access.creates {
+            self.unenforced.insert(created);
+        }
+        let (kind, shown) = match access.mode {
+            Mode::Move => (
+                MirErrorKind::MoveWhileBorrowed,
+                self.reported != Reported::Borrows,
+            ),
+            Mode::Read | Mode::Write => (
+                MirErrorKind::OverlappingBorrows,
+                self.reported != Reported::Moves,
+            ),
+        };
+        if shown {
+            let span = self.function.locals[access.blame].span;
+            self.faults.push(Fault::error_with_kind(kind, Some(span)));
+        }
+    }
+
+    fn statement_accesses(
+        &self,
+        state: &State,
+        block_id: BlockId,
+        index: usize,
+        statement: &mir::Statement,
+    ) -> Vec<Access> {
+        let mir::Statement::Assign(place, rvalue) = statement else {
+            return Vec::new();
+        };
+
+        let mut accesses = Vec::new();
+        match rvalue {
+            mir::Rvalue::Ref {
+                mutable,
+                place: borrowed,
+            } => {
+                let mode = if *mutable { Mode::Write } else { Mode::Read };
+                let creates = Some(LoanId {
+                    block: block_id,
+                    index,
+                });
+                accesses.push(self.place(state, borrowed, mode, place.local, creates));
+            }
+            mir::Rvalue::Len(read) => {
+                accesses.push(self.place(state, read, Mode::Read, read.local, None));
+            }
+            _ => {
+                for operand in rvalue_operands(rvalue) {
+                    accesses.extend(self.operand(state, operand));
                 }
-                mir::Statement::MarkMoved(_)
-                | mir::Statement::SetDropFlag(..)
-                | mir::Statement::StorageDead(_) => {}
+            }
+        }
+        accesses.push(self.place(state, place, Mode::Write, place.local, None));
+        accesses
+    }
+
+    fn terminator_accesses(&self, state: &State, terminator: &mir::Terminator) -> Vec<Access> {
+        let mut accesses = Vec::new();
+        match terminator {
+            mir::Terminator::Call {
+                arguments,
+                destination,
+                ..
+            } => {
+                for argument in arguments.iter() {
+                    accesses.extend(self.operand(state, argument));
+                }
+                if let Some(destination) = destination {
+                    let local = destination.local;
+                    accesses.push(self.place(state, destination, Mode::Write, local, None));
+                }
+            }
+            mir::Terminator::SwitchInt { discriminant, .. } => {
+                accesses.extend(self.operand(state, discriminant));
+            }
+            mir::Terminator::Assert { cond, msg, .. } => {
+                accesses.extend(self.operand(state, cond));
+                accesses.extend(self.operand(state, msg));
+            }
+            mir::Terminator::Goto(_)
+            | mir::Terminator::Drop { .. }
+            | mir::Terminator::Return
+            | mir::Terminator::Unreachable => {}
+        }
+        accesses
+    }
+
+    // Reading or moving an operand, plus — when it holds a reference — using
+    // that reference, which accesses what it points at.
+    fn operand(&self, state: &State, operand: &mir::Operand) -> Vec<Access> {
+        let (mode, place) = match operand {
+            mir::Operand::Copy(place) => (Mode::Read, place),
+            mir::Operand::Move(place) => (Mode::Move, place),
+            mir::Operand::Constant(_) => return Vec::new(),
+        };
+
+        let mut accesses = vec![self.place(state, place, mode, place.local, None)];
+        if let Some(pointees) = self.analyzer.reference_pointees(state, place) {
+            let mode = if self.holds_mutable_reference(place) {
+                Mode::Write
+            } else {
+                Mode::Read
+            };
+            accesses.push(Access {
+                locations: pointees.locations,
+                through: pointees.through,
+                mode,
+                blame: place.local,
+                creates: None,
+            });
+        }
+        accesses
+    }
+
+    fn place(
+        &self,
+        state: &State,
+        place: &mir::Place,
+        mode: Mode,
+        blame: LocalId,
+        creates: Option<LoanId>,
+    ) -> Access {
+        let PlaceAccess { locations, through } = self
+            .analyzer
+            .place_access(state, place)
+            .unwrap_or_else(|| PlaceAccess {
+                locations: Targets::from([Location::root(Base::Unknown(place.local))]),
+                through: Targets::new(),
+            });
+        Access {
+            locations,
+            through,
+            mode,
+            blame,
+            creates,
+        }
+    }
+
+    fn holds_mutable_reference(&self, place: &mir::Place) -> bool {
+        use ast_model::{ArrayKind, SolType};
+
+        match self.analyzer.types().place_type(place) {
+            Some(SolType::Reference(reference)) => reference.mutable.is_mut(),
+            Some(SolType::Array(array)) => array.kind == ArrayKind::MutSlice,
+            _ => false,
+        }
+    }
+}
+
+fn rvalue_operands(rvalue: &mir::Rvalue) -> Vec<&mir::Operand> {
+    match rvalue {
+        mir::Rvalue::Use(operand)
+        | mir::Rvalue::UnaryOp(_, operand)
+        | mir::Rvalue::Cast(operand, _)
+        | mir::Rvalue::HeapAlloc(_, operand, _) => vec![operand],
+        mir::Rvalue::BinaryOp(_, left, right) | mir::Rvalue::CheckedBinaryOp(_, left, right) => {
+            vec![left, right]
+        }
+        mir::Rvalue::Aggregate(_, operands) => operands.iter().collect(),
+        mir::Rvalue::Ref { .. } | mir::Rvalue::Len(_) => Vec::new(),
+    }
+}
+
+fn loan_id(target: &Location) -> Option<LoanId> {
+    match target.base() {
+        Base::Loan(id) => Some(*id),
+        _ => None,
+    }
+}
+
+fn overlaps_any(a: &Targets, b: &Targets) -> bool {
+    a.iter().any(|x| b.iter().any(|y| locations_overlap(x, y)))
+}
+
+// Whether two locations may share memory. A function's own frame never
+// overlaps its caller's memory, and different parameters never overlap each
+// other: the caller already had to prove that when it passed them.
+fn locations_overlap(a: &Location, b: &Location) -> bool {
+    match (a.base(), b.base()) {
+        (Base::Unknown(_) | Base::CallResult(_), _)
+        | (_, Base::Unknown(_) | Base::CallResult(_)) => true,
+        (Base::Frame(x), Base::Frame(y)) => x == y && paths_overlap(a, b),
+        (Base::Param(i), Base::Param(j)) => i == j && paths_overlap(a, b),
+        (Base::ParamDeep(i), Base::Param(j) | Base::ParamDeep(j))
+        | (Base::Param(i), Base::ParamDeep(j)) => i == j,
+        _ => false,
+    }
+}
+
+fn paths_overlap(a: &Location, b: &Location) -> bool {
+    a.path().starts_with(b.path()) || b.path().starts_with(a.path())
+}
+
+// Which locals may still be read at each point: before statement `index`
+// of a block, or before its terminator at `index == statements.len()`.
+struct Liveness {
+    live_before: VecMap<BlockId, Vec<BTreeSet<LocalId>>>,
+}
+
+impl Liveness {
+    fn compute(function: &mir::Function) -> Self {
+        let predecessors = predecessors(function);
+        let mut live_in: VecMap<BlockId, BTreeSet<LocalId>> = VecMap::new();
+        let mut queue: VecDeque<BlockId> = function.blocks.keys().collect();
+        let mut queued: VecSet<BlockId> = function.blocks.keys().collect();
+
+        while let Some(block_id) = queue.pop_front() {
+            queued.remove(block_id);
+            let points = block_live_points(function, block_id, &live_in);
+            let entry = points.first().cloned().unwrap_or_default();
+            if live_in.get(block_id) == Some(&entry) {
+                continue;
+            }
+            live_in.insert(block_id, entry);
+            for &pred in predecessors.get(block_id).into_iter().flatten() {
+                if queued.insert(pred).is_none() {
+                    queue.push_back(pred);
+                }
             }
         }
 
-        let (terminator_reads, terminator_moves): (Vec<LocalId>, Vec<LocalId>) =
-            match &block.terminator {
-                mir::Terminator::Call { arguments, .. } => (
-                    arguments.iter().flat_map(collect_operand_reads).collect(),
-                    arguments.iter().flat_map(collect_operand_moves).collect(),
-                ),
-                mir::Terminator::Assert { cond, msg, .. } => {
-                    let mut reads = collect_operand_reads(cond);
-                    reads.extend(collect_operand_reads(msg));
-                    let mut moves = collect_operand_moves(cond);
-                    moves.extend(collect_operand_moves(msg));
-                    (reads, moves)
-                }
-                mir::Terminator::Goto(_)
-                | mir::Terminator::Drop { .. }
-                | mir::Terminator::Return
-                | mir::Terminator::Unreachable => (Vec::new(), Vec::new()),
-                mir::Terminator::SwitchInt { discriminant, .. } => (
-                    collect_operand_reads(discriminant),
-                    collect_operand_moves(discriminant),
-                ),
-            };
-        if !terminator_reads.is_empty() {
-            points.push(PointInfo {
-                assign: None,
-                reads: terminator_reads,
-                moves: terminator_moves,
-            });
+        let mut live_before = VecMap::new();
+        for block_id in function.blocks.keys() {
+            live_before.insert(block_id, block_live_points(function, block_id, &live_in));
         }
-
-        points_per_block.insert(block_id, points);
+        Self { live_before }
     }
-    points_per_block
+
+    fn live_before(&self, block_id: BlockId, index: usize) -> impl Iterator<Item = &LocalId> {
+        self.live_before
+            .get(block_id)
+            .and_then(|points| points.get(index))
+            .into_iter()
+            .flatten()
+    }
 }
 
-fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>> {
+// Live locals before every statement of `block_id` and before its
+// terminator, given the live-in sets of its successors.
+fn block_live_points(
+    function: &mir::Function,
+    block_id: BlockId,
+    live_in: &VecMap<BlockId, BTreeSet<LocalId>>,
+) -> Vec<BTreeSet<LocalId>> {
+    let block = &function.blocks[block_id];
+    let mut live = BTreeSet::new();
+    for successor in super::successors(&block.terminator) {
+        if let Some(successor_live) = live_in.get(successor) {
+            live.extend(successor_live.iter().copied());
+        }
+    }
+
+    terminator_liveness(function, &block.terminator, &mut live);
+    let mut points = vec![live.clone()];
+    for statement in block.statements.iter().rev() {
+        if let mir::Statement::Assign(place, rvalue) = statement {
+            write_liveness(place, &mut live);
+            rvalue_uses(rvalue, &mut live);
+        }
+        points.push(live.clone());
+    }
+    points.reverse();
+    points
+}
+
+fn terminator_liveness(
+    function: &mir::Function,
+    terminator: &mir::Terminator,
+    live: &mut BTreeSet<LocalId>,
+) {
+    match terminator {
+        mir::Terminator::Call {
+            arguments,
+            destination,
+            ..
+        } => {
+            if let Some(destination) = destination {
+                write_liveness(destination, live);
+            }
+            for argument in arguments.iter() {
+                operand_uses(argument, live);
+            }
+        }
+        mir::Terminator::SwitchInt { discriminant, .. } => operand_uses(discriminant, live),
+        mir::Terminator::Assert { cond, msg, .. } => {
+            operand_uses(cond, live);
+            operand_uses(msg, live);
+        }
+        mir::Terminator::Return => {
+            if let Some(return_local) = function.return_local {
+                live.insert(return_local);
+            }
+        }
+        mir::Terminator::Goto(_) | mir::Terminator::Drop { .. } | mir::Terminator::Unreachable => {}
+    }
+}
+
+// A whole-local write ends that local's previous value; a write through a
+// reference or into an element reads what it goes through.
+fn write_liveness(place: &mir::Place, live: &mut BTreeSet<LocalId>) {
+    if place.projection.is_empty() {
+        live.remove(&place.local);
+        return;
+    }
+    let goes_through = place
+        .projection
+        .iter()
+        .any(|elem| matches!(elem, mir::PlaceElem::Deref | mir::PlaceElem::Index(_)));
+    if goes_through {
+        live.insert(place.local);
+    }
+    index_uses(place, live);
+}
+
+fn rvalue_uses(rvalue: &mir::Rvalue, live: &mut BTreeSet<LocalId>) {
+    match rvalue {
+        mir::Rvalue::Ref { place, .. } | mir::Rvalue::Len(place) => place_uses(place, live),
+        _ => {
+            for operand in rvalue_operands(rvalue) {
+                operand_uses(operand, live);
+            }
+        }
+    }
+}
+
+fn operand_uses(operand: &mir::Operand, live: &mut BTreeSet<LocalId>) {
+    if let mir::Operand::Copy(place) | mir::Operand::Move(place) = operand {
+        place_uses(place, live);
+    }
+}
+
+fn place_uses(place: &mir::Place, live: &mut BTreeSet<LocalId>) {
+    live.insert(place.local);
+    index_uses(place, live);
+}
+
+fn index_uses(place: &mir::Place, live: &mut BTreeSet<LocalId>) {
+    for elem in &place.projection {
+        if let mir::PlaceElem::Index(index) = elem {
+            live.insert(*index);
+        }
+    }
+}
+
+fn predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>> {
     let mut predecessors: VecMap<BlockId, Vec<BlockId>> = VecMap::new();
     for (block_id, block) in function.blocks.entries() {
         for successor in super::successors(&block.terminator) {
@@ -337,368 +582,4 @@ fn build_predecessors(function: &mir::Function) -> VecMap<BlockId, Vec<BlockId>>
         }
     }
     predecessors
-}
-
-struct BlockSummary {
-    use_set: VecSet<LocalId>,
-    def_set: VecSet<LocalId>,
-}
-
-fn summarize_block(points: &[PointInfo]) -> BlockSummary {
-    let mut use_set = VecSet::new();
-    let mut def_set = VecSet::new();
-    for point in points {
-        for &read in &point.reads {
-            if !def_set.contains(read) {
-                use_set.insert(read);
-            }
-        }
-        if let Some((local, _)) = point.assign {
-            def_set.insert(local);
-        }
-    }
-    BlockSummary { use_set, def_set }
-}
-
-fn compute_block_liveness(
-    function: &mir::Function,
-    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &VecMap<BlockId, Vec<BlockId>>,
-) -> VecMap<BlockId, VecSet<LocalId>> {
-    let summaries: VecMap<BlockId, BlockSummary> = points_per_block
-        .entries()
-        .map(|(block_id, points)| (block_id, summarize_block(points)))
-        .collect();
-
-    let mut live_in: VecMap<BlockId, VecSet<LocalId>> = VecMap::new();
-    let mut live_out: VecMap<BlockId, VecSet<LocalId>> = VecMap::new();
-
-    let Some((entry, _)) = function.blocks.entries().next() else {
-        return live_out;
-    };
-
-    let initial_order = super::postorder(function, entry);
-    let mut queued: VecSet<BlockId> = initial_order.iter().copied().collect();
-    let mut queue: VecDeque<BlockId> = initial_order.into_iter().collect();
-
-    while let Some(block_id) = queue.pop_front() {
-        queued.remove(block_id);
-
-        let mut out = VecSet::new();
-        if let Some(block) = function.blocks.get(block_id) {
-            for successor in super::successors(&block.terminator) {
-                if let Some(succ_in) = live_in.get(successor) {
-                    out.extend(succ_in.entries());
-                }
-            }
-        }
-
-        let Some(summary) = summaries.get(block_id) else {
-            continue;
-        };
-        let mut inn = out.clone();
-        for def in summary.def_set.entries() {
-            inn.remove(def);
-        }
-        inn.extend(summary.use_set.entries());
-
-        let changed = match live_in.get(block_id) {
-            Some(existing) => *existing != inn,
-            None => true,
-        };
-        live_out.insert(block_id, out);
-        if changed {
-            live_in.insert(block_id, inn);
-            for &pred in predecessors.get(block_id).into_iter().flatten() {
-                if queued.insert(pred).is_none() {
-                    queue.push_back(pred);
-                }
-            }
-        }
-    }
-
-    live_out
-}
-
-fn compute_point_liveness(
-    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
-    block_live_out: &VecMap<BlockId, VecSet<LocalId>>,
-) -> std::collections::HashMap<(BlockId, usize), VecSet<LocalId>> {
-    let mut live_in = std::collections::HashMap::new();
-    for (block_id, points) in points_per_block.entries() {
-        let mut live_out = block_live_out.get(block_id).cloned().unwrap_or_default();
-        for index in (0..points.len()).rev() {
-            let mut current = live_out.clone();
-            if let Some((local, _)) = points[index].assign {
-                current.remove(local);
-            }
-            for &read in &points[index].reads {
-                current.insert(read);
-            }
-            live_in.insert((block_id, index), current.clone());
-            live_out = current;
-        }
-    }
-    live_in
-}
-
-// The lattice `value_of`-style alias resolution converges over: `Unknown` is
-// the join identity (an in-progress cyclic reference, skipped rather than
-// treated as a disagreement); `Disagreement` is final (two different real
-// answers, or a value reaching an untracked parameter).
-#[derive(Clone, PartialEq, Eq)]
-enum Resolved {
-    Unknown,
-    Value(LocalId, Vec<mir::PlaceElem>, bool),
-    Disagreement,
-}
-
-fn join_resolved(a: Resolved, b: Resolved) -> Resolved {
-    match (&a, &b) {
-        (Resolved::Unknown, _) => b,
-        (_, Resolved::Unknown) => a,
-        (Resolved::Disagreement, _) | (_, Resolved::Disagreement) => Resolved::Disagreement,
-        (Resolved::Value(..), Resolved::Value(..)) => {
-            if a == b {
-                a
-            } else {
-                Resolved::Disagreement
-            }
-        }
-    }
-}
-
-type AliasTable = std::collections::HashMap<(LocalId, BlockId), Resolved>;
-
-struct AliasCtx<'a> {
-    points_per_block: &'a VecMap<BlockId, Vec<PointInfo<'a>>>,
-    predecessors: &'a VecMap<BlockId, Vec<BlockId>>,
-    previous_round: &'a AliasTable,
-}
-
-struct AliasState<'a> {
-    in_progress: &'a mut std::collections::HashSet<(LocalId, BlockId)>,
-    this_round: &'a mut AliasTable,
-}
-
-fn converge_aliases(
-    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
-    predecessors: &VecMap<BlockId, Vec<BlockId>>,
-) -> AliasTable {
-    let mut previous_round = AliasTable::new();
-    loop {
-        let mut this_round = AliasTable::new();
-        let mut in_progress = std::collections::HashSet::new();
-        let ctx = AliasCtx {
-            points_per_block,
-            predecessors,
-            previous_round: &previous_round,
-        };
-
-        let mut state = AliasState {
-            in_progress: &mut in_progress,
-            this_round: &mut this_round,
-        };
-
-        for (block_id, points) in points_per_block.entries() {
-            for (index, point) in points.iter().enumerate() {
-                let Some((_, rvalue)) = point.assign else {
-                    continue;
-                };
-                if let mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) =
-                    rvalue
-                    && place.projection.is_empty()
-                {
-                    resolve_before_index(place.local, block_id, index, &ctx, &mut state);
-                }
-            }
-        }
-
-        if this_round == previous_round {
-            return this_round;
-        }
-
-        previous_round = this_round;
-    }
-}
-
-fn resolve_from_block_start(
-    local: LocalId,
-    block_id: BlockId,
-    ctx: &AliasCtx,
-    state: &mut AliasState,
-) -> Resolved {
-    let key = (local, block_id);
-    if let Some(settled) = state.this_round.get(&key) {
-        return settled.clone();
-    }
-
-    if state.in_progress.contains(&key) {
-        return ctx
-            .previous_round
-            .get(&key)
-            .cloned()
-            .unwrap_or(Resolved::Unknown);
-    }
-
-    state.in_progress.insert(key);
-    let statement_count = ctx.points_per_block[block_id].len();
-    let result = resolve_before_index(local, block_id, statement_count, ctx, state);
-    state.in_progress.remove(&key);
-    state.this_round.insert(key, result.clone());
-    result
-}
-
-fn resolve_before_index(
-    local: LocalId,
-    block_id: BlockId,
-    before_index: usize,
-    ctx: &AliasCtx,
-    state: &mut AliasState,
-) -> Resolved {
-    let points = &ctx.points_per_block[block_id];
-    for index in (0..before_index).rev() {
-        let Some((assigned_local, rvalue)) = points[index].assign else {
-            continue;
-        };
-        if assigned_local != local {
-            continue;
-        }
-        return classify_generation_resolved(rvalue, block_id, index, ctx, state);
-    }
-
-    let preds = ctx
-        .predecessors
-        .get(block_id)
-        .filter(|preds| !preds.is_empty());
-
-    let Some(preds) = preds else {
-        return Resolved::Disagreement;
-    };
-
-    let mut combined = Resolved::Unknown;
-    for &pred in preds {
-        let pred_value = resolve_from_block_start(local, pred, ctx, state);
-        combined = join_resolved(combined, pred_value);
-    }
-    combined
-}
-
-fn classify_generation_resolved(
-    rvalue: &mir::Rvalue,
-    block_id: BlockId,
-    at_index: usize,
-    ctx: &AliasCtx,
-    state: &mut AliasState,
-) -> Resolved {
-    match rvalue {
-        mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
-            if !place.projection.is_empty() {
-                return Resolved::Disagreement;
-            }
-            resolve_before_index(place.local, block_id, at_index, ctx, state)
-        }
-        mir::Rvalue::Ref { place, mutable } => {
-            let has_deref = place
-                .projection
-                .iter()
-                .any(|elem| matches!(elem, mir::PlaceElem::Deref));
-            if has_deref {
-                Resolved::Disagreement
-            } else {
-                Resolved::Value(place.local, place.projection.clone(), *mutable)
-            }
-        }
-        _ => Resolved::Disagreement,
-    }
-}
-
-fn classify_generation(
-    rvalue: &mir::Rvalue,
-    block_id: BlockId,
-    at_index: usize,
-    ctx: &AliasCtx,
-) -> Resolved {
-    let mut in_progress = std::collections::HashSet::new();
-    let mut scratch = AliasTable::new();
-    let mut state = AliasState {
-        in_progress: &mut in_progress,
-        this_round: &mut scratch,
-    };
-    classify_generation_resolved(rvalue, block_id, at_index, ctx, &mut state)
-}
-
-fn generation_live_points(
-    local: LocalId,
-    def_block: BlockId,
-    def_index: usize,
-    function: &mir::Function,
-    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
-    point_live_in: &std::collections::HashMap<(BlockId, usize), VecSet<LocalId>>,
-) -> std::collections::HashSet<(BlockId, usize)> {
-    let mut result = std::collections::HashSet::new();
-    let mut visited = std::collections::HashSet::new();
-    let mut stack = point_successors(def_block, def_index, function, points_per_block);
-
-    while let Some((block_id, index)) = stack.pop() {
-        if !visited.insert((block_id, index)) {
-            continue;
-        }
-        let Some(live) = point_live_in.get(&(block_id, index)) else {
-            continue;
-        };
-        if !live.contains(local) {
-            continue;
-        }
-        result.insert((block_id, index));
-
-        let redefines = points_per_block[block_id][index]
-            .assign
-            .is_some_and(|(assigned, _)| assigned == local);
-        if !redefines {
-            stack.extend(point_successors(
-                block_id,
-                index,
-                function,
-                points_per_block,
-            ));
-        }
-    }
-
-    result
-}
-
-fn point_successors(
-    block_id: BlockId,
-    index: usize,
-    function: &mir::Function,
-    points_per_block: &VecMap<BlockId, Vec<PointInfo<'_>>>,
-) -> Vec<(BlockId, usize)> {
-    let points = &points_per_block[block_id];
-    if index + 1 < points.len() {
-        return vec![(block_id, index + 1)];
-    }
-
-    let mut result = Vec::new();
-    let mut visited = VecSet::new();
-    let Some(block) = function.blocks.get(block_id) else {
-        return result;
-    };
-
-    let mut stack = super::successors(&block.terminator);
-    while let Some(next) = stack.pop() {
-        if visited.insert(next).is_some() {
-            continue;
-        }
-
-        match points_per_block.get(next) {
-            Some(pts) if !pts.is_empty() => result.push((next, 0)),
-            _ => {
-                if let Some(next_block) = function.blocks.get(next) {
-                    stack.extend(super::successors(&next_block.terminator));
-                }
-            }
-        }
-    }
-    result
 }

@@ -2460,11 +2460,9 @@ fn an_autocopy_primitive_argument_is_still_copied() {
 }
 
 #[test]
-fn a_move_only_argument_reached_through_a_field_projection_is_still_copied() {
-    // Scoped deliberately: `SetDropFlag` is per-`LocalId`, not per-place, so
-    // a field-projection move (`consume(container.item)`) has no sound way
-    // to express "only this one field moved" yet — see `lower_call_operand`'s
-    // docs. Falls through to a plain `Copy`, same as before Move existed.
+fn a_move_only_argument_reached_through_a_field_projection_is_moved() {
+    // A partial move: `c.item` itself is moved, with no whole-local
+    // `MarkMoved`/`SetDropFlag` bookkeeping for `c`.
     let mir = lower_source(
         "struct Session {\n    n: int\n}\nstruct Container {\n    item: Session\n}\nconsume(s: Session) {}\nf(c: Container) {\n    consume(c.item)\n}\n",
         "f",
@@ -2481,7 +2479,7 @@ fn a_move_only_argument_reached_through_a_field_projection_is_still_copied() {
         .expect("expected a Call terminator");
     assert!(matches!(
         &arguments[0],
-        Operand::Copy(place) if matches!(place.projection.as_slice(), [mir_model::PlaceElem::Field(0)])
+        Operand::Move(place) if matches!(place.projection.as_slice(), [mir_model::PlaceElem::Field(0)])
     ));
 }
 
@@ -3236,6 +3234,177 @@ fn check_moves_flags_a_borrow_of_an_already_moved_value() {
     assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
 }
 
+// Partial-move tests: moving a move-only field out of an owned local leaves
+// that field (and anything overlapping it) unusable, while its disjoint
+// siblings stay usable; moving out from behind a reference, pointer, or
+// index is rejected outright.
+const PARTIAL_MOVE_TYPES: &str = "struct Box2 {\n    p: *int\n}\nstruct Two {\n    a: *int\n    b: *int\n}\nstruct Outer {\n    inner: Box2\n}\nstruct Mixed {\n    p: *int\n    n: int\n}\nconsume(p: *int) {}\ntakeBox(b: Box2) {}\n";
+
+fn partial_move_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    let mir = lower_source(&format!("{PARTIAL_MOVE_TYPES}{function}"), "f")
+        .expect("expected successful lowering");
+    crate::borrow_checker::check_moves(&mir)
+}
+
+fn assert_single_fault(faults: &[crate::fault::MirFault], expected: MirErrorKind, what: &str) {
+    assert_eq!(faults.len(), 1, "expected {what}, got {faults:#?}");
+    assert_eq!(
+        std::mem::discriminant(faults[0].kind()),
+        std::mem::discriminant(&expected),
+        "expected {what}, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_moved_out_twice() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a second move of b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_copied_into_two_owners() {
+    // Two locals owning one allocation would both free it.
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    q := b.p\n    r := b.p\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "the second owner of b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_whole_struct_used_after_a_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    takeBox(b)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "moving a partially-moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_an_enclosing_field_used_after_a_nested_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    bx := Box2{p: p}\n    o := Outer{inner: bx}\n    consume(o.inner.p)\n    takeBox(o.inner)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "moving a partially-moved o.inner to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_moved_on_only_one_branch_then_used() {
+    let faults = partial_move_faults(
+        "f(c: bool) {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    if c {\n        consume(b.p)\n    }\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a maybe-moved b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_used_after_its_whole_struct_moved() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    takeBox(b)\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a field of a moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_borrow_of_a_partially_moved_struct() {
+    let faults = partial_move_faults(
+        "useBox(r: &Box2) {}\nf() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    r := &b\n    useBox(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "borrowing a partially-moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_allows_moving_disjoint_fields() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    m := 2\n    pa := new(n)\n    pb := new(m)\n    t := Two{a: pa, b: pb}\n    consume(t.a)\n    consume(t.b)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "moving two different fields should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_allows_reading_an_unmoved_field_of_a_partially_moved_struct() {
+    let faults = partial_move_faults(
+        "f(): int {\n    n := 1\n    p := new(n)\n    m := Mixed{p: p, n: 3}\n    consume(m.p)\n    return m.n\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "reading an unmoved sibling field should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_allows_a_field_reinitialized_after_a_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    mut b := Box2{p: p}\n    consume(b.p)\n    b.p = new(n)\n    consume(b.p)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a reinitialized field should be movable again, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_a_field_out_through_a_reference() {
+    let faults = partial_move_faults("f(r: &Box2) {\n    consume(r.p)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out through &Box2 to be rejected",
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_a_field_out_through_an_owning_pointer() {
+    let faults = partial_move_faults("f(p: *Box2) {\n    consume(p.p)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out through *Box2 to be rejected",
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_an_element_out_through_a_slice() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    m := 2\n    p1 := new(n)\n    p2 := new(m)\n    mut a: [2]*int = [p1, p2]\n    s: [&mut]*int = &a\n    consume(s[0])\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out of a slice element to be rejected",
+    );
+}
+
 #[test]
 fn new_expression_lowers_to_a_heap_alloc_rvalue() {
     let mir = lower_source("f(): int {\n    p := new(5)\n    return *p\n}\n", "f")
@@ -3392,18 +3561,53 @@ fn check_escapes_allows_reborrowing_through_a_reference_parameter() {
 }
 
 #[test]
-fn check_escapes_allows_dereferencing_an_owning_heap_pointer() {
-    // Same `Deref`-in-the-projection rule as the reborrow case above, but
-    // through an *owning* pointer instead of a reference — `p`'s heap
-    // allocation outlives this function's own stack frame regardless of who
-    // called it, so this is safe for a structurally identical reason.
+fn check_escapes_flags_a_reference_into_an_owning_heap_pointer_parameter() {
+    // `p` is passed by value and owned by this function, so it is freed at
+    // function exit — a reference into its allocation outlives it.
     let (mir, declares) =
         lower_source_with_declares("f(p: *int): &int {\n    return &*p\n}\n", "f");
 
     let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a reference into a dropped owning parameter to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_reference_into_a_body_local_heap_pointer() {
+    // `p` is dropped (freed) at function exit, like any other body local.
+    let (mir, declares) = lower_source_with_declares(
+        "f(): &int {\n    n := 5\n    p := new(n)\n    return &*p\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a reference into a freed heap local to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_heap_pointer_reached_through_a_reference_parameter() {
+    // The pointer is owned by the caller's `Holder`, not by this function,
+    // so its allocation outlives this call.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Holder { p: *int }\nf(h: &Holder): &int {\n    return &*h.p\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
     assert!(
         faults.is_empty(),
-        "dereferencing an owning heap pointer should be accepted, got {:#?}",
+        "a heap pointer owned behind a reference parameter should be accepted, got {:#?}",
         faults
     );
 }
@@ -3722,26 +3926,527 @@ fn check_escapes_flags_a_dangling_reference_written_directly_into_a_struct_field
 }
 
 #[test]
-fn check_escapes_still_allows_a_struct_field_reassigned_in_an_earlier_block() {
-    // Documents the honest, still-open gap: `trace_field_within_block` only
-    // scans its own block, with no predecessor walk. Here `h.r` is set to a
-    // dangling reference in the entry block, then a call to `noop()` splits
-    // the function into a new block before the `return` — so the block
-    // actually holding `&h.r.value` never sees `h`'s own defining write at
-    // all, and this falls back to the pre-existing (permissive) default
-    // instead of being traced. Not a regression: the old code was
-    // unconditionally `Safe` for every field-Deref shape, so this is still
-    // no worse than before this slice, just not yet fixed.
+fn check_escapes_flags_a_struct_field_assigned_in_an_earlier_block() {
+    // The call to `noop()` splits the function, so `h`'s defining write
+    // lives in a different block than the `return`.
     let (functions, declares) = lower_all_with_declares(
         "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nnoop() {}\nf(): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    noop()\n    return &h.r.value\n}\n",
     );
 
     let faults = crate::borrow_checker::check_escapes(&functions, &declares);
-    assert!(
-        faults.is_empty(),
-        "a field write from an earlier block is a known, documented gap, not yet traced: expected no fault, got {:#?}",
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a field write from an earlier block to be traced, got {:#?}",
         faults
     );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_through_two_struct_fields() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nstruct Outer { h: Holder }\nf(): &int {\n    x := Obj2{value: 1}\n    p := &x\n    h := Holder{r: p}\n    o := Outer{h: h}\n    return &o.h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling reference two fields deep to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_copied_out_of_a_struct_field() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(): &Obj2 {\n    x := Obj2{value: 1}\n    p := &x\n    h := Holder{r: p}\n    q := h.r\n    return q\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling reference copied out of a field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_field_passed_through_a_tied_parameter() {
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nid(r: &Obj2): &Obj2 {\n    return r\n}\nf(): &Obj2 {\n    x := Obj2{value: 1}\n    p := &x\n    h := Holder{r: p}\n    return id(h.r)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling field passed through a tied parameter to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_read_through_a_slice_element() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nf(): &int {\n    x := Obj2{value: 1}\n    p := &x\n    a: [1]&Obj2 = [p]\n    s: [&]&Obj2 = &a\n    return &s[0].value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling reference reached through a slice element to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_struct_field_assigned_safely_in_an_earlier_block() {
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nnoop() {}\nf(safe: &Obj2): &int {\n    mut h := Holder{r: safe}\n    noop()\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a field set from a parameter in an earlier block should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_through_two_struct_fields() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nstruct Outer { h: Holder }\nf(safe: &Obj2): &int {\n    h := Holder{r: safe}\n    o := Outer{h: h}\n    return &o.h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter reached two fields deep should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_copied_out_of_a_struct_field() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2): &Obj2 {\n    h := Holder{r: safe}\n    q := h.r\n    return q\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter copied out of a field should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_a_safe_field_passed_through_a_tied_parameter() {
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nid(r: &Obj2): &Obj2 {\n    return r\n}\nf(safe: &Obj2): &Obj2 {\n    h := Holder{r: safe}\n    return id(h.r)\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter passed through a field into a tied parameter should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_read_through_a_slice_element() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nf(safe: &Obj2): &int {\n    a: [1]&Obj2 = [safe]\n    s: [&]&Obj2 = &a\n    return &s[0].value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter reached through a slice element should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_written_through_a_mutable_alias() {
+    // `m.r = &x` writes `h.r` through `m`, so the scan rooted at `h` must
+    // not skip it and fall back to `h`'s earlier safe construction.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2): &int {\n    x := Obj2{value: 1}\n    mut h := Holder{r: safe}\n    m := &mut h\n    m.r = &x\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling write through a mutable alias to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_written_through_a_mutable_alias() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2, other: &Obj2): &int {\n    mut h := Holder{r: safe}\n    m := &mut h\n    m.r = other\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter written through a mutable alias should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_written_through_a_mutable_slice() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nf(safe: &Obj2): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut a: [1]&Obj2 = [safe]\n    w: [&mut]&Obj2 = &a\n    w[0] = p\n    r: [&]&Obj2 = &a\n    return &r[0].value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling write through a mutable slice to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_written_through_a_mutable_slice() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nf(safe: &Obj2, other: &Obj2): &int {\n    mut a: [1]&Obj2 = [safe]\n    w: [&mut]&Obj2 = &a\n    w[0] = other\n    r: [&]&Obj2 = &a\n    return &r[0].value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter written through a mutable slice should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_written_by_a_callee_through_a_mutable_parameter() {
+    // `set` stores its `r` argument into the caller's `h`, so `h.r` is only
+    // as safe as what the caller passed for `r`.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2) {\n    h.r = r\n}\nf(safe: &Obj2): &int {\n    x := Obj2{value: 1}\n    mut h := Holder{r: safe}\n    xr := &x\n    hm := &mut h\n    set(hm, xr)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a dangling reference stored by a callee to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_written_by_a_callee_through_a_mutable_parameter() {
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2) {\n    h.r = r\n}\nf(safe: &Obj2, other: &Obj2): &int {\n    mut h := Holder{r: safe}\n    hm := &mut h\n    set(hm, other)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter stored by a callee should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_callee_storing_its_own_local_into_a_mutable_parameter() {
+    // No reference is returned at all: the dangling reference escapes
+    // through the caller's memory instead.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder) {\n    x := Obj2{value: 1}\n    h.r = &x\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a local stored into a mutable parameter to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_dangling_field_overwritten_by_a_callee_that_always_writes() {
+    // `set` writes `h.r` on every path, so the caller's earlier dangling
+    // value is replaced, not joined.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2) {\n    h.r = r\n}\nf(safe: &Obj2): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    set(hm, safe)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a callee that always overwrites the field should replace its old value, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_field_only_conditionally_overwritten_by_a_callee() {
+    // `setIf` may skip the write, so the earlier dangling value survives.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nsetIf(h: &mut Holder, r: &Obj2, c: bool) {\n    if c {\n        h.r = r\n    }\n}\nf(safe: &Obj2, c: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    setIf(hm, safe, c)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a conditionally-overwritten dangling field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_conditionally_written_by_a_callee() {
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nsetIf(h: &mut Holder, r: &Obj2, c: bool) {\n    if c {\n        h.r = r\n    }\n}\nf(safe: &Obj2, c: bool): &int {\n    x := Obj2{value: 1}\n    mut h := Holder{r: safe}\n    xr := &x\n    hm := &mut h\n    setIf(hm, xr, c)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a conditionally-written dangling reference to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_dangling_field_overwritten_through_a_unique_mutable_alias() {
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    m := &mut h\n    m.r = safe\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a write through an alias that always targets h should replace its old value, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_field_overwritten_through_an_alias_that_may_target_another_place()
+{
+    // `m` points at `h` or `g` depending on `c`, so the write through it
+    // can't replace `h.r`'s earlier dangling value.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2, c: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    mut g := Holder{r: safe}\n    mut m := &mut h\n    if c {\n        m = &mut g\n    }\n    m.r = safe\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a write through an ambiguous alias to leave h.r's dangling value in place, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+// `copyR` stores whatever the caller already had in `src.r` into `dst.r`,
+// so the caller's `dst.r` ends up exactly as safe as its own `src.r`.
+const COPY_FIELD_CALLEE: &str = "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\ncopyR(dst: &mut Holder, src: &Holder) {\n    dst.r = src.r\n}\n";
+
+#[test]
+fn check_escapes_flags_a_dangling_field_copied_between_arguments_by_a_callee() {
+    let (functions, declares) = lower_all_with_declares(&format!(
+        "{COPY_FIELD_CALLEE}f(safe: &Obj2): &int {{\n    x := Obj2{{value: 1}}\n    p := &x\n    mut dst := Holder{{r: safe}}\n    src := Holder{{r: p}}\n    dm := &mut dst\n    sr := &src\n    copyR(dm, sr)\n    return &dst.r.value\n}}\n"
+    ));
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the callee's copy of a dangling field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_field_copied_between_arguments_by_a_callee() {
+    let (functions, declares) = lower_all_with_declares(&format!(
+        "{COPY_FIELD_CALLEE}f(safe: &Obj2, other: &Obj2): &int {{\n    mut dst := Holder{{r: safe}}\n    src := Holder{{r: other}}\n    dm := &mut dst\n    sr := &src\n    copyR(dm, sr)\n    return &dst.r.value\n}}\n"
+    ));
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter copied between fields by a callee should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_converges_on_a_recursive_callee_writing_through_its_mutable_parameter() {
+    // `set` writes `h.r` either directly or through its own recursive call,
+    // so every return has written it and the caller's dangling value is
+    // replaced.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2, c: bool) {\n    if c {\n        set(h, r, false)\n        return\n    }\n    h.r = r\n}\nf(safe: &Obj2, c: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    set(hm, safe, c)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "every path through the recursive callee writes h.r, so the call should replace it, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_field_a_recursive_callee_only_sometimes_overwrites() {
+    // With `d` false neither branch writes, so the optimistic start of the
+    // summary rounds must still settle on "sometimes".
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2, c: bool, d: bool) {\n    if c {\n        set(h, r, false, d)\n        return\n    }\n    if d {\n        h.r = r\n    }\n}\nf(safe: &Obj2, c: bool, d: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    set(hm, safe, c, d)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a recursive callee's conditional write to leave the dangling value in place, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+// Recursive-type tests: `n.r` is a distinct (strongly updated) place, while
+// every path at or below `n.next` folds onto one summary place that is only
+// ever weakly updated. The signal is the dangling store left in the
+// caller's memory at function exit.
+const RECURSIVE_NODE: &str =
+    "struct Obj2 { value: int }\nstruct Node {\n    r: &Obj2\n    next: *Node\n}\n";
+
+fn recursive_node_faults(body: &str) -> Vec<crate::fault::MirFault> {
+    let source = format!(
+        "{RECURSIVE_NODE}f(n: &mut Node, safe: &Obj2) {{\n    x := Obj2{{value: 1}}\n{body}}}\n"
+    );
+    let (mir, declares) = lower_source_with_declares(&source, "f");
+    crate::borrow_checker::check_escapes(&function_map(mir), &declares)
+}
+
+#[test]
+fn check_escapes_allows_a_dangling_head_field_overwritten_on_a_recursive_type() {
+    let faults = recursive_node_faults("    n.r = &x\n    n.r = safe\n");
+    assert!(
+        faults.is_empty(),
+        "the head's own field should be strongly updated, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_tail_field_not_cleared_by_a_head_write() {
+    let faults = recursive_node_faults("    n.next.r = &x\n    n.r = safe\n");
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a head write to leave the tail's dangling value in place, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_deep_tail_field_not_cleared_by_a_shallower_tail_write() {
+    // `n.next.r` and `n.next.next.r` share one summary place, so the later
+    // write can't replace the earlier one.
+    let faults = recursive_node_faults("    n.next.next.r = &x\n    n.next.r = safe\n");
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the summary place to be weakly updated, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_tail_field_overwritten_on_a_recursive_type() {
+    // An accepted false positive of the summary rule: even the same tail
+    // path, written twice, is only ever weakly updated.
+    let faults = recursive_node_faults("    n.next.r = &x\n    n.next.r = safe\n");
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a tail overwrite to be a weak update, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_converges_when_a_loop_walks_a_recursive_type() {
+    // `cur` aliases `n`, then the summary place, on later iterations; the
+    // fixed point must terminate with every write treated as weak.
+    let (mir, declares) = lower_source_with_declares(
+        &format!(
+            "{RECURSIVE_NODE}f(n: &mut Node, safe: &Obj2, c: bool) {{\n    mut cur := n\n    for c {{\n        cur.r = safe\n        cur = &mut *cur.next\n    }}\n}}\n"
+        ),
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "writing a parameter through a list-walking alias should be accepted, got {:#?}",
+        faults
+    );
+}
+
+// Borrow conflicts are checked across the whole program (a call result
+// carries the loans of the arguments it derives from), so every function in
+// `source` is lowered and checked.
+fn overlaps_in(source: &str) -> Vec<crate::fault::MirFault> {
+    let (functions, declares) = lower_all_with_declares(source);
+    crate::borrow_checker::check_borrow_overlaps(&functions, &declares)
+}
+
+fn moves_while_borrowed_in(source: &str) -> Vec<crate::fault::MirFault> {
+    let (functions, declares) = lower_all_with_declares(source);
+    crate::borrow_checker::check_move_while_borrowed(&functions, &declares)
 }
 
 #[test]
@@ -3750,13 +4455,9 @@ fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
     // created, `ref` is created and used while `mutRef` is still pending
     // its own later use — their live ranges overlap, and one side is
     // mutable.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    useMut(mutRef)\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3770,13 +4471,9 @@ fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
 fn check_borrow_overlaps_allows_two_overlapping_shared_borrows() {
     // Unlimited simultaneous shared borrows are always fine — neither side
     // is mutable, so this must never be flagged regardless of overlap.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r1 := &var\n    r2 := &var\n    useRef(r1)\n    useRef(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two overlapping shared borrows should never be flagged, got {:#?}",
@@ -3790,13 +4487,9 @@ fn check_borrow_overlaps_traces_a_reborrow_through_an_intermediate_local() {
     // the trace has to follow it back to `r1`'s own `Ref` to realize `r2`
     // and `mutRef` actually conflict. `r1` itself (last used only by the
     // `r2 := r1` read, before `mutRef` even exists) must NOT be flagged.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &var\n    r2 := r1\n    mutRef := &mut var\n    useRef(r2)\n    useMut(mutRef)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3812,13 +4505,9 @@ fn check_borrow_overlaps_allows_sequential_non_overlapping_mutable_borrows() {
     // use is strictly before `r2` is even created, so their live ranges
     // don't actually overlap even though both are `&mut` borrows of the
     // same local within the same function.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &mut var\n    useMut(r1)\n    r2 := &mut var\n    useMut(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "sequential, non-overlapping mutable borrows should be accepted, got {:#?}",
@@ -3834,13 +4523,9 @@ fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_bodyless_if_bran
     // after it: on the path where `cond` is true, both are genuinely live
     // at the same time, a real conflict every earlier straight-line-only
     // slice would have missed.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    if cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3859,13 +4544,9 @@ fn check_borrow_overlaps_allows_two_mutable_borrows_in_mutually_exclusive_branch
     // branches, so at most one of them ever exists at runtime. Proves the
     // CFG-aware liveness respects branch exclusivity, not just that it
     // catches more cases than straight-line code did.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    if cond {\n        r1 := &mut var\n        useMut(r1)\n    } else {\n        r2 := &mut var\n        useMut(r2)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two mutable borrows confined to sibling branches should never be flagged, got {:#?}",
@@ -3879,13 +4560,9 @@ fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_for_loop() {
     // have been skipped unanalyzed the moment it contained a loop at all) —
     // `mutRef` remains live throughout the loop body, `ref` is read right
     // after: a real conflict every earlier slice would have missed.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    for cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3900,13 +4577,9 @@ fn check_borrow_overlaps_allows_a_borrow_confined_to_one_loop_iteration() {
     // A loop is now genuinely analyzed, not just "any loop ⇒ reject" — `r`
     // is created and used entirely within the loop body's own single pass
     // (dies before the back edge), so it never conflicts with anything.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    for cond {\n        r := &mut var\n        useMut(r)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "a borrow confined to a single pass through the loop body should never be flagged, got {:#?}",
@@ -3923,13 +4596,9 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body() {
     // for loop's own body, that the old "any for loop ⇒ skip" gate would
     // have missed entirely (`check_borrow_overlaps` never analyzed a single
     // statement of any function containing a `for` before this slice).
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool, branch: bool) {\n    mut var := Obj{}\n    r1 := &mut var\n    for cond {\n        if branch {\n            r2 := &mut var\n            useMut(r2)\n        }\n        useMut(r1)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3945,13 +4614,9 @@ fn check_borrow_overlaps_allows_two_mutable_borrows_of_disjoint_fields() {
     // both live at the same time, but of two different fields of the same
     // struct — genuinely disjoint memory, so this must be accepted even
     // though a whole-locals-only check would (wrongly) flag it.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    ra := &mut var.a\n    rb := &mut var.b\n    useMut(ra)\n    useMut(rb)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two mutable borrows of disjoint fields should never be flagged, got {:#?}",
@@ -3964,13 +4629,9 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_of_the_same_field() {
     // Same shape as the disjoint-fields case, but both borrows target the
     // exact same field — proves field-disjointness isn't over-broad; a
     // real conflict on the same field must still be caught.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    r1 := &mut var.a\n    r2 := &mut var.a\n    useMut(r1)\n    useMut(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -3986,13 +4647,9 @@ fn check_borrow_overlaps_flags_a_whole_struct_borrow_overlapping_a_field_borrow(
     // places, so it must still conflict with a live field borrow — the
     // "one place is a prefix of the other ⇒ overlapping" half of this
     // slice's own scoping, not just the "genuinely disjoint fields" half.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMutPair(r: &mut Pair) {}\nuseMutField(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    rWhole := &mut var\n    rField := &mut var.a\n    useMutPair(rWhole)\n    useMutField(rField)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4002,6 +4659,195 @@ fn check_borrow_overlaps_flags_a_whole_struct_borrow_overlapping_a_field_borrow(
     assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
 }
 
+// Loan-based conflict tests: a `Ref` creates a loan of a place, every
+// reference derived from it (copies, aliases joined across branches, fields
+// it is stored in, call results, reborrows) carries that loan, and an access
+// to an overlapping place while a conflicting loan is still needed is an
+// error unless the access goes through the loan itself.
+const LOAN_TYPES: &str = "struct Obj {\n    n: int\n}\nstruct Holder {\n    r: &mut Obj\n}\nstruct Inner {\n    n: int\n    grow(&mut this) {\n        this.n = this.n + 1\n    }\n}\nstruct Outer {\n    inner: Inner\n    count: int\n}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nid(r: &mut Obj): &mut Obj {\n    return r\n}\n";
+
+fn loan_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    overlaps_in(&format!("{LOAN_TYPES}{function}"))
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_by_an_alias_joined_across_branches() {
+    let faults = loan_faults(
+        "f(c: bool) {\n    mut a := Obj{n: 1}\n    mut b := Obj{n: 2}\n    mut r := &mut a\n    if c {\n        r = &mut b\n    }\n    s := r\n    t := &a\n    useMut(s)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while s may still carry &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_two_mutable_reborrows_through_a_parameter() {
+    let faults = loan_faults(
+        "f(p: &mut Obj) {\n    x := &mut *p\n    y := &mut *p\n    useMut(x)\n    useMut(y)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "a second &mut *p while the first is live to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_parent_reference_used_while_its_reborrow_is_live() {
+    let faults =
+        loan_faults("f(p: &mut Obj) {\n    x := &mut *p\n    useMut(p)\n    useMut(x)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "using p while &mut *p is still needed to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_through_a_struct_field() {
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    ra := &mut a\n    h := Holder{r: ra}\n    q := h.r\n    t := &a\n    useMut(q)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while q still carries &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_by_a_call_result() {
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    ra := &mut a\n    r := id(ra)\n    t := &a\n    useMut(r)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while id's result still carries &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_read_of_a_place_while_it_is_mutably_borrowed() {
+    let faults = loan_faults(
+        "f(): int {\n    mut a := Obj{n: 1}\n    r := &mut a\n    x := a.n\n    useMut(r)\n    return x\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "reading a.n under a live &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_write_to_a_place_while_it_is_borrowed() {
+    let faults =
+        loan_faults("f() {\n    mut a := Obj{n: 1}\n    r := &a\n    a.n = 2\n    useRef(r)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "writing a.n under a live &a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_parent_reference_used_after_its_reborrows_last_use() {
+    let faults =
+        loan_faults("f(p: &mut Obj) {\n    x := &mut *p\n    useMut(x)\n    useMut(p)\n}\n");
+    assert!(
+        faults.is_empty(),
+        "using p after &mut *p is done should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_two_shared_reborrows_through_a_parameter() {
+    let faults =
+        loan_faults("f(p: &Obj) {\n    x := &*p\n    y := &*p\n    useRef(x)\n    useRef(y)\n}\n");
+    assert!(
+        faults.is_empty(),
+        "two shared reborrows should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_mutable_method_call_on_a_field_of_a_mutable_parameter() {
+    // The motivating reborrow: `o.inner.grow()` borrows `(*o).inner` for
+    // the call only, so writing `o.count` afterwards is fine.
+    let faults = loan_faults("f(o: &mut Outer) {\n    o.inner.grow()\n    o.count = 1\n}\n");
+    assert!(
+        faults.is_empty(),
+        "a field method call then a sibling write should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_writing_through_a_mutable_borrow_while_it_is_live() {
+    // An access *through* the loan is never a conflict with that loan.
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    r := &mut a\n    r.n = 2\n    useMut(r)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "writing through the live borrow itself should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_reading_a_place_after_its_mutable_borrow_ends() {
+    let faults = loan_faults(
+        "f(): int {\n    mut a := Obj{n: 1}\n    r := &mut a\n    useMut(r)\n    return a.n\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "reading a after r's last use should be accepted, got {faults:#?}"
+    );
+}
+
+// `c.set(c.get())`: the `&mut` receiver of `set` must only be created once
+// its arguments are evaluated, so `get`'s shared receiver never overlaps it.
+const COUNTER: &str = "struct Counter {\n    n: int\n    get(&this): int {\n        return this.n\n    }\n    set(&mut this, v: int) {\n        this.n = v\n    }\n}\n";
+
+#[test]
+fn mutable_receiver_ref_is_created_after_the_call_arguments_are_evaluated() {
+    let mir = lower_source(
+        &format!("{COUNTER}f() {{\n    mut c := Counter{{n: 1}}\n    c.set(c.get())\n}}\n"),
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let set_block = mir
+        .blocks
+        .values()
+        .find(|block| {
+            matches!(&block.terminator, mir_model::Terminator::Call { arguments, .. } if arguments.len() == 2)
+        })
+        .expect("expected the two-argument call to `set`");
+    let creates_mutable_receiver = set_block.statements.iter().any(|statement| {
+        matches!(
+            statement,
+            mir_model::Statement::Assign(_, Rvalue::Ref { mutable: true, .. })
+        )
+    });
+    assert!(
+        creates_mutable_receiver,
+        "expected the &mut receiver to be created in the block that calls `set`, after `get` returns"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_mutable_method_call_whose_argument_reads_the_receiver() {
+    let faults = overlaps_in(&format!(
+        "{COUNTER}f() {{\n    mut c := Counter{{n: 1}}\n    c.set(c.get())\n}}\n"
+    ));
+    assert!(
+        faults.is_empty(),
+        "c.set(c.get()) should be accepted, got {faults:#?}"
+    );
+}
+
 #[test]
 fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed() {
     // The core case, and proof the conflict rule really is mutability-
@@ -4009,13 +4855,9 @@ fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed(
     // ever a *shared* borrow of `var`, but `var` is moved into `consume`
     // while `r` is still needed for the `useRef(r)` right after — a real
     // conflict, since `r` would dereference storage that's already gone.
-    let mir = lower_source(
+    let faults = moves_while_borrowed_in(
         "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    consume(var)\n    useRef(r)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4031,16 +4873,80 @@ fn check_move_while_borrowed_allows_a_move_after_the_borrows_last_use() {
     // before the move — `r` is no longer live by the time `var` is moved,
     // so this is legal: real NLL-style liveness, not "the borrow's lexical
     // scope hasn't ended yet."
-    let mir = lower_source(
+    let faults = moves_while_borrowed_in(
         "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    useRef(r)\n    consume(var)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    );
     assert!(
         faults.is_empty(),
         "a move after the borrow's own last use should be accepted, got {:#?}",
         faults
+    );
+}
+
+// Projected moves against live borrows: moving `b.p` conflicts with any
+// live borrow overlapping it (`&b`, `&b.p`, or an alias of either), but not
+// with a borrow of a disjoint sibling field.
+fn field_move_while_borrowed_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    let source = format!(
+        "{PARTIAL_MOVE_TYPES}useBox(r: &Box2) {{}}\nuseTwo(r: &Two) {{}}\nuseP(r: &*int) {{}}\n{function}"
+    );
+    moves_while_borrowed_in(&source)
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_its_struct_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    consume(b.p)\n    useBox(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while &b is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_that_field_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b.p\n    consume(b.p)\n    useP(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while &b.p is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_an_alias_of_its_struct_is_live() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    alias := r\n    consume(b.p)\n    useBox(alias)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while an alias of &b is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_allows_a_field_moved_while_a_disjoint_field_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    m := 2\n    pa := new(n)\n    pb := new(m)\n    t := Two{a: pa, b: pb}\n    r := &t.b\n    consume(t.a)\n    useP(r)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a borrow of a disjoint field shouldn't block the move, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_allows_a_field_moved_after_the_borrows_last_use() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    useBox(r)\n    consume(b.p)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a move after the borrow's last use should be accepted, got {faults:#?}"
     );
 }

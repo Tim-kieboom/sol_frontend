@@ -1,5 +1,5 @@
 // expect_fail
-// expect_fault: returns a reference to a local that doesn't outlive this function
+// expect_fault: a reference to a local escapes the function it doesn't outlive
 struct Obj {}
 
 lifetime(obj: &Obj): &Obj {
