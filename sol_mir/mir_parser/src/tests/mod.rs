@@ -3236,6 +3236,177 @@ fn check_moves_flags_a_borrow_of_an_already_moved_value() {
     assert!(matches!(faults[0].kind(), MirErrorKind::UseAfterMove));
 }
 
+// Partial-move tests: moving a move-only field out of an owned local leaves
+// that field (and anything overlapping it) unusable, while its disjoint
+// siblings stay usable; moving out from behind a reference, pointer, or
+// index is rejected outright.
+const PARTIAL_MOVE_TYPES: &str = "struct Box2 {\n    p: *int\n}\nstruct Two {\n    a: *int\n    b: *int\n}\nstruct Outer {\n    inner: Box2\n}\nstruct Mixed {\n    p: *int\n    n: int\n}\nconsume(p: *int) {}\ntakeBox(b: Box2) {}\n";
+
+fn partial_move_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    let mir = lower_source(&format!("{PARTIAL_MOVE_TYPES}{function}"), "f")
+        .expect("expected successful lowering");
+    crate::borrow_checker::check_moves(&mir)
+}
+
+fn assert_single_fault(faults: &[crate::fault::MirFault], expected: MirErrorKind, what: &str) {
+    assert_eq!(faults.len(), 1, "expected {what}, got {faults:#?}");
+    assert_eq!(
+        std::mem::discriminant(faults[0].kind()),
+        std::mem::discriminant(&expected),
+        "expected {what}, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_moved_out_twice() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a second move of b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_copied_into_two_owners() {
+    // Two locals owning one allocation would both free it.
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    q := b.p\n    r := b.p\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "the second owner of b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_whole_struct_used_after_a_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    takeBox(b)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "moving a partially-moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_an_enclosing_field_used_after_a_nested_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    bx := Box2{p: p}\n    o := Outer{inner: bx}\n    consume(o.inner.p)\n    takeBox(o.inner)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "moving a partially-moved o.inner to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_moved_on_only_one_branch_then_used() {
+    let faults = partial_move_faults(
+        "f(c: bool) {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    if c {\n        consume(b.p)\n    }\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a maybe-moved b.p to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_field_used_after_its_whole_struct_moved() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    takeBox(b)\n    consume(b.p)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "a field of a moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_flags_a_borrow_of_a_partially_moved_struct() {
+    let faults = partial_move_faults(
+        "useBox(r: &Box2) {}\nf() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    consume(b.p)\n    r := &b\n    useBox(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::UseAfterMove,
+        "borrowing a partially-moved b to be flagged",
+    );
+}
+
+#[test]
+fn check_moves_allows_moving_disjoint_fields() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    m := 2\n    pa := new(n)\n    pb := new(m)\n    t := Two{a: pa, b: pb}\n    consume(t.a)\n    consume(t.b)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "moving two different fields should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_allows_reading_an_unmoved_field_of_a_partially_moved_struct() {
+    let faults = partial_move_faults(
+        "f(): int {\n    n := 1\n    p := new(n)\n    m := Mixed{p: p, n: 3}\n    consume(m.p)\n    return m.n\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "reading an unmoved sibling field should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_allows_a_field_reinitialized_after_a_partial_move() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    mut b := Box2{p: p}\n    consume(b.p)\n    b.p = new(n)\n    consume(b.p)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a reinitialized field should be movable again, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_a_field_out_through_a_reference() {
+    let faults = partial_move_faults("f(r: &Box2) {\n    consume(r.p)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out through &Box2 to be rejected",
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_a_field_out_through_an_owning_pointer() {
+    let faults = partial_move_faults("f(p: *Box2) {\n    consume(p.p)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out through *Box2 to be rejected",
+    );
+}
+
+#[test]
+fn check_moves_rejects_moving_an_element_out_through_a_slice() {
+    let faults = partial_move_faults(
+        "f() {\n    n := 1\n    m := 2\n    p1 := new(n)\n    p2 := new(m)\n    mut a: [2]*int = [p1, p2]\n    s: [&mut]*int = &a\n    consume(s[0])\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveOutOfBorrow,
+        "a move out of a slice element to be rejected",
+    );
+}
+
 #[test]
 fn new_expression_lowers_to_a_heap_alloc_rvalue() {
     let mir = lower_source("f(): int {\n    p := new(5)\n    return *p\n}\n", "f")
@@ -4565,5 +4736,74 @@ fn check_move_while_borrowed_allows_a_move_after_the_borrows_last_use() {
         faults.is_empty(),
         "a move after the borrow's own last use should be accepted, got {:#?}",
         faults
+    );
+}
+
+// Projected moves against live borrows: moving `b.p` conflicts with any
+// live borrow overlapping it (`&b`, `&b.p`, or an alias of either), but not
+// with a borrow of a disjoint sibling field.
+fn field_move_while_borrowed_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    let source = format!(
+        "{PARTIAL_MOVE_TYPES}useBox(r: &Box2) {{}}\nuseTwo(r: &Two) {{}}\nuseP(r: &*int) {{}}\n{function}"
+    );
+    let mir = lower_source(&source, "f").expect("expected successful lowering");
+    crate::borrow_checker::check_move_while_borrowed(&mir)
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_its_struct_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    consume(b.p)\n    useBox(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while &b is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_that_field_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b.p\n    consume(b.p)\n    useP(r)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while &b.p is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_flags_a_field_moved_while_an_alias_of_its_struct_is_live() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    alias := r\n    consume(b.p)\n    useBox(alias)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::MoveWhileBorrowed,
+        "moving b.p while an alias of &b is live to be flagged",
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_allows_a_field_moved_while_a_disjoint_field_is_borrowed() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    m := 2\n    pa := new(n)\n    pb := new(m)\n    t := Two{a: pa, b: pb}\n    r := &t.b\n    consume(t.a)\n    useP(r)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a borrow of a disjoint field shouldn't block the move, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_move_while_borrowed_allows_a_field_moved_after_the_borrows_last_use() {
+    let faults = field_move_while_borrowed_faults(
+        "f() {\n    n := 1\n    p := new(n)\n    b := Box2{p: p}\n    r := &b\n    useBox(r)\n    consume(b.p)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "a move after the borrow's last use should be accepted, got {faults:#?}"
     );
 }

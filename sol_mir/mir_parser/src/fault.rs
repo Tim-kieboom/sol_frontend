@@ -162,6 +162,12 @@ pub enum MirErrorKind {
     #[error("value may have already been moved out of")]
     UseAfterMove,
 
+    /// A move-only value moved out through a reference, an owning pointer,
+    /// or an array index — there is no owner left whose drop could account
+    /// for the hole. Points at the root local's own declaration span.
+    #[error("cannot move a value out from behind a reference, pointer, or index")]
+    MoveOutOfBorrow,
+
     /// The escape checker's own violation (see `mir_parser::escape_check`):
     /// a returned value, or a value stored through a `&mut` parameter, holds
     /// a reference into storage that doesn't outlive the function. Points at
