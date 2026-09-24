@@ -21,11 +21,39 @@ use crate::fault::{MirErrorKind, MirFault};
 /// Checks `function` for reads of a place after it was moved. Returns one
 /// fault per violating read.
 pub fn check_moves(function: &mir::Function) -> Vec<MirFault> {
-    let mut faults = FaultCollector::default();
-
     let Some(analysis) = analyze(function) else {
-        return faults.into_vec();
+        return vec![];
     };
+    check_moves_with(function, &analysis)
+}
+
+/// Rewrites `function`'s `Drop` terminators in place to reflect whether the
+/// dropped local was actually moved by that point: a `Drop` becomes a no-op
+/// `Goto` when the local is moved on every path reaching it, is marked
+/// `guarded` (a runtime check of the local's own drop flag, see
+/// `mir_model::Terminator::Drop`) when it's moved on only some paths, and is
+/// left unconditional when it's never moved on any path.
+pub fn elaborate_drops(function: &mut mir::Function) {
+    let Some(analysis) = analyze(function) else {
+        return;
+    };
+    elaborate_drops_with(function, &analysis);
+}
+
+/// Runs `check_moves` and `elaborate_drops` off one shared `analyze` pass —
+/// both otherwise recompute the same fixed point over `function`'s CFG
+/// independently, which is wasted work when a caller wants both anyway.
+pub fn check_and_elaborate_moves(function: &mut mir::Function) -> Vec<MirFault> {
+    let Some(analysis) = analyze(function) else {
+        return Vec::new();
+    };
+    let faults = check_moves_with(function, &analysis);
+    elaborate_drops_with(function, &analysis);
+    faults
+}
+
+fn check_moves_with(function: &mir::Function, analysis: &Analysis) -> Vec<MirFault> {
+    let mut faults = FaultCollector::default();
 
     for &block_id in &analysis.order {
         let mut state = join(
@@ -46,18 +74,8 @@ pub fn check_moves(function: &mir::Function) -> Vec<MirFault> {
     faults.into_vec()
 }
 
-/// Rewrites `function`'s `Drop` terminators in place to reflect whether the
-/// dropped local was actually moved by that point: a `Drop` becomes a no-op
-/// `Goto` when the local is moved on every path reaching it, is marked
-/// `guarded` (a runtime check of the local's own drop flag, see
-/// `mir_model::Terminator::Drop`) when it's moved on only some paths, and is
-/// left unconditional when it's never moved on any path.
-pub fn elaborate_drops(function: &mut mir::Function) {
-    let Some(analysis) = analyze(function) else {
-        return;
-    };
-
-    for block_id in analysis.order {
+fn elaborate_drops_with(function: &mut mir::Function, analysis: &Analysis) {
+    for &block_id in &analysis.order {
         let Some(state) = analysis.out_states.get(block_id) else {
             continue;
         };

@@ -19,7 +19,11 @@ mod tests;
 
 use std::time::Instant;
 
-use ast_model::{AstTree, ExternLanguage, FunctionKind};
+use ast_model::{
+    AstTree, ExternLanguage,
+    FunctionKind::{self},
+    FunctionSignature,
+};
 use mir_model::MirProgram;
 use mir_parser::{MirLowerer, borrow_checker, fault::MirErrorKind};
 use sol_utils::{
@@ -37,7 +41,7 @@ pub fn to_mir(
     let mut lowerer = MirLowerer::new(&ast.crates.store, &mut ast.declares, options);
     for (id, kind) in ast.crates.store.functions.entries() {
         if let FunctionKind::Signature(signature) = kind
-            && signature.value.external != Some(ExternLanguage::C)
+            && is_c_external(signature)
         {
             continue;
         }
@@ -50,10 +54,7 @@ pub fn to_mir(
     let (mut functions, externs) = lowerer.into_functions_and_externs();
 
     for function in functions.values_mut() {
-        borrow_checker::elaborate_drops(function);
-    }
-    for function in functions.values() {
-        for fault in borrow_checker::check_moves(function) {
+        for fault in borrow_checker::check_and_elaborate_moves(function) {
             context.faults.push(fault);
         }
     }
@@ -63,16 +64,14 @@ pub fn to_mir(
     }
 
     for function in functions.values() {
-        for fault in borrow_checker::check_borrow_overlaps(function) {
-            context.faults.push(fault);
-        }
-    }
-
-    for function in functions.values() {
-        for fault in borrow_checker::check_move_while_borrowed(function) {
+        for fault in borrow_checker::check_overlaps_and_moves_while_borrowed(function) {
             context.faults.push(fault);
         }
     }
 
     MirProgram { functions, externs }
+}
+
+fn is_c_external(signature: &FunctionSignature) -> bool {
+    signature.value.external != Some(ExternLanguage::C)
 }

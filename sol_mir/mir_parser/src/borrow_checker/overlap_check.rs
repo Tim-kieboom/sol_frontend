@@ -29,6 +29,10 @@ use crate::fault::{MirErrorKind, MirFault};
 /// (a mutable borrow overlapping any other live borrow of that place).
 /// Returns one fault per conflicting pair.
 pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
+    check_borrow_overlaps_with(function, &analyze(function))
+}
+
+fn check_borrow_overlaps_with(function: &mir::Function, analysis: &Analysis) -> Vec<MirFault> {
     let mut faults = vec![];
 
     let Some((entry, _)) = function.blocks.entries().next() else {
@@ -43,10 +47,8 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
         .map(|(rank, &block)| (block, rank))
         .collect();
 
-    let Analysis { borrows, .. } = analyze(function);
-
     let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &borrows {
+    for borrow in &analysis.borrows {
         by_place.entry(borrow.place).or_default().push(borrow);
     }
 
@@ -85,18 +87,29 @@ pub fn check_borrow_overlaps(function: &mir::Function) -> Vec<MirFault> {
 /// mutable or shared, since it invalidates the underlying storage entirely.
 /// Returns one fault per such move.
 pub fn check_move_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
+    check_move_while_borrowed_with(function, &analyze(function))
+}
+
+/// Runs `check_borrow_overlaps` and `check_move_while_borrowed` off one
+/// shared `analyze` pass (liveness + alias tracing) — both otherwise
+/// recompute the same fixed point over `function`'s CFG independently, which
+/// is wasted work when a caller wants both anyway.
+pub fn check_overlaps_and_moves_while_borrowed(function: &mir::Function) -> Vec<MirFault> {
+    let analysis = analyze(function);
+    let mut faults = check_borrow_overlaps_with(function, &analysis);
+    faults.extend(check_move_while_borrowed_with(function, &analysis));
+    faults
+}
+
+fn check_move_while_borrowed_with(function: &mir::Function, analysis: &Analysis) -> Vec<MirFault> {
     let mut faults = Vec::new();
-    let Analysis {
-        points_per_block,
-        borrows,
-    } = analyze(function);
 
     let mut by_place: VecMap<LocalId, Vec<&Borrow>> = VecMap::new();
-    for borrow in &borrows {
+    for borrow in &analysis.borrows {
         by_place.entry(borrow.place).or_default().push(borrow);
     }
 
-    for (block_id, points) in points_per_block.entries() {
+    for (block_id, points) in analysis.points_per_block.entries() {
         for (index, point) in points.iter().enumerate() {
             for &moved_local in &point.moves {
                 let Some(group) = by_place.get(moved_local) else {

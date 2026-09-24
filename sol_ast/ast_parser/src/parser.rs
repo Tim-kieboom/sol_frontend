@@ -52,7 +52,7 @@ pub(crate) struct Parser<'a, 'f> {
     pub forest: &'f mut CrateForest,
     pub crate_store: &'f CrateStore,
     pub declares: &'f mut DeclareStore,
-    pub assignment_tokens: &'f Vec<TokenKind>,
+    pub assignment_tokens: &'f [TokenKind],
     pub context: &'f mut CrateContext<crate::fault::AstErrorKind>,
 }
 impl<'a, 'f> Parser<'a, 'f> {
@@ -60,7 +60,7 @@ impl<'a, 'f> Parser<'a, 'f> {
         tokens: TokenStream<'a>,
         name: String,
         info: ParseInfo<'f>,
-        assignment_tokens: &'f Vec<TokenKind>,
+        assignment_tokens: &'f [TokenKind],
     ) {
         let id = info.id;
         let parent = info.parent;
@@ -109,7 +109,7 @@ impl<'a, 'f> Parser<'a, 'f> {
     fn new(
         tokens: TokenStream<'a>,
         info: ParseInfo<'f>,
-        assignment_tokens: &'f Vec<TokenKind>,
+        assignment_tokens: &'f [TokenKind],
     ) -> Self {
         #[cfg(debug_assertions)]
         let debug = {

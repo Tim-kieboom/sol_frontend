@@ -2,8 +2,10 @@ mod escape_check;
 mod move_check;
 mod overlap_check;
 pub use escape_check::check_escapes;
-pub use move_check::{check_moves, elaborate_drops};
-pub use overlap_check::{check_borrow_overlaps, check_move_while_borrowed};
+pub use move_check::{check_and_elaborate_moves, check_moves, elaborate_drops};
+pub use overlap_check::{
+    check_borrow_overlaps, check_move_while_borrowed, check_overlaps_and_moves_while_borrowed,
+};
 
 use mir_model::{self as mir, BlockId};
 use sol_utils::collections::vec_set::VecSet;
