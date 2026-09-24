@@ -61,6 +61,14 @@ import (
   only.
 - **Item-level visibility** inside a file uses `pub`, `pub(crate)`, `pub(super)` — unaffected by
   the file-capitalization rule above. Private-by-default at the item level.
+- **`mod foo { .. }` declares a child module nested inside the current file** — unlike Rust, this
+  is never used to pull in another source file (`import` already does that); it only carves out a
+  named, nested scope within one file, the same way Rust's inline `mod foo { .. }` (as opposed to
+  `mod foo;`) does. It gets its own `ModuleId`-style identity distinct from its containing file's.
+  Visibility follows the item-level rule above, not file capitalization (a nested module has no
+  file name to capitalize): `mod foo { .. }` is private to the enclosing file, `pub mod foo { .. }`
+  is reachable from outside the file (e.g. `import Math.foo.Thing`). `pub(super)` on an item inside
+  `foo` refers to `foo`'s enclosing scope (the parent module/file), exactly as in Rust.
 
 **Multi-file projects use a `Sol.toml` manifest.** A relative import (`import crate.sub`) finds
 `sub.sol` next to the importing file within the same crate; a named import (`import Math`)
@@ -327,6 +335,13 @@ pub struct List<T> {
    assertEq(array.typeof, IntArray)
    ```
 
+**Both (2) and (3) are meant to desugar into the trait system (§7)** rather than being their own
+bespoke dispatch mechanism — `This.(name: T)` as an impl of a generic `From<T>`-style trait per
+parameter type, `This.[T](param)` likewise per element type, both reusing the same
+multi-impl-by-generic-parameter machinery §7 already establishes for e.g. `Index<Out = T>`. Call-
+site dispatch is then just ordinary trait-impl resolution, not a separate "constructor overload"
+concept.
+
 **Fallibility is signaled by the return type, with no separate keyword.** Every constructor
 above implicitly returns `This` — none of them declare a return type at all. A constructor that
 *can* fail (like `Limit<T, RANGE>`'s, §20) must say so by explicitly declaring
@@ -382,6 +397,12 @@ the call site; **when nothing at the call site disambiguates, it's a compile err
 "ambiguous associated type" failure Rust produces, rather than silently picking one impl by
 declaration order. What's disallowed is implementing a trait with *identical* generic parameters
 twice.
+
+**Coherence follows Rust's orphan rule**: an `impl Trait for Type` is only allowed if the trait or
+the type (or both) is local to the current crate — you can't `impl` a foreign trait for a foreign
+type. This is what makes `AutoCopy` (§11) enforceable as opt-in: primitive scalars are already
+`AutoCopy` inside the compiler's own crate, so user code attempting `use int impl AutoCopy {}`
+is rejected as a foreign-impl-for-foreign-type violation, the same as any other trait.
 
 ---
 
@@ -683,9 +704,15 @@ panics for programmer-error/unrecoverable conditions.
 
 ## 14. Operators and Auto-Derived Traits
 
-- **`Eq`/`Ord` are auto-derived whenever every field/variant supports them** — structural
-  equality/ordering, field-by-field or variant-by-variant, automatic rather than requiring a
-  derive annotation. `#[!Eq]`/`#[!Ord]` presumably opt out.
+- **`Eq` is auto-derived by default, opt-out per type**: structural equality, field-by-field or
+  variant-by-variant, automatic rather than requiring a derive annotation. If *any* field of a
+  struct (or payload of a union variant) doesn't itself implement `Eq`, the parent type silently
+  doesn't either — there's no separate `#[!Eq]` needed for that case, non-`Eq` propagates upward on
+  its own; `#[!Eq]` is only for explicitly opting a type out that otherwise *could* derive it.
+- **`Ord` on structs/unions is opt-in, not auto-derived** — unlike `Eq`, a struct or union doesn't
+  get `Ord` just because every field/variant does; it needs an explicit
+  `use Type impl Ord { .. }` (§7/§8), the same pattern as `AutoCopy` (§11). Primitive scalars are
+  still `Ord` out of the box.
 - **Custom operator overloading dispatches through per-operator traits**, the same way `Index`
   already does: `+` through `Add`, `-` through `Sub`, `==` through `Eq`, `<`/`>`/... through `Ord`,
   and so on — one trait per operator, following the same "differ by generic parameter" rule

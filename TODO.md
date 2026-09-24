@@ -62,770 +62,208 @@ No `Res`/`.pass`/`?T`, no unions, no generics, no borrow checking yet.
 - [x] `PlatformInfo::host()` — a real (if still Windows-only) platform-selection mechanism replacing
       ad hoc `new_windows_x86_64()` calls everywhere.
 
-### M2 — borrow/move checking (core checklist complete; deferred gaps remain)
+### M2 — borrow/move checking (complete — no known soundness holes; logged leaks and deferrals remain)
 
-Scoped via `/grill-me`: "M2" is really a chain of prerequisite pieces, not one task —
-`mir_parser` doesn't lower dereference places, doesn't fix `&this`/`&mut this` receivers to
-actually borrow (they're still always a full by-value copy — a known M1 shortcut), doesn't emit
-`Move`/`MarkMoved`/`SetDropFlag`/`Drop` anywhere, and `FunctionLowerer` has no lexical-scope
-tracking at all (one flat locals map) — so "implement the borrow checker" is blocked on all of
-that landing first, in order.
+M2 built the borrow/move checker as a chain of prerequisite pieces (deref places, real `&this`/
+`&mut this` borrowing, `Move`/`Drop` lowering, lexical scope tracking), then three checkers, each
+grown straight-line → `if`/`else` → `for` (fixed-point dataflow, Kildall-style, once loops made the
+CFG cyclic) before being widened to close every known soundness hole:
 
-- [x] Deref places: `mir_parser` lowers explicit `*ptr` and auto-derefs through `&T`/`&mut T`/`*T`
-      when resolving a field/index access, plus related resolver `expression_type`/
-      `struct_field_type` fixes.
-- [x] Fixed `&this`/`&mut this` receivers to actually pass a reference instead of a by-value copy.
-- [x] Straight-line-only `Drop`/`SetDropFlag` lowering for body-declared locals (parameters/`this`/
-      temps excluded), with drops emitted in reverse declaration order at function end.
-- [x] `Move`/`MarkMoved` lowering for straight-line code (function-call args, struct/array-literal
-      fields, plain reassignment/declarations) — `AutoCopy` types still copied, field/index/deref-
-      projection sources still copied (no partial-move tracking yet).
-  - [x] `is_auto_copy(SolType)` classification — primitives/references/pointers/slices are
-        `AutoCopy`; owning arrays/structs are move-only.
-  - [x] Function-call arguments moved (not copied) when the argument is a bare move-only variable.
-  - [x] Plain reassignment and declaration initializers (`x = y`, `x := y`) move a bare move-only
-        source the same way.
-  - [x] Struct-constructor fields and array-literal elements move a bare move-only source the same
-        way.
-- [x] Scope-stack tracking in `FunctionLowerer` for `if`/`else` branches — a real
-      `scopes: Vec<Vec<LocalId>>` stack, each branch dropped at its own join point; `return` unwinds
-      the whole stack.
-- [x] Extended scope-stack tracking to `for` bodies plus `break`/`continue` unwinding to the correct
-      loop-boundary frame (partial-stack unwind via `loop_frame_index`).
-- [ ] Implement borrow checker as a MIR pass over the concrete (M1) subset. `/grill-me`'d "what's
-      next"; settled scope before writing anything:
-  - **Move-checking only** — real borrow/lifetime-conflict analysis (do two live `&`/`&mut`
-    borrows of the same place overlap) is a fundamentally different, much bigger algorithm
-    (needs actual liveness tracking; nothing in the MIR records borrow lifetimes at all) and is
-    explicitly deferred to a later M2 slice.
-  - Confirmed the user wants to genuinely **mirror rustc's own approach**: a real flow-sensitive
-    dataflow analysis over the CFG, not a flow-insensitive "moved anywhere ⇒ reject" scan (which
-    would wrongly reject valid branch-exclusive-move code, e.g. moving the same local in each arm
-    of an `if`/`else`).
-  - That, in turn, means fixed-point iteration is eventually required — a `for` loop's back-edge
-    makes the CFG cyclic, and a single forward pass can't correctly answer "is this moved" for
-    code whose answer depends on a previous iteration. **First slice deliberately narrowed to
-    straight-line functions only** (no `if`/`for` at all) to avoid needing that machinery (or even
-    CFG-join/predecessor computation) on day one — any function containing a `SwitchInt` (both
-    `if` and `for` lower to one) is skipped entirely, unanalyzed, rather than crashed on or
-    incorrectly analyzed. `if`/`else` join-merging and `for`'s fixed point are explicit, separate
-    follow-ups.
-  - **Wired into the real pipeline now** (`mir_run::to_mir`, right after lowering) as a **hard
-    error** (`Fault::error_with_kind`, not a warning) — this is genuinely new territory: every
-    prior M2 slice only ever *constructed* MIR shapes, nothing ever rejected a program before this.
-    Verified zero regression risk *before* wiring it in: manually audited (and cross-checked with
-    an independent background scan) all 8 struct-using `.sol` exe tests for a bare-variable
-    struct/array local used twice with the first use in a move position — none exist; every
-    existing move in the suite is either a single use or a method call through `&this`/`&mut this`
-    (a borrow, not a move).
-  - New `mir_parser::move_check::check_moves(&Function) -> Vec<Fault<MirErrorKind>>`, new
-    `MirErrorKind::UseAfterMove`. State is derived entirely from where `Operand::Move`/`Copy`
-    actually appear and `Assign`'s own whole-place reinitializing writes — **deliberately not**
-    from the `MarkMoved`/`SetDropFlag` statements the lowerer also emits: those are pushed
-    immediately *before* the very terminator that embeds the `Operand::Move` they correspond to,
-    so treating `MarkMoved` itself as "moved from here on" flagged a value's own first, legitimate
-    move against itself (a real bug caught by the checker's own unit tests, then fixed by deriving
-    state from the operands directly instead).
-  - [x] Extended to `if`/`else`: a real dataflow pass over the built MIR CFG (reverse-postorder,
-        union-join of "maybe moved" state at each join point) rather than folding precise tracking
-        into the lowerer itself; only a "maybe moved" set is tracked (not a definite/maybe pair);
-        `for` loops still skipped entirely (any back edge).
-  - [x] Extended to `for` loops: replaced the back-edge skip with a real worklist fixed point
-        (Kildall's algorithm) over the whole CFG including cycles; faults are only ever collected
-        after the fixed point fully converges, never mid-convergence.
-  - [x] Wired into the lowerer's own drop-chain decisions via a new `elaborate_drops` pass reusing
-        `check_moves`'s dataflow: prunes an unconditional `Drop` to a no-op `Goto` wherever the
-        local is maybe-moved by that point. Fixes a moved-taint leaking past an early return into
-        unrelated code; a value conditionally moved on only one bodyless-`if` branch still leaks
-        (never double-frees) on the untaken path — a known, still-open imprecision needing real
-        per-edge drop elaboration (splitting control flow so the untaken path keeps its own `Drop`).
-  - Both slices above complete "move-checking only" over the full concrete (M1) CFG shape
-    (straight-line, `if`/`else`, `for`), now wired into real drop decisions too. What's left for M2:
-    real borrow/lifetime-conflict analysis (do two live borrows of the same place overlap — a
-    fundamentally bigger algorithm needing actual liveness tracking, nothing in the MIR records borrow
-    lifetimes at all yet), and, separately, real per-edge drop elaboration (splitting control flow so
-    a conditionally-moved value's untaken path keeps its own `Drop`, per the still-open case
-    documented just above) — a bigger, CFG-restructuring follow-up to the prune-only pass that shipped
-    here.
-- [x] Dangling-reference ("escape") checking for straight-line functions: traces where a returned
-      reference's storage actually comes from, backward through the MIR, to either a parameter
-      (trusted safe, not verified at call sites) or a fresh `Ref` (safe only when its place derefs
-      through existing memory — a reborrow or a heap-pointer deref; otherwise a local's own frame,
-      flagged dangling). No `'a` lifetime syntax exists or is planned.
-  - [x] Extended escape-checking to `if`/`else`: origin trusted safe only when safe on every
-        incoming path (memoized fork-and-join backward trace, same back-edge gate reused from
-        move-checking); `for` still gated out entirely.
-  - [x] Mutable/shared-borrow overlap checking (straight-line only, whole-locals only,
-        reference-vs-reference only — not move-vs-borrow, not per-field): real NLL-accurate
-        liveness per local "generation," conflict on any `&mut` vs `&mut`/`&` range overlap, `&`
-        vs `&` always fine.
-  - [x] Extended overlap-checking to `if`/`else`: real two-level (block + intra-block) backward
-        liveness dataflow plus join-aware alias tracing (reusing escape-checking's fork shape,
-        widened to an equality check); overlap is live-point-**set** intersection, not interval
-        overlap; `for` still gated out.
-  - [x] **Extend escape-checking to `for`** — the deferred half of the slice above. `/grill-me`'d at
-        length before writing anything: the first design sketch (a per-block "in progress" marker
-        defaulting straight to `Dangling` the moment a cycle was hit) needed a fallback span for the
-        "no real local to blame yet" case — surfaced that neither `BasicBlock` nor `mir::Function`
-        actually carry a span today, so that sketch would have meant a real MIR shape change (and,
-        mid-interview, one more question in: that whole sketch turned out to be the *wrong* mechanism
-        anyway, not just one needing an extra field).
-    - **Reconsidered against `move_check`'s own precedent**: `move_check`'s loop extension didn't
-      default pessimistically on a cycle hit — it ran a real fixed point, starting optimistic
-      ("nothing moved"), converging monotonically toward the conservative verdict, with fault
-      collection deliberately deferred until *after* convergence. Confirmed doing the same here
-      instead: no synthetic fallback span needed at all, because every `Dangling` verdict that
-      survives convergence still traces back to a real local — a loop header always has at least one
-      predecessor *outside* the loop (the entry edge, never part of any cycle), which grounds the
-      analysis in a genuine, non-circular answer.
-    - **Worklist shape confirmed as a deliberate simplification, not an oversight**: `move_check`'s
-      fixed point is a block-level Kildall worklist (cheap incremental reprocessing, since "maybe
-      moved" is a monotonically-growing set with an obvious update rule). Escape-checking's
-      `(LocalId, BlockId)` query space doesn't have an equally cheap incremental story — discovering
-      which pairs matter needs the same demand-driven recursive trace this module already has. Chose
-      this over a hand-rolled dependency-tracked worklist: **repeat the entire demand-driven trace
-      once per round**, each round falling back to the *previous* round's settled answer for any pair still
-      "in progress" on the current round's own call stack (round 0 falls back to `Safe`, the same
-      optimistic starting point `move_check` uses), stopping once a round produces byte-for-byte the
-      same table as the one before it. Confirmed sound (monotonic, so it can only ever move a verdict
-      from `Safe` toward `Dangling`, never back — a finite descending lattice, guaranteed to settle)
-      and accepted as a real efficiency-vs-simplicity trade, consistent with this compiler's own
-      established preference throughout M2 (`move_check`'s own plain queue over a priority worklist).
-    - New `converge` (`escape_check.rs`) replaces the old direct `trace_from_block_start` entry point:
-      runs rounds, each building a fresh `this_round: HashMap<(LocalId, BlockId), Option<Origin>>` by
-      tracing every `(return_local, return_block)` pair (a function can have more than one `Return`
-      block, per the `if`/`else` slice above) against the *previous* round's table, until two
-      consecutive rounds compare equal (`Origin` gained `PartialEq`/`Eq` for this). `trace_from_block_
-      start`/`trace_within_block` gained an `in_progress: HashSet<(LocalId, BlockId)>` (this round's
-      own call stack) alongside the existing `this_round` memo — a cache hit still short-circuits as
-      before, an `in_progress` hit returns the previous round's settled answer instead of recursing
-      forever, and only the *outermost* frame for a given key ever writes into `this_round` (an inner,
-      cycle-detecting hit reads `previous_round` without touching `this_round` at all — the same
-      "don't corrupt the round's own record with an in-flight guess" discipline `move_check`'s fixed
-      point uses by only collecting faults in a separate, post-convergence pass).
-    - `check_escapes` itself barely changed: still walks every `Terminator::Return` block, but now
-      reads each one's origin out of `converge`'s settled table instead of calling the trace directly
-      — the `has_back_edge` gate is gone entirely, since every CFG shape is analyzed uniformly now.
-    - Proven via 3 new/rewritten `mir_parser` unit tests, chosen specifically to distinguish real
-      convergence from both the old blanket-skip gate and a cruder "any cycle ⇒ reject" heuristic:
-      `check_escapes_now_flags_a_dangling_return_reached_through_a_for_loop` (rewrites the old
-      "still skips for loops" test — the same source now gets a real fault);
-      `check_escapes_allows_a_value_reassigned_safely_inside_a_for_loop` — a loop present but nothing
-      ever unsafe, proving this isn't just "any loop ⇒ reject" in disguise;
-      `check_escapes_flags_a_value_that_only_dangles_via_the_loop_back_edge` — the falsifying case
-      named up front: a value starts safe, is *conditionally* reassigned to a dangling loop-local
-      inside the body, and resolving the loop header's own reaching value requires walking through the
-      body's own bodyless-`if` join whose untaken path loops back to the header's own not-yet-settled
-      value — a genuine self-referential dependency only real convergence (not a one-shot trace or a
-      pessimistic cycle default) resolves correctly. All 3 passed on the first implementation attempt.
-      Full `cargo test --workspace` (135 `mir_parser` tests, up from 133; the same unrelated
-      pre-existing `ast_parser` failure noted earlier, unaffected) and all 35 exe tests pass unchanged.
-  - [x] **Extend overlap-checking to `for`** — the deferred half of the slice above. `/grill-me`'d at
-        length: unlike escape-checking's `for` slice (one fixed point, for one computation), this
-        needed two *independent* fixed points, each scoped separately because they have different
-        soundness profiles:
-    - **Liveness** (`compute_block_liveness`): converted from a single postorder pass to a real
-      block-level Kildall worklist, the same shape `move_check`'s own loop extension uses, just run
-      backward (reprocess a block whenever a *successor's* `live_in` changes, by pushing that
-      successor's own predecessors back onto the queue). Confirmed as a genuine precision
-      requirement, not just style — a single non-iterating pass over a cyclic CFG would
-      *under*-approximate liveness (a loop body's own "still needed" fact never propagates back
-      through the header more than once), shrinking live ranges and only ever causing *missed*
-      conflicts. That's technically sound under this codebase's own "prefer false negatives"
-      discipline, but `move_check` and escape-checking's own loop extensions both chose the more
-      rigorous fixed point anyway even where a cheaper sound-but-imprecise shortcut existed — matched
-      that precedent rather than settling for less.
-    - **Alias tracing** (`value_of`) surfaced a real design gap mid-interview: naively mirroring
-      escape-checking's `converge` doesn't work here. Escape-checking's `Origin` lattice has an
-      obvious optimistic starting value (`Safe`) a cyclic fallback can default to; `value_of`'s join
-      instead collapses to `None` via `?` the instant *any* predecessor is unresolved, and a fresh
-      cyclic reference has nothing to fall back to in round 0 except `None` — every later round would
-      just read back the same `None` it wrote, "converging" instantly but recovering zero precision.
-      Fixed with a third lattice state, `Resolved::Unknown`, distinct from both `Value(place, mutable)`
-      and `Disagreement`: a join identity that's simply skipped over rather than treated as a
-      disagreement, so an in-progress cyclic reference no longer poisons the result before it's had a
-      chance to settle. Only `Disagreement` (two genuinely different real answers, or a value reaching
-      an untracked parameter) is absorbing/final.
-    - `converge_aliases` (round driver) + `resolve_from_block_start`/`resolve_before_index`
-      (mirroring `escape_check`'s `trace_from_block_start`/`trace_within_block` pairing exactly in
-      shape, join rule aside) replace the old direct `value_of`/`classify_rvalue`. A separate, final
-      `classify_generation` reads the fully-settled table read-only (a fresh, throwaway
-      `in_progress`/`this_round` pair — no real recursion happens there, since the settled table
-      already has a direct answer for anything it could reach) to build the actual `borrows` list —
-      same two-phase "compute the fixed point, then do a separate final pass" split every other M2
-      fixed point in this codebase uses.
-    - `has_back_edge`'s only two callers (`escape_check`, `overlap_check`) are both gone now, so the
-      function itself was deleted from `move_check` rather than left as dead code.
-    - Proven via 3 new/rewritten `mir_parser` unit tests, chosen to distinguish real analysis from the
-      old blanket-skip gate: `check_borrow_overlaps_now_flags_an_overlap_reached_through_a_for_loop`
-      (rewrites the old "still skips for loops" test — the same source now gets a real fault);
-      `check_borrow_overlaps_allows_a_borrow_confined_to_one_loop_iteration` — a loop present but
-      nothing ever conflicts, proving this isn't "any loop ⇒ reject" in disguise;
-      `check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body` — a pre-loop `&mut`
-      borrow staying live across a conditionally-taken inner `if` that itself creates a second `&mut`
-      borrow of the same place, a real nested-borrow conflict the old gate would have missed entirely
-      (not analyzing a single statement of any `for`-containing function before this slice). Note: this
-      last case, unlike escape-checking's own loop test, turned out resolvable via ordinary forward
-      reachability within one pass through the body — a genuinely back-edge-load-bearing overlap
-      example (one that a single-pass liveness computation would get *wrong*, not just "hadn't been
-      tried yet") wasn't found by hand within this slice's own time budget; the Kildall worklist's
-      correctness rests on the general dataflow argument in the module's own docs, not a test that
-      isolates the back edge specifically. All 3 new tests passed on the first implementation attempt.
-      Full `cargo test --workspace` (137 `mir_parser` tests, up from 135; same unrelated pre-existing
-      `ast_parser` failure, unaffected) and all 35 exe tests pass unchanged.
-  - [x] **Interprocedural call-site tracing for escape-checking** — the deferred half of the user's
-        own original motivating example (`lifetime(obj: &Obj): &Obj { return obj }` called as
-        `lifetime(&Obj{})`). `/grill-me`'d four separate times before writing anything — this turned
-        out to be the largest single slice in this whole series:
-    - **Mechanism confirmed**: extend the existing backward trace itself to recurse through
-      `Terminator::Call` (consulting the callee's own summary, then tracing whichever argument(s) it
-      ties to), rather than a separate, unconditional per-call-site check — the latter would flag a
-      dangling result that's created and immediately discarded, never actually read, a real false
-      positive this codebase's whole "prefer under- over over-reporting" discipline argues against.
-      Matches escape-checking's own very first slice, which treated "chase through intermediate
-      locals" as core scope from day one, not a narrowing.
-    - **Call-graph cycles (recursion) confirmed to need real convergence**, same rigor level as every
-      CFG-cycle choice already made this series — even though this compiler's resolver/lowerer/
-      codegen are all already structurally recursion-safe, nothing has ever exercised it, so the
-      call graph a real program builds could genuinely be cyclic (self- or mutual recursion).
-    - **Reborrow-through-a-reference-parameter refinement included**, widening scope beyond the
-      original ask: the pre-existing "any `Deref` in a `Ref`'s own place ⇒ unconditionally `Safe`"
-      rule conflated two different cases — dereferencing an *owning* heap pointer (genuinely safe
-      regardless of caller) and reborrowing through a *reference* parameter (only as safe as whatever
-      the caller passed for *that* parameter, the exact same class of problem this whole slice is
-      about). Scoped to `Deref` as the projection's own *first* element only at the time (the two
-      cases every existing test actually exercised, `&this.field` and `&*p`) — a `Deref` reached
-      through a field first (e.g. `o.ptrField.innerField`) stayed unconditionally `Safe`, an
-      explicitly accepted, narrower gap no test exercised. **Narrowed further in a later slice** (see
-      the escape-checking field-tracing entry below): a `Deref` reached through exactly *one* `Field`
-      step is now traced too, same-block-only; two or more `Field` steps, or a step that isn't
-      `Field` (an `Index`, or another `Deref`), still stays unconditionally `Safe`.
-    - **Integration**: replaced `check_escapes`'s own machinery outright (its signature changed from
-      one function to the whole program's `VecMap<FunctionId, mir::Function>`) rather than adding a
-      parallel, duplicated `check_interprocedural_escapes` — the new call-aware trace is a strict
-      superset of the old one, and every other refactor this series (`overlap_check`'s `analyze()`
-      extraction, for instance) already leaned toward consolidating over duplicating. Touched all 13
-      pre-existing `check_escapes` unit tests (each now wraps its one function in a `VecMap`) and
-      `mir_run`'s own wiring (a single whole-program call, not a per-function loop) — the largest
-      blast radius of any change in this series, confirmed explicitly before starting.
-    - **Mechanism, concretely**: `Origin` gained `TiedToParams(HashSet<usize>)` (replacing the old
-      flat `Safe` for "reached an unassigned parameter"); a new `combine(a, b)` join (`Dangling`
-      absorbs, two `TiedToParams` sets union, `Safe` is the identity) generalizes the old boolean
-      "require all paths safe" rule and is reused both at CFG-level branch points and to fold a
-      function's own multiple `Return` blocks into one summary. `converge_summaries` is a *flat*
-      outer fixed point over the whole call graph (round 0 = every function `Safe`; each round
-      recomputes every function's own summary reading the *previous* round's table for any `Call` it
-      routes through, including a self-call — no per-function in-progress recursion needed at this
-      level, since it's a flat lookup, not a recursive descent into another function's own
-      computation) — slower than a topologically-ordered DAG pass (~1 extra round per call-chain
-      hop), simpler, the same trade already accepted for the CFG-level fixed point.
-    - **A real off-by-one bug found and fixed while testing** (not by design review — the first
-      version of every new test failed with zero faults instead of one): `LocalId` values start at 1,
-      not 0 (`LocalId::ERROR` reserves 0), so the "is this local one of the function's own parameters"
-      check needs `local.index() - 1` as the 0-based parameter index once `1 <= local.index() <=
-      arg_count`, not a bare `local.index() < arg_count`. Caught immediately by the new tests
-      resolving to `Safe` instead of `TiedToParams` — exactly the kind of bug a test-then-verify
-      discipline exists to catch.
-    - Proven via 4 new `mir_parser` unit tests (the core motivating example — a dangling temporary
-      passed through a tied parameter; the same shape called safely instead; a genuine two-hop call
-      chain, proving real transitive propagation through an intermediate function; self-recursion,
-      proving the call-graph fixed point actually converges on a cyclic graph rather than hanging or
-      guessing wrong) plus 1 new `mir_run` integration test. All 13 pre-existing `check_escapes` tests
-      passed unchanged after the signature migration. Full `cargo test --workspace` (146 `mir_parser`
-      tests, up from 137; 11 `mir_run` tests, up from 10; same unrelated pre-existing `ast_parser`
-      failure, unaffected) and all 35 exe tests pass unchanged.
-    - **This closes the fifth and final checklist item** this `/grill-me` series set as the working
-      definition of "M2 borrow checker done" (see this section's own opening note) — all five are now
-      done. What's left for *real* borrow/lifetime-conflict checking beyond that self-imposed bar:
-      per-array-element (`Index`) disjointness for overlap-checking, and the narrower
-      Deref-not-first-element gap this slice explicitly left in escape-checking's own reborrow
-      refinement (**since narrowed further, not fully closed** — see the field-tracing entry below)
-      — both logged as deliberate deferrals, not gaps this pass found by surprise.
-  - [x] **Struct-field reborrow tracing for escape-checking** — narrows the Deref-not-first-element
-        gap left open by the reborrow refinement above. `/grill-me`'d "open M3 now" down to "finish
-        M2's own open deferrals first" (2026-09-24); walked the array-index-disjointness deferral
-        first and found it not worth implementing (a pure ergonomic false positive, never unsoundness
-        — logged to M4 below as an accepted limitation instead). This one is different: a struct
-        field holding a dangling reference (`h := Holder{r: p}; return &h.r.value`) was silently
-        accepted, a real soundness narrowing, so it was worth fixing. `EscapeChecker::classify_ref`
-        (`escape_check.rs`) generalized its type check from "only the projection's first element" to
-        any `Deref` position, via a small local `prefix_type` helper folding `PlaceElem::step_type`
-        over the projection prefix (mirrors `mir_parser::function::type::place_type`, not reachable
-        from this sibling module) — `EscapeChecker` gained a `module: Option<ModuleId>` field,
-        computed once in `new` the same way `FunctionLowerer::lower` seeds its own.
-    - **Scoped to exactly one `Field` step before the `Deref`** (`o.p.value` where `o.p: &Obj2`) — new
-      `trace_field_within_block` scans *only the current block's own statements*, deliberately not
-      walking predecessors or looping across blocks (mirrors how escape-checking itself was built
-      straight-line-first originally): finds either an exact field-store (`h.r = ..`) or a whole-place
-      struct construction (`h := Holder{r: ..}`, an `Aggregate`, operands in the struct's own declared
-      field order per `lower_struct_constructor`) and hands off to the existing, fully general
-      `trace_within_block`/`classify_ref` from there. Two or more `Field` steps, or an `Index`/another
-      `Deref` anywhere in the prefix, is still unconditionally `Safe` — an even narrower remaining
-      gap, explicitly deferred.
-    - **A real soundness correction found and fixed during design review, not by testing**: a
-      whole-place write to the field's own local (`h = other`) must stop the backward scan
-      immediately, regardless of whether its rvalue is a decodable `Aggregate` — continuing past it to
-      an earlier, now-stale write would produce a false "safe" verdict, the same false-positive-for-
-      safety category this module's own docs call unsoundness, not a missed diagnostic.
-    - Proven via 4 new `mir_parser` unit tests: the core fix (a dangling reference reached through a
-      struct field built by the constructor); the same shape safe (sourced from a trusted parameter);
-      a direct field-store variant (proving the exact-field-store search branch, and that the backward
-      scan prefers the later write over an earlier safe construction); and the still-open
-      same-block-only gap (a field set in an earlier block, split off by an intervening call, still
-      silently accepted — not a regression, the pre-existing behavior for every field-Deref shape
-      before this slice). Full `cargo test --workspace` (150 `mir_parser` tests, up from 146; zero
-      failures workspace-wide) and all 38 exe tests pass unchanged.
-    - Still open after this: two-or-more-`Field`/`Index`-containing prefixes, and the same-block-only
-      restriction on the new field search — both logged here, not gaps found by surprise.
-  - [x] **First exe-level "expected to fail to compile" test** — every borrow-checker fault up to this
-        point was only ever proven by a MIR-level unit/integration test calling a checker function (or
-        `mir_run::to_mir`) directly; nothing proved a rejection actually fires through the real CLI
-        end-to-end. `scripts/run_codegen_tests.py` gained a `// expect_fail` file convention (skips the
-        clang-build/run steps entirely; asserts `sol_tester` itself reported failure, plus an optional
-        `// expect_fault: <substring>` check against its combined stdout/stderr) and a new test,
-        `36_dangling_reference_rejected.sol`, reusing this session's own interprocedural
-        dangling-reference motivating example.
-    - **A real, previously-silent bug found and fixed along the way, not by design review**:
-      `sol_tester::main`'s own `frontend()` returned `Ok(!ast_failed)` — a program with an AST-level
-      pass but a *MIR*-level fault (e.g. any borrow-checker rejection) printed `"success"` to stdout
-      regardless, since `mir_failed` (computed from the same, already-MIR-fault-inclusive
-      `all_faults`) was silently never checked. Fixed to `Ok(!mir_failed)` — the correct combined
-      signal, since AST faults are never removed from `all_faults` by the time MIR faults are folded
-      in. This is what made a meaningful `// expect_fail` check possible at all (checking for
-      `"success"` not appearing is now a real signal, not a coincidence).
-    - **That fix immediately surfaced a second, real, previously-masked bug** in an *existing, passing*
-      test: `26_trait_impl_dispatch.sol` started failing, because `mir_run`'s own lowering loop
-      unconditionally called `lower_function` on *every* declared function id, including a trait's own
-      bodyless interface method declarations (`greet(&this): i32` inside `trait Greeter { .. }`) —
-      which `lower_function` itself, by design, hard-errors on (confirmed intentional: an existing
-      unit test, `non_extern_signature_only_function_is_rejected`, asserts exactly this). Every
-      trait-using program had silently carried this fault the whole time; it was invisible only
-      because of the `Ok(!ast_failed)` bug above. Asked the user how to fix it rather than deciding
-      unilaterally (three options: skip trait interfaces in the loop, downgrade the fault, or revert
-      the `Ok` fix) — chose skip-in-the-loop: `mir_run::to_mir`'s own loop now checks
-      `FunctionKind::Signature`'s `external` field *before* calling `lower_function` at all, skipping
-      (not lowering, not faulting) exactly the case with `external: None` — structurally always a
-      trait interface stub (the *only* other source of `FunctionKind::Signature` is an `extern "C"`
-      declaration, always `external: Some(C)`, confirmed by checking both AST-parser construction
-      sites). `lower_function` itself is unchanged, so its own existing rejection test for a bare
-      direct call stays valid.
-    - Proven by the full exe suite passing again (36/36, the previously-broken `26_trait_impl_
-      dispatch.sol` fixed *and* the new `36_dangling_reference_rejected.sol` passing) plus the full
-      `cargo test --workspace` run (zero regressions, same unrelated pre-existing `ast_parser`
-      failure).
-  - [x] **Move-vs-borrow interaction** — a live borrow of a place should block a *move* out of it
-        (rustc's `cannot move out of x because it is borrowed`). `/grill-me`'d first: settled that
-        checking "is place `x` moved while a borrow of `x` is still live" doesn't need real
-        cross-module wiring with `move_check`'s own forward dataflow at all — `overlap_check` already
-        computes, per generation, a live-point *set* for every tracked borrow of a place, so the whole
-        check is a self-contained lookup against that existing machinery: for every whole-place
-        `Operand::Move`, is its own point a member of any tracked borrow's `live_points`.
-    - **Conflict matrix confirmed as asymmetric from `check_borrow_overlaps`'s own rule**: unlike
-      overlap-checking (which only cares about mutable exclusivity, unlimited simultaneous shared
-      borrows are fine), a move invalidates the underlying storage entirely — it conflicts with *any*
-      live borrow of its target, mutable or shared alike, since a shared borrow read after the move
-      would also be dereferencing gone storage.
-    - **CFG scope confirmed as inherited, not restarted**: every other new M2 checker began
-      straight-line-only and earned `if`/`else`/`for` slice by slice. This one skips that entirely —
-      `overlap_check`'s own borrow/live-point data is already fully general (the `if`/`else` and `for`
-      slices above), so the new check just reuses it as-is, with no separate CFG-shape scoping of its
-      own.
-    - `overlap_check.rs`'s `check_borrow_overlaps` refactored: its "build every tracked borrow" logic
-      (previously inline) extracted into a shared `analyze(function) -> Analysis` (points-per-block +
-      the borrows list), so a second consumer doesn't have to recompute or duplicate it.
-    - `PointInfo` gained a `moves: Vec<LocalId>` field alongside `reads` — liveness only ever needs
-      "was this local read here" (`Copy` and `Move` alike), but this new check specifically needs
-      *which* reads are `Move`s; new `collect_operand_moves`/`collect_moves` (mirroring
-      `collect_operand_reads`/`collect_reads`'s own shape) populate it, whole-locals-only (a
-      projected `Move`, e.g. `consume(container.item)`, isn't tracked — same scope cut every other
-      M2 pass already makes, and the lowerer doesn't emit those as `Operand::Move` in the first place
-      per `move_eligible_operand`'s own docs).
-    - New `pub fn check_move_while_borrowed`: for every point's own `moves`, looks up tracked borrows
-      of that same root local and flags one whose `live_points` contains this exact point. New
-      `MirErrorKind::MoveWhileBorrowed`, reported at the moved local's own declaration span (same
-      convention as `UseAfterMove`/`DanglingReference`). Wired into `mir_run::to_mir` right alongside
-      `check_borrow_overlaps`. In passing, fixed two other `MirErrorKind` doc comments
-      (`UseAfterMove`/`DanglingReference`) that still said "straight-line functions only" — stale
-      since both checkers' own `if`/`for` extensions above.
-    - Proven via 2 new `mir_parser` unit tests (a shared borrow flagged when its target is moved while
-      still needed; the same shape accepted once the move comes strictly after the borrow's own last
-      use — proving real liveness, not a lexical "the borrow variable is still in scope" heuristic)
-      plus 1 new `mir_run` integration test exercising the real `to_mir` wiring. Full
-      `cargo test --workspace` (139 `mir_parser` tests, up from 137; 10 `mir_run` tests, up from 9;
-      same unrelated pre-existing `ast_parser` failure, unaffected) and all 35 exe tests pass
-      unchanged.
-  - [x] **Per-field disjointness for overlap-checking** — `check_borrow_overlaps` no longer treats
-        every borrow of the same root local as conflicting regardless of field. `/grill-me`'d first,
-        two scope cuts settled before writing anything:
-    - **Field projections only** — `arr[i]`/`arr[j]` still coarsen to "same root ⇒ conflict," deferred
-      to its own later slice: an index is always a runtime local in this MIR, never a compile-time
-      constant (per the bounds-checking design), so there's no sound way to prove two array-element
-      borrows disjoint without real symbolic range analysis.
-    - **A prefix relationship is always overlapping** — `&o` (the whole struct) and `&mut o.a` (one of
-      its fields) still conflict exactly as before; only two *genuinely disjoint* field paths (differing
-      at some `Field` index, neither a prefix of the other) are newly accepted. Confirmed this is the
-      correct default direction *opposite* every other "unfamiliar shape ⇒ skip, don't guess" rule in
-      this module (which defaults to *not* reporting): here, "can't prove disjoint" has to still mean
-      "conflict," since that's what the code already did before this slice — the refinement can only
-      *narrow* the set of flagged conflicts relative to that baseline, never introduce a new missed one.
-    - `PlaceElem` (`mir_model`) gained `PartialEq`/`Eq` (previously only `Debug`/`Clone`) — needed to
-      compare two borrows' field projections at all. `Borrow` gained a `projection: Vec<PlaceElem>`
-      field alongside its existing root-`LocalId` `place`; new `fields_disjoint` walks two projections
-      in lockstep, the first differing `Field` index proving disjointness, either side ending first
-      (a prefix) or an `Index`/`Deref` step anywhere falling back to "not proven disjoint." Wired into
-      `check_borrow_overlaps`'s own pairwise loop as one more early-continue guard, alongside the
-      existing mutability and live-point-overlap checks.
-    - `Resolved::Value` (the alias-tracing lattice's own "real answer" state) now carries the borrowed
-      place's projection too, not just its root local — otherwise two branches resolving to different
-      fields of the same root would wrongly agree at a join. Since `Vec<PlaceElem>` isn't `Copy`,
-      `Resolved` dropped its own `Copy` derive (kept `Clone`); the handful of call sites that relied on
-      copying it (`this_round.get(&key)`/`previous_round.get(&key)` lookups, the settled result written
-      back after `resolve_before_index` returns) switched to explicit `.clone()`/`.cloned()`.
-    - `check_move_while_borrowed` needed **no changes at all**: a tracked move's own place always has
-      an *empty* projection (whole-locals only, already true before this slice) — an empty projection
-      is a prefix of every other place sharing its root, so a move of `o` already, correctly, conflicts
-      with a borrow of any of `o`'s individual fields, with no new logic required.
-    - Proven via 3 new `mir_parser` unit tests: `check_borrow_overlaps_allows_two_mutable_borrows_of_
-      disjoint_fields` (the core new-acceptance case — two live `&mut` borrows of different fields of
-      the same struct), `check_borrow_overlaps_flags_two_mutable_borrows_of_the_same_field` (proves
-      the refinement isn't over-broad — the same field still conflicts), and `check_borrow_overlaps_
-      flags_a_whole_struct_borrow_overlapping_a_field_borrow` (the prefix-relationship half). All 3
-      passed on the first implementation attempt; all 9 pre-existing `check_borrow_overlaps` tests and
-      both `check_move_while_borrowed` tests passed unchanged. Full `cargo test --workspace`
-      (142 `mir_parser` tests, up from 139; same unrelated pre-existing `ast_parser` failure,
-      unaffected) and all 35 exe tests pass unchanged.
-    - **Closes out 4 of the 5 checklist items this `/grill-me` series set as the working definition of
-      "M2 borrow checker done"** (see this section's own opening note) — only interprocedural
-      call-site tracing for escape-checking remains open from that list. What's left beyond that
-      self-imposed bar: that interprocedural tracing, plus per-array-element (`Index`) disjointness for
-      overlap-checking — both already logged above as their own explicit deferrals, not new gaps this
-      pass found.
-  - [x] **Real per-edge drop elaboration for `*T`** — after the original 5-item checklist finished
-        (see the opening note above), `/grill-me`'d "what's next" among the deliberate deferrals still
-        open (`Index` disjointness, the Deref-not-first-element reborrow gap, and this) and picked this
-        one as the biggest correctness gap: a value moved on only one `if`/`else` branch still leaked
-        (never double-freed) on the untaken path, since `elaborate_drops` only ever had a single "maybe
-        moved" set to work with — moved-on-any-path and moved-on-every-path looked identical to it, so
-        it had to prune the shared `Drop` outright the moment *either* was true.
-    - **Mechanism corrected mid-interview**: the obvious-sounding fix ("split control flow so the
-      untaken path gets its own `Drop`") turned out to be the wrong shape entirely. Checked
-      `mir_codegen`'s own `SetDropFlag` handling first (`mir_codegen/src/function.rs`, pre-this-slice):
-      it codegen'd to nothing at all — "Move/drop tracking has no runtime effect yet." Since the MIR
-      already carries `SetDropFlag(local, true/false)` statements at exactly the right points (every
-      whole-place reinit and every bare-variable move, regardless of type), the real fix is a *runtime*
-      drop flag: keep one `Drop` site, but gate the actual `free()` on a runtime check instead of
-      statically pruning or duplicating the site. Confirmed against Rust's own actual solution to this
-      exact problem, which also uses a runtime flag, not CFG splitting.
-    - **Fast path confirmed kept**: `elaborate_drops` still statically prunes to a no-op `Goto` when a
-      local is moved on *every* incoming path (the cheap, common case), and leaves a `Drop` plain and
-      unconditional when it's *never* moved on any path (no runtime check needed at all) — the new
-      runtime-flag machinery only engages for the genuinely ambiguous "moved on some but not all paths"
-      case, not universally.
-    - **New prerequisite surfaced and built**: `move_check`'s dataflow only tracked one "maybe moved"
-      set before this — no way to distinguish "moved on any path" from "moved on every path" existed at
-      all. Extended to a definite/maybe pair: "maybe" joins via union (unchanged, still what
-      `check_moves` reads for use-after-move); "definite" joins via *intersection*, starting from the
-      universal set (every local in the function) as the identity for an as-yet-unprocessed predecessor,
-      mirroring "maybe"'s empty-set identity — this is what lets the fixed point converge to the correct
-      answer instead of transiently overclaiming something as definite before all its predecessors are
-      known. Within one block's own straight-line statements the two sets move in lockstep (a move
-      inserts into both, a whole-place reinit clears both); they only diverge at a CFG join, via the two
-      different join rules.
-    - **Type scope narrowed twice during the interview**: first to "owned `*T` and `[]T`" (the two
-      heap-owning types), then `[]T` was dropped entirely after checking `mir_codegen/src/types.rs`
-      directly — `ArrayKind::HeapArray` is rejected by `is_lowerable` outright
-      (`unreachable!("already rejected above by is_lowerable")`), so `[]T` has no runtime behavior to
-      fix yet and no way to even test it. Final scope: `*T` only. A struct/array that merely *owns* a
-      `*T` field (recursive drop) is also out of scope — it keeps leaking on the untaken path exactly as
-      before, an explicit, agreed-to deferral, not a gap found by surprise.
-    - `mir_model::Terminator::Drop` gained a `guarded: bool` field. `mir_parser::function`'s own
-      lowering always emits `guarded: false`; `elaborate_drops` is what sets it, reading both the
-      "definite" and "maybe" sets to choose between pruning to `Goto`, leaving it unconditional, or
-      setting `guarded: true`.
-    - `mir_codegen::FunctionCodegen` gained `drop_flags: VecMap<LocalId, PointerValue>` — one `i1`
-      alloca per `*T` local, seeded `true` right after allocation (needed because an owning *parameter*
-      never gets an explicit `SetDropFlag` from the lowerer at all — `push_assign` is only ever called
-      for a user-written assignment, not parameter binding — so this is what keeps a guarded `Drop` of an
-      untouched owning parameter from reading uninitialized alloca contents). `Statement::SetDropFlag`
-      now actually stores into this alloca (a no-op for any local without one, i.e. anything not `*T`,
-      matching `codegen_drop`'s own type gate); a `guarded` `Drop` loads the flag and conditionally
-      branches to a small extra block that calls `codegen_drop` before rejoining the original target,
-      versus branching straight past it when the flag is false.
-    - Proven via one rewritten `mir_parser` unit test (`a_conditional_move_in_only_one_if_branch_no_
-      longer_leaks_on_the_untaken_path` — previously asserted the leak as accepted behavior; now asserts
-      the `Drop` survives with `guarded: true`) plus two new exe-level tests exercising the actual
-      codegen path at runtime on both outcomes: `37_conditional_drop_guarded_moved.sol` (flag ends up
-      false, proving no double free) and `38_conditional_drop_guarded_not_moved.sol` (flag stays true,
-      proving the real free still runs on the untaken-in-the-old-code path). Full
-      `cargo test --workspace` (same 146 `mir_parser` tests, one rewritten not added; same unrelated
-      pre-existing `ast_parser` failure) and all 38 exe tests (up from 36) pass.
-    - **Follow-up fix, caught by inspecting the actual LLVM IR, not by review**: the first version of
-      this allocated a drop-flag alloca (plus its seeding `store`) for *every* `*T` local unconditionally
-      — including in a function like `consume(p: *int) {}`, whose own `Drop` of `p` is never `guarded` at
-      all (it's a single, unconditional scope exit), so the flag was written once and never read. Fixed
-      by scanning `function.blocks` up front for which locals actually have a `guarded: true` `Drop`
-      anywhere in that function (a `VecSet<LocalId>`, `guarded_locals`) and only allocating flag storage
-      for those — restores the "fast path has zero overhead" property the design was supposed to have.
-    - Still explicitly open after this: the struct/array-owning-a-`*T`-field case just deferred above,
-      plus the two older deferrals (`Index` disjointness for overlap-checking, the Deref-not-first-
-      element reborrow gap) — none touched by this slice.
-    - [ ] **Future optimization, not scoped**: critical-edge splitting as a flag-free alternative for the
-          narrow case where it actually pays off — an *acyclic* join with exactly *one* conditionally-
-          moved value reaching it (this slice's own motivating example) can drop the runtime flag
-          entirely by giving each incoming edge its own small dedicated block that does or skips the
-          `Drop` before rejoining the shared continuation, rather than one shared guarded `Drop` reading
-          a flag. Confirmed *not* a general replacement for the flag mechanism during a follow-up
-          `/grill-me`: it stops being free the moment either (a) more than one conditionally-moved local
-          reaches the same join (edges would need splitting per *combination* of drop obligations —
-          2 values ⇒ 4 edge variants, 3 ⇒ 8) or (b) the join is reached through a loop back-edge (there's
-          no static edge count to split against "how many times around the loop"). Mirrors why rustc's
-          own `ElaborateDrops` isn't pure edge-splitting either: it runs the same definite/maybe dataflow
-          this slice just built, elaborates for free wherever the answer is definite, and only falls back
-          to a runtime flag for the genuinely ambiguous cases — edge-splitting would only ever be a size/
-          speed micro-optimization layered on top of that fallback for its one narrow acyclic single-
-          value case, not a replacement for it.
-  - [x] **Close escape-checking's soundness holes — the M2 exit criterion** (`/grill-me`'d
-        2026-09-24). M2 closes when no known soundness hole remains, which is unreachable while
-        unrecognized shapes default to `Safe`: `classify_ref`'s `_ => Safe`, every `None`
-        ("unknown ⇒ silent"), and `Pointer(_) => Safe`, which became a real use-after-free once
-        slice 3b/3c made `Drop` free owning locals *and* owning parameters (the old
-        `allows_dereferencing_an_owning_heap_pointer` test asserted exactly that bug as OK).
-        Decisions:
-    - Unrecognized shapes default to `Dangling`, never `Safe`/silent.
-    - An owning `*T` is treated like a local: a deref through it is `Dangling` unless the pointer
-      itself is reached through a reference parameter (`&*h.p` with `h: &Holder` stays safe).
-    - Every shape is traced for real, not blanket-rejected — each failing test has a safe,
-      parameter-sourced twin that must stay green, so "reject everything unfamiliar" can't pass.
-    - Writes through aliases are followed (`m := &mut h; m.r = ..`, `w[0] = ..` through a
-      `[&mut]` slice, callee writes through `&mut` params), with **strong** updates only for a
-      direct write or a must-alias target, **weak** (join with the old origin) otherwise.
-    - Callee summaries gain per-`&mut`-param **must-write / may-write** sets (mirroring
-      `move_check`'s definite/maybe pair) plus the origin stored, so an unconditional `set(hm, r)`
-      replaces the old value while a conditional one only joins. A callee storing its own local
-      into a `&mut` param is itself a new escape fault (no return needed).
-    - **Rewrite `escape_check` as a forward place-origin dataflow** (Kildall, like `move_check`),
-      replacing the demand-driven backward trace; the return check becomes one read of settled
-      state per `Return`. The backward trace structurally couldn't see alias writes.
-    - Place keys are bounded: all `Index` steps collapse to one `[*]` key (every index write is
-      weak — accepted), and paths are folded **per type**: the head's own fields (`n.r`) stay
-      distinct strong keys, while every path at/below the first repeated struct type
-      (`n.next.*`) folds onto one summary key that is only ever weakly updated (accepted false
-      positive: overwriting a tail field never clears a dangling value there).
-    - Failing tests written first in `mir_parser/src/tests/mod.rs` (18 failing, 12 twins/guards
-      passing): heap-pointer param/local, 2-field paths, field copy-out, projected call argument,
-      slice element, earlier-block field, alias/slice/callee writes, must-vs-may callee writes,
-      must-vs-may alias writes, recursive head/tail/summary updates, loop walking a list.
-    - Slice order (every commit green-or-better on the soundness tests, never a silent hole):
-      - [x] **Slice 1 — forward core** (absorbed the planned slice 2): `escape_check` is now a
-            directory module (`locations.rs`, `dataflow.rs`, `mod.rs`), a forward Kildall points-to
-            dataflow. **Deviated from the plan while building it**: syntactic place-path keys
-            couldn't pass the slice-element safe twin (`s := &a; &s[0].value` — the content under
-            `s`'s deref isn't keyed under `a`), so the state maps *abstract memory locations* to the
-            locations their stored references may point to. Bases: `Frame(local)` (a local's slot,
-            including what it owns inline or through `*T`), `Param(i)` (exactly what reference param
-            `i` points at), `ParamDeep(i)` (everything deeper reachable from it), `CallResult(block)`,
-            `Unknown(local)`; path steps `Field`/`[*]`/owned-`*T` deref, type-folded as agreed. A
-            write through a reference goes to every location it may point to — strong only when
-            exactly one non-summary target — so intra-function alias writes (`m.r = ..`,
-            `w[0] = ..`, a may-alias `m` after an `if`) are handled precisely and **the `&mut`-borrow
-            stopgap was never needed**. Also pulled forward from slice 3: the store-escape check
-            (a dangling reference left in `Param`/`ParamDeep` memory at a `return`), and the return
-            check now covers any return type containing references (structs, slices), not just
-            `&T`. Remaining **stopgap** (callee writes only): after a call, every reference
-            reachable through a `&mut`-containing argument is weakly joined with `Unknown(arg)`
-            (dangling); a write through a call's returned reference is leaked (visible to every
-            read). Fault message reworded to "a reference to a local escapes the function it
-            doesn't outlive" (exe test 36 updated). Result: 176/178 `mir_parser` tests, all 38 exe
-            tests; the 2 red are exactly the callee safe twins
-            (`allows_a_safe_reference_written_by_a_callee_through_a_mutable_parameter`,
-            `allows_a_dangling_field_overwritten_by_a_callee_that_always_writes`).
-      - [x] **Slice 2 — callee `&mut`-param write summaries**: a function's summary is now its
-            returned `Origin` plus `writes: Location → {targets, EveryReturn | SomeReturns}` for
-            every `Param`/`ParamDeep` location it leaves changed, in its own terms; a call replays
-            them translated to the caller's locations (strong only for `EveryReturn` + one
-            non-summary target), replacing the stopgap for every call except externs (which keep
-            it). New `Base::Incoming(location)` — "whatever the caller had stored here" — is the
-            default content of caller memory, so a summary can tell "wrote a new reference" from
-            "left the old one" (otherwise a conditional write translated to "may point anywhere
-            reachable from `&mut h`", including `h` itself: a false positive). Found while
-            testing: must-coverage can't be proven for a recursive callee starting from "writes
-            nothing", so summaries settle twice — once to discover the written locations, then
-            again from "each written on every return, with nothing yet" (greatest fixed point for
-            the must-part; the settled table is self-consistent either way). A first attempt kept
-            phase 1's targets and replayed the weak phase's `Incoming` markers as real writes — fixed
-            by clearing them. +4 tests (callee copies a field between arguments, dangling + safe;
-            recursive callee always/sometimes writes). 182/182 `mir_parser`, 688/688 workspace, 38/38
-            exe tests; no new clippy warnings.
-    - **Escape-checking has no known soundness hole left.** Remaining conservative spots (false
-      positives only): an extern handed a `&mut`, a write through a call's returned reference
-      (leaked to every read), `[*]`/recursive-summary weak updates.
-  - [x] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
-        while closing the escape-checking item, not yet addressed:
-    - [x] **Partial moves** (`/grill-me`'d 2026-09-24). A projected move-only source
-      (`consume(b.p)`, `q := b.p` with `p: *T`) was lowered as `Operand::Copy`: two owners of one
-      allocation, and a use-after-free (`consume(b.p); return *b.p` compiled — exe test 39). The
-      double free was latent only because struct `Drop` frees no fields yet. Decisions:
-      - **Rust's split**: moving a field out of an owned local is a partial move (that field and
-        anything overlapping it — the whole struct, a borrow of it, an enclosing field — becomes
-        unusable; disjoint siblings stay usable; writing the field reinitializes it); moving out
-        from behind a reference, owning pointer, or index is rejected (new
-        `MirErrorKind::MoveOutOfBorrow`).
-      - **Per move path**: `move_check` tracks partial moves as field paths in a separate
-        "maybe" set, never in the whole-local maybe/definite sets `elaborate_drops` and runtime
-        drop flags read — so once recursive drop exists, a moved `b.p` won't suppress freeing
-        `b.q`.
-      - **Same slice**: `check_move_while_borrowed` sees projected moves too (a move of `b.p`
-        conflicts with a live `&b`/`&b.p`/alias, not `&b.q`, via `fields_disjoint`) — without
-        this the fix itself would have opened `r := &b; consume(b.p); *r.p` as a new hole.
-      - Lowering: `move_eligible_operand` now moves any field/index/deref place of a move-only
-        type (an unresolvable type counts as move-only), with no whole-local
-        `MarkMoved`/`SetDropFlag`.
-      - +18 tests (13 `check_moves`, 5 `check_move_while_borrowed`, guards included) plus 1
-        rewritten (`a_move_only_argument_reached_through_a_field_projection_is_moved`, which had
-        asserted the copy), exe tests 39 (rejected) and 40 (moved field freed once at runtime).
-        706/706 workspace, 40/40 exe, no new clippy warnings.
-      - **Deferred, logged**: recursive struct drop (a struct still frees none of its `*T`
-        fields — a leak, not unsound), and drop-before-assign (`b.p = new(..)` over a live
-        `b.p` leaks the old allocation).
-    - [x] **Overlap-checking's `Resolved::Disagreement`** (`/grill-me`'d 2026-09-24). A borrow
-      only got tracked when its alias resolved to exactly one `Value`; everything else was
-      silently skipped: aliases joined across branches, every reborrow through a `Deref`,
-      references copied out of fields, reference parameters, call results. Decisions:
-      - **Loan-based conflicts (NLL-style), not ref-vs-ref**: applying ref-vs-ref honestly to
-        reborrows rejects `this.inner.grow()` then `this.count = 1`. A `Ref` creates a loan;
-        every reference derived from it carries it; a loan is live while a live local's value
-        (or caller-owned/leaked memory) still carries it. An access (read, write, new borrow,
-        move, or *using* a reference, which accesses its pointee) to memory overlapping a live
-        loan conflicts unless the access goes through that loan or both sides are shared. This
-        also newly catches plain reads/writes of a borrowed place (`r := &mut a; x := a.n`).
-        A loan whose creation conflicts isn't enforced afterwards, and accesses through it
-        aren't re-checked, so one mistake is reported once.
-      - **One shared engine (option (i))**: escape-checking's dataflow moved to
-        `borrow_checker/points_to/` (`locations.rs`, `dataflow.rs`, `mod.rs` with origins,
-        summaries and call-graph convergence); escape-checking keeps only its two fault checks.
-        Loans ride in the same `Targets` sets as `Base::Loan(LoanId)` markers (never memory),
-        so copies, joins, fields, call results and callee writes carry them for free; an extern
-        call result carries every argument's loans. `overlap_check.rs` was rewritten outright
-        (per-statement liveness + replaying each block's settled state); the old alias-tracing
-        machinery is gone. Checker APIs are now whole-program `(functions, declares)`, like
-        `check_escapes`.
-      - **Receiver autoref after the arguments** (instead of two-phase borrows): a `&mut this`
-        receiver whose path is a plain place (variables, fields, derefs — no index, so no side
-        effects) is borrowed right before the `Call`, so `c.set(c.get())` is accepted. This had
-        been an *existing* false positive under ref-vs-ref too.
-      - +15 tests (7 loan holes, 5 reborrow/through-the-loan guards, receiver-order lowering +
-        checker guard); 15 existing overlap/move-while-borrowed tests migrated to the
-        whole-program API, all keeping their verdicts. `OverlappingBorrows` reworded to "value is
-        accessed while a conflicting borrow of it is still live". 720/720 workspace, 40/40 exe,
-        no new clippy warnings.
-      - Known cost: `mir_run` converges callee summaries twice (once per checker).
-      - Found in passing, split off as a separate task: method calls on a bare reference-typed
-        receiver (`c.set(1)` with `c: &mut Counter`) don't resolve at all.
-- [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
-      "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
-      (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:
-      a HIR would cost a whole new crate + lowering pass + rewriting every `sol_name_resolver`/
-      `mir_parser` consumer to read it, for a problem that turned out to be about **where specific
-      logic lives**, not about missing a canonical desugared tree. Decision: **no HIR** — keep
-      `lexer → parser → AST → name/typecheck → MIR → LLVM` as-is, and instead separate two things
-      that had drifted into the wrong place:
-  - The real axis, generalized from this interview (mirrors why rustc type-checks on HIR but
-    borrow-checks on MIR): **flow-insensitive** logic (the answer only depends on a type/expression
-    *shape*, never on control-flow position — e.g. `is_auto_copy(ty)`) belongs in the
-    resolver/`DeclareStore`, computed once and cached per `TypeId`. **Flow-sensitive** logic (the
-    answer depends on *where in the CFG* you are — move-checking, drop-chain/scope tracking) is
-    correctly already in `mir_parser` and stays there.
-  - A full-pipeline scan (beyond the flow-insensitive audit below) also found a second, related
-    smell already precedented by the tail-return case (`sol_name_resolver`'s `check_tail_return_
-    type` vs. `mir_parser` having to "re-derive the same convention independently", per the
-    Implicit-return entry above): **convention drift** — the same rule reimplemented in two crates
-    with no shared source, kept in sync only by comment. `mir_codegen`'s own `resolve_struct`
-    (`types.rs`) admits this directly in its doc comment: *"mirrors `mir_parser`'s own
-    `resolve_struct`"*.
-  - [x] Part A1: moved pure, `DeclareStore`-independent classifiers (`PrimitiveTypes::{is_signed,
-        is_float, signed_min}`, `BinaryOperatorKind::{is_supported, is_checked_arith,
-        is_checked_div}`, `SolType::is_primitive`) into `ast_model`/`sol_utils`, replacing three
-        independently-reimplemented copies.
-  - [x] Part A2: moved `resolve_struct`/`is_lowerable`/`is_auto_copy` onto `DeclareStore` as pure
-        classification methods; deliberately **no cache** (a `TypeId`-only cache would be unsound
-        across same-named structs in different modules — `module` is passed explicitly instead).
-  - [x] Part A3: moved `is_type_boolean`/`expression_is_bool` to `ExpressionId::is_boolean` in
-        `ast_model` (the only crate both `mir_parser` and the resolver actually share).
-  - [x] Part A4: new `SolType::deref_once` in `ast_model` replacing three independent copies of the
-        same "is this `&T`/`&mut T`/`*T`, what's the inner type" match.
-  - [x] Part A5: new `PlaceElem::step_type` in `mir_model` replacing duplicated per-step Sol-type
-        derivation between `mir_parser::place_type` and `mir_codegen::resolve_place`'s
-        `step_into_field`/`step_into_index`/`step_into_deref`.
-  - [x] Part C: retired `mir_codegen::types::resolve_struct` (now routes through
-        `DeclareStore::resolve_struct`) and added `ArrayKind::is_lowerable` in `ast_model`,
-        replacing another duplicated accept/reject rule.
-  - [ ] **Part B** — checked, premise didn't hold, **not done, no scaffolding created**: there's no
-        `foreach`/`while` rewrite in `control_flow.rs` to relocate. `ast::ForCondition` has three
-        variants (`Loop`, `While(ExpressionId)`, `Foreach { index, element_kind, collection }`), but
-        `lower_for` only handles `While` — `Loop`/`Foreach` both fall straight through to
-        `UnsupportedLoopCondition`, unimplemented. And what *is* there for `While` isn't really
-        "desugaring" at all — it's a direct, single-step translation of an already-primitive
-        condition into MIR blocks (header/body/exit + `SwitchInt`), not a rewrite of one surface
-        form into a simpler one first. A real `mir_parser::desugar` submodule only earns its place
-        once `Foreach` lowering is actually implemented (`for x in xs { .. }` → an index variable +
-        a `While`-shaped loop + an increment, rewritten before/during lowering) — revisit this
-        bullet then, not before.
-  - [x] A and C landed, B confirmed unnecessary — resumed the paused borrow-checker slice (see the
-        "Extended to `if`/`else`" move-checking entry above).
-- [x] Replaced `SolType::Stub` (the single, undifferentiated representation for struct/enum/trait/
-      type-alias/generic-parameter names) with a `DeclareStore`-owned `type_resolves` side table
-      mapping each syntactic occurrence to its resolved declaration, mirroring the existing
-      `variable_resolves`/`function_resolves` pattern — the "bigger, root-cause redesign" logged
-      earlier, done across 7 slices (plan: `C:\Users\tim_k\.claude\plans\vast-wiggling-galaxy.md`).
-  - [x] Slice 1: `Stub` gained a per-occurrence `NodeId` participating in its own `Eq`/`Hash`,
-        fixing a real cross-module name-collision bug; added
-        `DeclareStore::{types_equal_ignoring_occurrence, sol_types_equal_ignoring_occurrence}` as a
-        stopgap so existing "same name = same type" comparisons still work.
-  - [x] Slice 2: added `type_resolves: VecMap<TypeId, TypeResolve>` (all 5 kinds defined, only
-        `Struct` populated) at the two resolve-phase call sites that already resolve structs, with
-        `DeclareStore::resolve_struct` checking the cache first — deliberately partial coverage,
-        zero regression risk.
-  - [x] Slice 3: `check_enum_variant_construction` now populates `type_resolves` with
-        `TypeResolve::Enum`; also fixed a real gap where two `owner_type` construction sites still
-        used test-fixture `Stub::new` instead of a real per-occurrence id.
-  - [x] Slice 4: `check_impl_conformance` now populates `type_resolves` with `TypeResolve::Trait`.
-  - [x] Slice 5: `resolve_type_alias` now populates `type_resolves` with `TypeResolve::Alias`, only
-        when the alias chain actually resolved.
-  - [x] Slice 6: `is_generic_parameter`/`generic_name_of` now populate `type_resolves` with
-        `TypeResolve::Generic` (widest call-site touch of the series — 7 sites).
-  - [x] Slice 7: turned two previously-silent "nothing matched" fallbacks
-        (`check_struct_constructor`, `check_enum_variant_construction`) into a real
-        `AstErrorKind::UndefinedType` error, closing out the series — `type_resolves` coverage
-        remains deliberately partial.
-- [x] `new(expr)` heap allocation (`*T`, an owning pointer) — parsed/typed/lowered/codegen'd across
-      three slices, plus a real `free()` at `Drop` gated at compile time by move-checking.
-  - [x] Slice 1: prerequisite fixes — corrected 3 intrinsics' doc comments from `*T` to `RawPtr<T>`,
-        and made `is_auto_copy` treat `*T` as move-only (not `AutoCopy`) like a struct.
-  - [x] Slice 2: `new(expr)` allocates via `malloc` and produces a usable `*T` (new
-        `Rvalue::HeapAlloc`), not yet freed — proven via `31_new_expression.sol`.
-  - [x] Slice 3a: fixed `return`'s own Move-awareness so a returned pointer is moved, not silently
-        left flagged for a same-function free.
-  - [x] Slice 3b: `Drop` actually calls `free()` for a `*T`, gated at compile time via
-        move-checking so a moved pointer is never double-freed; a value conditionally moved on only
-        one `if`/`else` branch still leaks (not double-frees) on the untaken path — a known,
-        proven-via-test imprecision.
-  - [x] Slice 3c: fixed a real leak — an owning parameter/by-value `this` was never dropped at all;
-        now tracked in the function's own top-level scope frame like a body local.
+- [x] **Prerequisites**: deref-place lowering (explicit `*ptr` + auto-deref through `&T`/`&mut T`/
+      `*T`); real `&this`/`&mut this` borrowing (was a by-value copy); straight-line `Drop`/
+      `SetDropFlag`/`Move`/`MarkMoved` lowering (`is_auto_copy` classification: primitives/refs/
+      pointers/slices copy, owning arrays/structs move); `FunctionLowerer` scope-stack tracking
+      (`if`/`else` join points, `for` + `break`/`continue` unwinding to the right loop frame).
+- [x] **Move checker** (`move_check`) — flags use-after-move. Deliberately mirrors rustc: real
+      flow-sensitive dataflow, not a flow-insensitive "moved anywhere ⇒ reject" scan. Grown
+      straight-line → `if`/`else` (union-join "maybe moved") → `for` (Kildall fixed point); wired
+      into `mir_run::to_mir` as a hard error. `elaborate_drops` reuses the same dataflow to prune
+      dead `Drop`s. Later extended to a definite/maybe pair (intersection-join for "definite") so a
+      value moved on only *one* branch gets a **runtime drop flag** (`Terminator::Drop::guarded`,
+      one `i1` alloca per `*T` local) instead of leaking or double-freeing on the untaken path — the
+      same mechanism rustc itself uses, not CFG/edge-splitting. Also gained **partial-move**
+      tracking (`b.p` moved out of struct `b` leaves disjoint sibling fields usable; moving out from
+      behind a reference/owning pointer/index is rejected as `MoveOutOfBorrow`).
+- [x] **Escape checker** (`escape_check`) — flags a returned reference that dangles. Traces a
+      reference's origin back to a parameter (trusted) or fresh memory (safe only through an
+      existing allocation — a reborrow or heap-pointer deref). Grown straight-line → `if`/`else` →
+      `for` → **interprocedural** (a call's return traced through the callee's own summary, with
+      call-graph recursion handled by the same fixed-point convergence) → struct-field reborrow
+      tracing. Finally **rewritten wholesale as a forward points-to dataflow** (abstract memory
+      locations, not syntactic paths, so slice/field aliasing is precise) to close every remaining
+      "unrecognized shape defaults to `Safe`" soundness hole, including owning-pointer dereferences
+      and writes through aliases/`&mut` callee parameters (must/may-write summaries). **No known
+      soundness hole remains**; only accepted false positives (an extern handed `&mut`, a write
+      through a call's returned reference, `[*]`/recursive-field weak updates) are left.
+- [x] **Overlap checker** (`overlap_check`) — flags conflicting live borrows of the same place.
+      Started as NLL-style liveness per local "generation" (straight-line → `if`/`else` → `for`),
+      then widened to: move-vs-borrow conflicts (a move invalidates storage, conflicts with *any*
+      live borrow); per-field disjointness (`&mut o.a` vs `&mut o.b` accepted, any prefix
+      relationship still conflicts); and finally a full rewrite to **loan-based (NLL-style)
+      conflicts** sharing the escape checker's points-to engine (a `Ref` creates a loan that rides
+      through every derived reference; conflict is "access to memory overlapping a live loan except
+      through that loan, unless both sides are shared") — needed because honest ref-vs-ref checking
+      rejected ordinary reborrow patterns like `this.inner.grow()` then `this.count = 1`.
+- [x] **Verification infrastructure**: an exe-level `// expect_fail` test convention (proved a
+      rejection fires through the real CLI, not just a MIR-level unit test) — building it surfaced
+      and fixed two real bugs: `sol_tester` reported "success" even on a MIR-level fault, and that
+      fix then exposed a pre-existing fault in every trait-using program (fixed by skipping
+      bodyless trait interface stubs in `mir_run`'s lowering loop instead of erroring on them).
+- [x] **Pipeline architecture cleanup** — considered a HIR stage to fix a "MIR does too much"
+      feeling, rejected it (real issue was *where* logic lives, not a missing desugared tree).
+      Moved flow-insensitive classifiers (`is_auto_copy`, `is_lowerable`, `resolve_struct`,
+      `deref_once`, `PlaceElem::step_type`, etc.) out of duplicated per-crate copies and onto
+      `DeclareStore`/`ast_model`/`mir_model` as the single source of truth; flow-sensitive logic
+      (move-checking, drop/scope tracking) stays in `mir_parser`. A planned "relocate the
+      `foreach`/`while` desugaring" part turned out to have no such desugaring to relocate yet
+      (`Foreach` isn't lowered at all) — moved to M3 since real `Foreach` lowering needs `Iterator`,
+      which is bound to traits.
+- [x] Replaced `SolType::Stub` with a `DeclareStore`-owned `type_resolves` side table mapping each
+      syntactic type occurrence to its resolved declaration (struct/enum/trait/alias/generic),
+      mirroring the existing `variable_resolves`/`function_resolves` pattern; done across 7 slices,
+      closing two previously-silent "nothing matched" fallbacks into real `UndefinedType` errors.
+- [x] `new(expr)` heap allocation (`*T`, an owning pointer): parsed/typed/lowered/codegen'd via
+      `malloc`, with a real `free()` at `Drop` gated at compile time by move-checking, and two
+      real leaks fixed along the way (a returned pointer wasn't Move-aware; an owning parameter/
+      by-value `this` was never dropped at all).
+
+**Exit state**: no known soundness hole in any of the three checkers. Remaining deferrals were
+deliberately moved out rather than left as stray checkboxes: per-array-element (`Index`)
+disjointness for overlap-checking and a `mir_codegen` performance audit are in M4 as accepted,
+non-blocking limitations; critical-edge splitting (a drop-flag optimization) is in M4 pending the
+full pipeline; and the `foreach`/`while` desugaring question is in M3 pending `Iterator`/traits.
 
 ### M3 — unions, generics, full traits (not started)
 
 - [ ] Generic functions/structs (`f<T>(x: T)`, `struct Box<T> { .. }`) and generic trait bounds
       (`Trait<T>`) — explicitly out of scope for M1's non-generic trait support (static dispatch
       only, no `Trait<T>`, see M1 above); needs monomorphization (below) to reach codegen at all
+  - [ ] **Wildcard stack array (`[_]T`)** — moved here 2026-09-24 (found while surveying array
+        gaps for M3): a stack array whose length isn't fixed at the type level is itself a generic
+        (parametric over the length), so it belongs with generics/monomorphization rather than as
+        its own array feature. Currently rejected by `ArrayKind::is_lowerable`
+        (`sol_ast/ast_model/src/ast/sol_type.rs:366`) alongside `HeapArray`.
 - [ ] Monomorphization (expansion to concrete types before LLVM)
 - [ ] Full trait resolution incl. multi-impl-by-output-type-generic case (§7)
-- [ ] `Res` / `.pass` / `?T` / match-chains
+  - [ ] **Orphan-rule coherence checking** — added 2026-09-24 (`/grill-me`; spec'd in `sol-lang.md`
+        §7, general Rust-style rule, not `AutoCopy`-specific: reject `impl Trait for Type` unless
+        the trait or the type is local to the current crate). Not tracked anywhere before this;
+        genuinely missing from "full trait resolution" above, which covers dispatch ambiguity, not
+        impl-legality checking. Needed before `AutoCopy` (below) can actually reject a user
+        `impl AutoCopy for int`.
+  - [ ] **`This.(name: T)`/`This.[T](param)` constructor dispatch, desugared to trait impls** —
+        added 2026-09-24 (`/grill-me`; spec'd in `sol-lang.md` §6/§7), found missing from TODO
+        during a spec-vs-roadmap diff. Confirmed these aren't a separate "constructor overload"
+        mechanism: `This.(name: T)` desugars to a `From<T>`-style trait impl per parameter type,
+        `This.[T](param)` likewise per element type, both reusing this same multi-impl-by-generic-
+        parameter dispatch — no bespoke logic needed beyond the desugaring itself. `This.[T]` has
+        an AST field already (`sol_ast/ast_model/src/ast/statements.rs:408`) but no confirmed
+        dispatch-by-argument-type resolver logic for either form yet.
+- [ ] **`AutoCopy` as a real, user-implementable trait** — added 2026-09-24 (`/grill-me`; spec'd in
+      `sol-lang.md` §11). Confirmed scope: this becomes the user-facing surface for what
+      `DeclareStore::is_auto_copy` already hardcodes internally for M2's move-checker
+      (primitives/refs/pointers/slices copy, structs/arrays move-only) — a user struct should be
+      able to opt in via `use Type impl AutoCopy {}` and have M2's checker treat it as copy instead
+      of move-only. Depends on the orphan rule above (primitives are already `AutoCopy` inside the
+      compiler's own crate, so a user `impl AutoCopy for int` must be rejected as a foreign-impl
+      violation, not special-cased). Once real, `is_auto_copy` should read actual trait impls
+      instead of its current hardcoded type-shape match.
+- [ ] `Res` / `.pass` / `?T`
+- [ ] **`match` and match-chain (`.Variant{}`) type inference + MIR lowering** — corrected/split out
+      2026-09-24 (found while surveying M3 scope): further along than the old single bullet
+      suggested, but only front-end. `match` (`ast::ExpressionKind::Match`,
+      `sol_ast/ast_model/src/ast/expression.rs:83`) and match-chain (internally `MatchMethod`,
+      `expression.rs:86`, design doc `docs/sol-lang.md:487-520`) are both fully parsed
+      (`sol_ast/ast_parser/src/parse/expression/conditionals.rs:104`,
+      `sol_ast/ast_parser/src/parse/expression/access.rs:278-332`) and name-resolved
+      (`sol_ast/sol_resolver/src/resolve/expression.rs:49,83,155`), but expression-type inference
+      explicitly isn't implemented for either (`// not yet impl`,
+      `sol_ast/sol_resolver/src/resolve/typecheck/expression.rs:367-381`), and neither has any MIR
+      lowering at all (zero hits for `Match`/`MatchMethod` in `sol_mir/mir_parser` or
+      `sol_mir/mir_codegen`) — so nothing using `match` or a match-chain can reach codegen yet,
+      despite an existing end-to-end test for it (`sol_tester/sol/src/testCompiler.sol:233-245`).
+- [ ] **Map-chain (`->Variant{}`)** — 0% implemented, not just missing lowering. Documented as a
+      distinct single-variant `map`/`map_err` operation in `docs/sol-lang.md:525-531`, but the `->`
+      token doesn't exist in the lexer at all, so there's no AST node, parser rule, resolver, or MIR
+      support anywhere. An end-to-end test already references it
+      (`sol_tester/sol/src/testCompiler.sol:248-257`, `ok->Ok{str.(it)}`) but can't even tokenize
+      today.
 - [ ] Extend borrow checker to generic MIR with `AutoCopy` bounds
+- [ ] **Auto-derived `Eq`, opt-in `Ord`** — added 2026-09-24 (`/grill-me`; spec'd in `sol-lang.md`
+      §14). `Eq` is structural and automatic (field-by-field/variant-by-variant), opt-out only, with
+      non-`Eq` propagating upward from any non-`Eq` field with no annotation needed; `Ord` on
+      structs/unions is opt-in via `use Type impl Ord { .. }`, unlike `Eq` — not auto-derived even
+      when every field/variant is itself `Ord`. No derive/auto-implementation logic exists anywhere
+      in the resolver or `ast_model` yet for either.
 - [ ] `limit N` on `for` loops (blocked on `Res` error shape)
 - [ ] `SwitchInt` discriminant handling for union tags (`Rvalue::Discriminant`)
+- [ ] **Heap-allocated array (`[]T`)** — moved here 2026-09-24 (found while surveying array gaps for
+      M3), corrected 2026-09-24 (`/grill-me`: confirmed `sol-lang.md` §3.3 is the correct spec — a
+      `[]T` is heap-backed but **fixed-length once created**, no `push`/`pop`/`cap`; that's a
+      separate kind, see `[dyn]T` below). Currently has no representation past the AST:
+      `ArrayKind::is_lowerable` (`sol_ast/ast_model/src/ast/sol_type.rs:366`) and
+      `DeclareStore::is_lowerable` (`sol_ast/ast_model/src/declare_store.rs:396`) both reject it
+      before MIR building starts, and `mir_codegen::types::array_type`
+      (`sol_mir/mir_codegen/src/types.rs:190`) rejects it again as `NonPrimitiveType` — the matching
+      `HeapArray` codegen arm (`types.rs:220`) is a dead `unreachable!`. Needs a from-scratch runtime
+      representation (length + heap buffer, no capacity/growth), not an extension of the existing
+      fixed-array/slice path.
+- [ ] **Growable dynamic array (`[dyn]T`)** — added 2026-09-24 (`sol-lang.md` §3.3; found missing
+      entirely from TODO.md during a spec-vs-roadmap diff). A distinct array kind from `[]T` above:
+      heap-backed with a real `cap`/`push`/`pop` growth API. No `dyn` array-kind token or AST variant
+      exists yet at all (checked `sol_ast/ast_model/src/ast/sol_type.rs`'s `ArrayKind` enum) — this
+      needs new syntax/tokenizing, not just a codegen gap like `[]T` above.
+- [ ] **Item-level visibility (`pub(crate)`/`pub(super)`) + file-capitalization module visibility**
+      — added 2026-09-24 (`sol-lang.md` §2; found missing entirely from TODO.md during a
+      spec-vs-roadmap diff). Not implemented at all: no `Visibility` enum, no `pub(crate)`/
+      `pub(super)` handling, no capitalization-based module-visibility logic anywhere in `sol_ast`
+      (checked declaration parsing/resolving). Distinct from the crate-system track elsewhere in
+      this file, which covers cross-crate linkage/`.solo` packaging, not intra-crate item scoping.
+- [ ] **`mod foo { .. }` — nested child modules within one file** — added 2026-09-24 (`/grill-me`;
+      spec'd in `sol-lang.md` §2). Unlike Rust's `mod foo;`, never used to pull in another source
+      file (`import` already owns that); only carves a named, nested scope out of one file, needing
+      its own `ModuleId`-style identity distinct from its containing file's. Visibility follows the
+      item-level `pub`/`pub(super)` rule above (private by default, `pub mod` reachable from outside
+      the file via `import File.foo.Thing`), not file capitalization — depends on the item-level
+      visibility bullet above landing first. No `mod` keyword, nested-scope resolution, or
+      `ModuleId` nesting exists anywhere in `sol_ast` yet.
+- [ ] **`Foreach` lowering (`for x in xs { .. }`), via the `Iterator` trait** — moved here 2026-09-24
+      (found while surveying array gaps for M3). `lower_for`
+      (`sol_mir/mir_parser/src/function/control_flow.rs:220`) only handles
+      `ast::ForCondition::While`; `Loop`/`Foreach` both fall straight through to
+      `UnsupportedLoopCondition`, unimplemented. The resolver side is already done — `resolve_for`/
+      `backfill_foreach_element_type` fully type-resolve `Foreach`, including inferring the element
+      type from the collection's array/slice type — so this is MIR-lowering-only work, blocked here
+      (not on arrays) because iterating anything is meant to go through a real `Iterator` trait
+      (`next(&mut this): Option<T>` or equivalent), which needs M3's full trait resolution to exist
+      first.
+- [ ] **Part B of the M2 pipeline-architecture cleanup** — moved here from M2 (deferred
+      2026-09-24: revisiting the "desugar `foreach`/`while` into a shared `mir_parser::desugar`
+      submodule" question only makes sense once `Foreach` lowering (above) actually exists). Once
+      `for x in xs { .. }` is lowered (an index/iterator variable + a `While`-shaped loop + an
+      increment/`next()` call, rewritten before/during lowering), revisit whether that rewrite
+      belongs in a real `desugar` submodule rather than inline in `control_flow.rs`.
 
 ### M4 — everything else (not sequenced)
 
+- [ ] **Critical-edge splitting as a flag-free alternative to the M2 runtime drop-flag** — moved
+      here from M2 (deferred 2026-09-24: this is a pure optimization, and optimization work should
+      wait until after the full pipeline works, not be threaded into M2 while it's still landing
+      correctness). Not scoped: an *acyclic* join with exactly *one* conditionally-moved value
+      reaching it (the M2 runtime-drop-flag slice's own motivating example) can drop the runtime
+      flag entirely by giving each incoming edge its own small dedicated block that does or skips
+      the `Drop` before rejoining the shared continuation, rather than one shared guarded `Drop`
+      reading a flag. Confirmed *not* a general replacement for the flag mechanism during a
+      follow-up `/grill-me`: it stops being free the moment either (a) more than one
+      conditionally-moved local reaches the same join (edges would need splitting per
+      *combination* of drop obligations — 2 values ⇒ 4 edge variants, 3 ⇒ 8) or (b) the join is
+      reached through a loop back-edge (there's no static edge count to split against "how many
+      times around the loop"). Mirrors why rustc's own `ElaborateDrops` isn't pure edge-splitting
+      either: it runs the same definite/maybe dataflow the M2 slice already built, elaborates for
+      free wherever the answer is definite, and only falls back to a runtime flag for the genuinely
+      ambiguous cases — edge-splitting would only ever be a size/speed micro-optimization layered
+      on top of that fallback for its one narrow acyclic single-value case, not a replacement for
+      it.
 - [ ] **Per-array-element (`Index`) disjointness for overlap-checking** — deliberately deferred out
       of M2 (`/grill-me`'d 2026-09-24). `check_borrow_overlaps`'s `fields_disjoint`
       (`sol_mir/mir_parser/src/borrow_checker/overlap_check.rs:193`) already proves two borrows of
@@ -923,6 +361,19 @@ that landing first, in order.
 - [ ] `async`/`await` + structured concurrency runtime — spec (§15) now also covers `task.block { }`,
       the sync-side blocking counterpart to `task { }` (plus brace-optional single-statement form
       for both), and disallows it from nested-async call sites; not implemented yet
+  - **`Send`/`Sync` deliberately deferred** (`/grill-me`'d 2026-09-24, found missing from TODO
+    during a spec-vs-roadmap diff): spec §15 documents them (moving into `spawn` needs `Send`,
+    sharing by reference across `spawn`s needs `Sync`, both auto-derived-when-possible), but
+    confirmed the concurrency model is single-threaded for now — no real multi-threaded `spawn`
+    exists to make either trait meaningful yet. Revisit once/if real multi-threading is actually
+    designed, not as part of this async/await item.
+- [ ] **Sol's own `#[test]` framework** — added 2026-09-24 (`/grill-me`; spec'd in `sol-lang.md`
+      §17: compiler-recognized `#[test]` attribute, `test{Name}.sol` file-naming convention,
+      per-test panic isolation), found missing from TODO during a spec-vs-roadmap diff. Confirmed
+      low priority, deliberately deferred — "eventually, for Sol users writing Sol programs," not
+      worth competing with the core type-system work still open in M3. Today the whole suite
+      (`sol_tester`, the `.sol` exe tests) runs through the Rust-side harness, not anything
+      Sol-native; no `#[test]`/`test{Name}.sol` handling exists in the compiler itself.
 - [ ] Const generics (`Limit<T, RANGE>`)
 - [ ] Full reflection (`intrinsic.typeinfo`) — AST/compile-time design exists in
       [reflection-system.md](docs/reflection-system.md), backend (HIR/MIR/LLVM) not started
