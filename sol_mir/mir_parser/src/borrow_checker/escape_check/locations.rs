@@ -19,6 +19,10 @@ pub(super) enum Base {
     CallResult(BlockId),
     // Memory the analysis can't name, conservatively blamed on local `.0`.
     Unknown(LocalId),
+    // Whatever the caller had stored at a `Param`/`ParamDeep` location
+    // before the call. Only ever appears as a location's content: once
+    // dereferenced it is just memory reachable from that parameter.
+    Incoming(Box<Location>),
 }
 
 impl Base {
@@ -26,8 +30,17 @@ impl Base {
     fn is_summary(&self) -> bool {
         matches!(
             self,
-            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_)
+            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_) | Base::Incoming(_)
         )
+    }
+
+    // The 0-based parameter whose caller-supplied memory this base names.
+    pub(super) fn param(&self) -> Option<usize> {
+        match self {
+            Base::Param(index) | Base::ParamDeep(index) => Some(*index),
+            Base::Incoming(location) => location.base.param(),
+            Base::Frame(_) | Base::CallResult(_) | Base::Unknown(_) => None,
+        }
     }
 
     // Bases a write can't be applied to at all, only leaked.
@@ -66,6 +79,10 @@ impl Location {
 
     pub(super) fn base(&self) -> &Base {
         &self.base
+    }
+
+    pub(super) fn path(&self) -> &[Step] {
+        &self.path
     }
 
     pub(super) fn is_summary(&self) -> bool {
@@ -170,7 +187,7 @@ impl<'ctx> Types<'ctx> {
                     _ => None,
                 }
             }
-            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_) => None,
+            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_) | Base::Incoming(_) => None,
         }
     }
 

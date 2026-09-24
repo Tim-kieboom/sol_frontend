@@ -584,7 +584,7 @@ that landing first, in order.
           to a runtime flag for the genuinely ambiguous cases — edge-splitting would only ever be a size/
           speed micro-optimization layered on top of that fallback for its one narrow acyclic single-
           value case, not a replacement for it.
-  - [ ] **Close escape-checking's soundness holes — the M2 exit criterion** (`/grill-me`'d
+  - [x] **Close escape-checking's soundness holes — the M2 exit criterion** (`/grill-me`'d
         2026-09-24). M2 closes when no known soundness hole remains, which is unreachable while
         unrecognized shapes default to `Safe`: `classify_ref`'s `_ => Safe`, every `None`
         ("unknown ⇒ silent"), and `Pointer(_) => Safe`, which became a real use-after-free once
@@ -639,8 +639,36 @@ that landing first, in order.
             tests; the 2 red are exactly the callee safe twins
             (`allows_a_safe_reference_written_by_a_callee_through_a_mutable_parameter`,
             `allows_a_dangling_field_overwritten_by_a_callee_that_always_writes`).
-      - [ ] **Slice 2 — callee `&mut`-param write summaries** (must/may + stored origin per `&mut`
-            param) replacing the call-site stopgap; turns the 2 callee twins green.
+      - [x] **Slice 2 — callee `&mut`-param write summaries**: a function's summary is now its
+            returned `Origin` plus `writes: Location → {targets, EveryReturn | SomeReturns}` for
+            every `Param`/`ParamDeep` location it leaves changed, in its own terms; a call replays
+            them translated to the caller's locations (strong only for `EveryReturn` + one
+            non-summary target), replacing the stopgap for every call except externs (which keep
+            it). New `Base::Incoming(location)` — "whatever the caller had stored here" — is the
+            default content of caller memory, so a summary can tell "wrote a new reference" from
+            "left the old one" (otherwise a conditional write translated to "may point anywhere
+            reachable from `&mut h`", including `h` itself: a false positive). Found while
+            testing: must-coverage can't be proven for a recursive callee starting from "writes
+            nothing", so summaries settle twice — once to discover the written locations, then
+            again from "each written on every return, with nothing yet" (greatest fixed point for
+            the must-part; the settled table is self-consistent either way). A first attempt kept
+            phase 1's targets and replayed the weak phase's `Incoming` markers as real writes — fixed
+            by clearing them. +4 tests (callee copies a field between arguments, dangling + safe;
+            recursive callee always/sometimes writes). 182/182 `mir_parser`, 688/688 workspace, 38/38
+            exe tests; no new clippy warnings.
+    - **Escape-checking has no known soundness hole left.** Remaining conservative spots (false
+      positives only): an extern handed a `&mut`, a write through a call's returned reference
+      (leaked to every read), `[*]`/recursive-summary weak updates.
+  - [ ] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
+        while closing the escape-checking item, not yet addressed:
+    - **Partial moves**: `move_eligible_operand` only moves a *bare* variable, so a projected
+      move-only source (`consume(container.item)` with `item: *T`) lowers to `Operand::Copy` —
+      two owners of one allocation, a double free at runtime.
+    - **Overlap-checking's `Resolved::Disagreement`**: a borrow whose alias resolves to
+      `Disagreement` (e.g. a reference reassigned to different places on two branches, or one
+      reaching an untracked parameter) is simply not tracked, so an overlapping `&mut` goes
+      unreported — the same "unfamiliar ⇒ accept" pattern escape-checking had. Candidate fix:
+      reuse escape-checking's points-to state for overlap's alias resolution.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

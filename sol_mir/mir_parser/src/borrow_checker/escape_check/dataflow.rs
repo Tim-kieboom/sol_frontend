@@ -11,7 +11,7 @@ use sol_utils::{
 };
 
 use super::{
-    Origin, Summaries, combine,
+    Coverage, Origin, Summaries, Summary, combine,
     locations::{Base, Location, Step, Types, is_pointer_like},
 };
 
@@ -25,11 +25,17 @@ pub(super) struct State {
     // Pointees written into memory the analysis couldn't name; any read may
     // observe them.
     leaked: Targets,
+    // Locations strongly written on every path reaching this point.
+    always_written: BTreeSet<Location>,
 }
 
 impl State {
     pub(super) fn written(&self) -> impl Iterator<Item = (&Location, &Targets)> {
         self.contents.iter()
+    }
+
+    pub(super) fn is_always_written(&self, location: &Location) -> bool {
+        self.always_written.contains(location)
     }
 
     pub(super) fn leaked(&self) -> &Targets {
@@ -125,6 +131,10 @@ impl<'ctx> Analyzer<'ctx> {
                 Base::Param(index) | Base::ParamDeep(index) => {
                     Origin::TiedToParams(VecSet::from([*index]))
                 }
+                Base::Incoming(prior) => match prior.base().param() {
+                    Some(index) => Origin::TiedToParams(VecSet::from([index])),
+                    None => Origin::Safe,
+                },
                 Base::CallResult(block_id) => {
                     if !visited_calls.insert(*block_id) {
                         continue;
@@ -168,6 +178,17 @@ impl<'ctx> Analyzer<'ctx> {
         }
         for state in &incoming {
             joined.leaked.extend(state.leaked.iter().cloned());
+        }
+        if let Some((first, rest)) = incoming.split_first() {
+            joined.always_written = first
+                .always_written
+                .iter()
+                .filter(|location| {
+                    rest.iter()
+                        .all(|state| state.always_written.contains(*location))
+                })
+                .cloned()
+                .collect();
         }
         joined
     }
@@ -222,46 +243,61 @@ impl<'ctx> Analyzer<'ctx> {
         arguments: &[mir::Operand],
         destination: Option<&mir::Place>,
     ) {
-        for argument in arguments {
-            self.clobber_through_mutable_argument(state, argument);
-        }
-
-        let Some(destination) = destination else {
-            return;
+        let summary = self.summaries.get(callee);
+        let result = match destination {
+            Some(destination) => self.call_result(state, block_id, arguments, summary, destination),
+            None => None,
         };
-        let Some(ty) = self.types.place_type(destination) else {
-            state.leaked.insert(unknown(destination.local));
-            return;
-        };
-        let subs = self.types.ref_subpaths(&ty);
-        if subs.is_empty() {
-            return;
-        }
 
-        let value = match self.summaries.get(callee) {
-            // The callee's own check already rejects a dangling return.
-            Some(Origin::Safe | Origin::Dangling(_)) => Targets::new(),
-            Some(Origin::TiedToParams(indices)) => {
-                self.call_result(state, block_id, arguments, indices, destination.local)
+        match summary {
+            Some(summary) => self.apply_callee_writes(state, summary, arguments),
+            // An extern: nothing is known about what it stores through a
+            // mutable argument.
+            None => {
+                for argument in arguments {
+                    self.clobber_through_mutable_argument(state, argument);
+                }
             }
-            None => Targets::from([unknown(destination.local)]),
-        };
-        let values = vec![value; subs.len()];
-        self.store(state, destination, &subs, values);
+        }
+
+        if let (Some(destination), Some((subs, value))) = (destination, result) {
+            let values = vec![value; subs.len()];
+            self.store(state, destination, &subs, values);
+        }
     }
 
+    // The reference sub-paths of `destination` and what each of them holds
+    // once the call returns, or `None` when the result holds no reference.
     fn call_result(
         &self,
         state: &mut State,
         block_id: BlockId,
         arguments: &[mir::Operand],
-        indices: &VecSet<usize>,
-        blame: LocalId,
-    ) -> Targets {
+        summary: Option<&Summary>,
+        destination: &mir::Place,
+    ) -> Option<(Vec<Vec<Step>>, Targets)> {
+        let Some(ty) = self.types.place_type(destination) else {
+            state.leaked.insert(unknown(destination.local));
+            return None;
+        };
+        let subs = self.types.ref_subpaths(&ty);
+        if subs.is_empty() {
+            return None;
+        }
+
+        let Some(summary) = summary else {
+            return Some((subs, Targets::from([unknown(destination.local)])));
+        };
+        let indices = match &summary.returned {
+            Origin::TiedToParams(indices) => indices,
+            // The callee's own check already rejects a dangling return.
+            Origin::Safe | Origin::Dangling(_) => return Some((subs, Targets::new())),
+        };
+
         let mut reached = Targets::new();
         for index in indices.entries() {
             let Some(argument) = arguments.get(index) else {
-                return Targets::from([unknown(blame)]);
+                return Some((subs, Targets::from([unknown(destination.local)])));
             };
             let start = self.operand_value_targets(state, argument);
             reached.extend(self.reachable(state, start));
@@ -269,12 +305,101 @@ impl<'ctx> Analyzer<'ctx> {
 
         let result = Location::root(Base::CallResult(block_id));
         self.write(state, result.clone(), reached, Update::Weak);
-        Targets::from([result])
+        Some((subs, Targets::from([result])))
     }
 
-    // Stopgap until callees summarize their own writes: a callee handed a
-    // mutable reference may store anything, so every reference reachable
-    // through it may now dangle.
+    // Replays what the callee leaves in memory reachable from its
+    // arguments, translated into this function's own locations. Everything
+    // is read from the pre-call state before anything is written.
+    fn apply_callee_writes(
+        &self,
+        state: &mut State,
+        summary: &Summary,
+        arguments: &[mir::Operand],
+    ) {
+        let mut writes: Vec<(Location, Targets, Update)> = Vec::new();
+        let mut leaked = Targets::new();
+
+        for (location, write) in &summary.writes {
+            let Some(argument) = location
+                .base()
+                .param()
+                .and_then(|index| arguments.get(index))
+            else {
+                continue;
+            };
+            let value = self.translate(state, &write.targets, arguments);
+
+            if !matches!(location.base(), Base::Param(_)) {
+                let start = self.operand_value_targets(state, argument);
+                let (slots, reached_opaque) = self.reference_slots(state, start);
+                if reached_opaque {
+                    leaked.extend(value.iter().cloned());
+                }
+                for slot in slots {
+                    writes.push((slot, value.clone(), Update::Weak));
+                }
+                continue;
+            }
+
+            let pointees = self.as_pointees(self.operand_targets(state, argument, &[]));
+            let single = pointees.len() == 1;
+            for pointee in &pointees {
+                if pointee.base().is_opaque() {
+                    leaked.extend(value.iter().cloned());
+                    continue;
+                }
+                let key = self.types.extend(pointee, location.path());
+                let update =
+                    if single && write.coverage == Coverage::EveryReturn && !key.is_summary() {
+                        Update::Strong
+                    } else {
+                        Update::Weak
+                    };
+                writes.push((key, value.clone(), update));
+            }
+        }
+
+        state.leaked.extend(leaked);
+        for (key, value, update) in writes {
+            self.write(state, key, value, update);
+        }
+    }
+
+    // Callee-space targets (`Param`/`ParamDeep`/`Incoming` bases only)
+    // rewritten as this function's own locations at the call site.
+    fn translate(&self, state: &State, targets: &Targets, arguments: &[mir::Operand]) -> Targets {
+        let mut translated = Targets::new();
+        for target in targets {
+            let Some(argument) = target.base().param().and_then(|index| arguments.get(index))
+            else {
+                continue;
+            };
+
+            match target.base() {
+                Base::Param(_) => {
+                    for pointee in self.as_pointees(self.operand_targets(state, argument, &[])) {
+                        translated.insert(self.types.extend(&pointee, target.path()));
+                    }
+                }
+                Base::Incoming(prior) if matches!(prior.base(), Base::Param(_)) => {
+                    for pointee in self.as_pointees(self.operand_targets(state, argument, &[])) {
+                        let slot = self.types.extend(&pointee, prior.path());
+                        translated.extend(self.content(state, &slot));
+                    }
+                }
+                // Somewhere deeper in the memory reachable from the argument.
+                _ => {
+                    let start = self.operand_value_targets(state, argument);
+                    translated.extend(self.reachable(state, start));
+                }
+            }
+        }
+        translated
+    }
+
+    // A callee handed a mutable reference it has no summary for may store
+    // anything, so every reference reachable through it may now dangle.
     fn clobber_through_mutable_argument(&self, state: &mut State, argument: &mir::Operand) {
         let (mir::Operand::Copy(place) | mir::Operand::Move(place)) = argument else {
             return;
@@ -289,22 +414,36 @@ impl<'ctx> Analyzer<'ctx> {
 
         let clobber = Targets::from([unknown(place.local)]);
         let start = self.operand_value_targets(state, argument);
+        let (slots, reached_opaque) = self.reference_slots(state, start);
+        if reached_opaque {
+            state.leaked.extend(clobber.iter().cloned());
+        }
+        for slot in slots {
+            self.write(state, slot, clobber.clone(), Update::Weak);
+        }
+    }
+
+    // Every location holding a reference somewhere in the memory reachable
+    // from `start`, plus whether any of that memory can't be named at all.
+    fn reference_slots(&self, state: &State, start: Targets) -> (Vec<Location>, bool) {
+        let mut slots = Vec::new();
+        let mut reached_opaque = false;
         for location in self.reachable(state, start) {
             if location.base().is_opaque() {
-                state.leaked.extend(clobber.iter().cloned());
+                reached_opaque = true;
                 continue;
             }
             // An untyped location (a `ParamDeep` summary) holds its
             // references directly rather than at typed sub-paths.
             let Some(location_ty) = self.types.location_type(&location) else {
-                self.write(state, location, clobber.clone(), Update::Weak);
+                slots.push(location);
                 continue;
             };
             for sub in self.types.ref_subpaths(&location_ty) {
-                let key = self.types.extend(&location, &sub);
-                self.write(state, key, clobber.clone(), Update::Weak);
+                slots.push(self.types.extend(&location, &sub));
             }
         }
+        (slots, reached_opaque)
     }
 
     fn store(
@@ -344,7 +483,10 @@ impl<'ctx> Analyzer<'ctx> {
 
     fn write(&self, state: &mut State, key: Location, value: Targets, update: Update) {
         let merged = match update {
-            Update::Strong => value,
+            Update::Strong => {
+                state.always_written.insert(key.clone());
+                value
+            }
             Update::Weak => {
                 let mut merged = self.content(state, &key);
                 merged.extend(value);
@@ -465,12 +607,27 @@ impl<'ctx> Analyzer<'ctx> {
         for location in locations {
             pointees.extend(self.content(state, location));
         }
-        pointees
+        self.as_pointees(pointees)
+    }
+
+    // A reference's stored value, read as the memory it points at: an
+    // `Incoming` value points somewhere into its parameter's memory.
+    fn as_pointees(&self, targets: Targets) -> Targets {
+        targets
+            .into_iter()
+            .map(|target| match target.base() {
+                Base::Incoming(prior) => match prior.base().param() {
+                    Some(index) => Location::root(Base::ParamDeep(index)),
+                    None => target,
+                },
+                _ => target,
+            })
+            .collect()
     }
 
     fn reachable(&self, state: &State, start: Targets) -> Targets {
         let mut reached = Targets::new();
-        let mut pending: Vec<Location> = start.into_iter().collect();
+        let mut pending: Vec<Location> = self.as_pointees(start).into_iter().collect();
 
         while let Some(location) = pending.pop() {
             if !reached.insert(location.clone()) {
@@ -478,12 +635,12 @@ impl<'ctx> Analyzer<'ctx> {
             }
 
             let Some(ty) = self.types.location_type(&location) else {
-                pending.extend(self.content(state, &location));
+                pending.extend(self.as_pointees(self.content(state, &location)));
                 continue;
             };
             for sub in self.types.ref_subpaths(&ty) {
                 let key = self.types.extend(&location, &sub);
-                pending.extend(self.content(state, &key));
+                pending.extend(self.as_pointees(self.content(state, &key)));
             }
         }
 
@@ -513,10 +670,10 @@ impl<'ctx> Analyzer<'ctx> {
                 Some(index) => Targets::from([Location::root(Base::ParamDeep(index))]),
                 None => Targets::new(),
             },
-            Base::Param(index) | Base::ParamDeep(index) => {
-                Targets::from([Location::root(Base::ParamDeep(*index))])
+            Base::Param(_) | Base::ParamDeep(_) => {
+                Targets::from([Location::root(Base::Incoming(Box::new(location.clone())))])
             }
-            Base::CallResult(_) => Targets::new(),
+            Base::CallResult(_) | Base::Incoming(_) => Targets::new(),
             Base::Unknown(local) => Targets::from([unknown(*local)]),
         }
     }

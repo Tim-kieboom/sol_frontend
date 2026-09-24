@@ -4114,6 +4114,75 @@ fn check_escapes_flags_a_dangling_field_overwritten_through_an_alias_that_may_ta
     assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
 }
 
+// `copyR` stores whatever the caller already had in `src.r` into `dst.r`,
+// so the caller's `dst.r` ends up exactly as safe as its own `src.r`.
+const COPY_FIELD_CALLEE: &str = "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\ncopyR(dst: &mut Holder, src: &Holder) {\n    dst.r = src.r\n}\n";
+
+#[test]
+fn check_escapes_flags_a_dangling_field_copied_between_arguments_by_a_callee() {
+    let (functions, declares) = lower_all_with_declares(&format!(
+        "{COPY_FIELD_CALLEE}f(safe: &Obj2): &int {{\n    x := Obj2{{value: 1}}\n    p := &x\n    mut dst := Holder{{r: safe}}\n    src := Holder{{r: p}}\n    dm := &mut dst\n    sr := &src\n    copyR(dm, sr)\n    return &dst.r.value\n}}\n"
+    ));
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the callee's copy of a dangling field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_field_copied_between_arguments_by_a_callee() {
+    let (functions, declares) = lower_all_with_declares(&format!(
+        "{COPY_FIELD_CALLEE}f(safe: &Obj2, other: &Obj2): &int {{\n    mut dst := Holder{{r: safe}}\n    src := Holder{{r: other}}\n    dm := &mut dst\n    sr := &src\n    copyR(dm, sr)\n    return &dst.r.value\n}}\n"
+    ));
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a parameter copied between fields by a callee should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_converges_on_a_recursive_callee_writing_through_its_mutable_parameter() {
+    // `set` writes `h.r` either directly or through its own recursive call,
+    // so every return has written it and the caller's dangling value is
+    // replaced.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2, c: bool) {\n    if c {\n        set(h, r, false)\n        return\n    }\n    h.r = r\n}\nf(safe: &Obj2, c: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    set(hm, safe, c)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "every path through the recursive callee writes h.r, so the call should replace it, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_field_a_recursive_callee_only_sometimes_overwrites() {
+    // With `d` false neither branch writes, so the optimistic start of the
+    // summary rounds must still settle on "sometimes".
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nset(h: &mut Holder, r: &Obj2, c: bool, d: bool) {\n    if c {\n        set(h, r, false, d)\n        return\n    }\n    if d {\n        h.r = r\n    }\n}\nf(safe: &Obj2, c: bool, d: bool): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    hm := &mut h\n    set(hm, safe, c, d)\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected a recursive callee's conditional write to leave the dangling value in place, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
 // Recursive-type tests: `n.r` is a distinct (strongly updated) place, while
 // every path at or below `n.next` folds onto one summary place that is only
 // ever weakly updated. The signal is the dangling store left in the
