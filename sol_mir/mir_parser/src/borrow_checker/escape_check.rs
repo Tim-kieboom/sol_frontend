@@ -17,10 +17,12 @@ use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::{
     FunctionId,
     collections::{
+        array::Arr,
         vec_map::{VecMap, VecMapIndex},
         vec_set::VecSet,
     },
     fault::{Fault, FaultCollector},
+    span::ModuleId,
 };
 
 use crate::fault::{MirErrorKind, MirFault};
@@ -75,6 +77,7 @@ struct EscapeChecker<'ctx> {
     declares: &'ctx DeclareStore,
     function: &'ctx mir::Function,
     predecessors: VecMap<BlockId, Vec<BlockId>>,
+    functions_module: Option<ModuleId>,
 }
 impl<'ctx> EscapeChecker<'ctx> {
     fn new(
@@ -82,10 +85,15 @@ impl<'ctx> EscapeChecker<'ctx> {
         declares: &'ctx DeclareStore,
         summaries: &'ctx Summaries,
     ) -> Self {
+        let functions_module = declares
+            .get_function(function.id)
+            .map(|(_, module)| *module);
+
         Self {
             function,
             declares,
             summaries,
+            functions_module,
             predecessors: VecMap::const_default(),
         }
     }
@@ -94,8 +102,8 @@ impl<'ctx> EscapeChecker<'ctx> {
         let Some(return_local) = self.returned_reference_local() else {
             return;
         };
-        let (return_blocks, settled) = self.settle_return_origins(return_local);
 
+        let (return_blocks, settled) = self.settle_return_origins(return_local);
         for &block_id in &return_blocks {
             if let Some(err) = self.check_local_dangling(return_local, block_id, &settled) {
                 faults.push(err);
@@ -238,36 +246,53 @@ impl<'ctx> EscapeChecker<'ctx> {
             Origin::Dangling(_) => None,
             Origin::Safe => Some(Origin::Safe),
             Origin::TiedToParams(indices) => {
-                let statement_count = self.function.blocks[block_id].statements.len();
-                let mut combined = Origin::Safe;
-                let mut sound = true;
-                for index in indices.entries() {
-                    let arg_origin = arguments.get(index).and_then(|operand| match operand {
-                        mir::Operand::Copy(place) | mir::Operand::Move(place)
-                            if place.projection.is_empty() =>
-                        {
-                            self.trace_within_block(
-                                place.local,
-                                block_id,
-                                statement_count,
-                                previous_round,
-                                state,
-                            )
-                        }
-                        _ => None,
-                    });
-                    match arg_origin {
-                        Some(origin) => combined = combine(combined, origin),
-                        None => {
-                            sound = false;
-                            break;
-                        }
-                    }
-                }
-                if sound { Some(combined) } else { None }
+                self.tied_to_params_origin(block_id, previous_round, state, arguments, indices)
             }
         };
         Some(origin)
+    }
+
+    fn tied_to_params_origin(
+        &self,
+        block_id: BlockId,
+        previous_round: &Table,
+        state: &mut TraceState<'_>,
+        arguments: &Arr<mir_model::Operand>,
+        indices: &VecSet<usize>,
+    ) -> Option<Origin> {
+        let statement_count = self.function.blocks[block_id].statements.len();
+        let mut combined = Origin::Safe;
+        let mut sound = true;
+        for index in indices.entries() {
+            let Some(operand) = arguments.get(index) else {
+                sound = false;
+                break;
+            };
+
+            let origin = match operand {
+                mir::Operand::Copy(place) | mir::Operand::Move(place)
+                    if place.projection.is_empty() =>
+                {
+                    self.trace_within_block(
+                        place.local,
+                        block_id,
+                        statement_count,
+                        previous_round,
+                        state,
+                    )
+                }
+                _ => None,
+            };
+
+            match origin {
+                Some(origin) => combined = combine(combined, origin),
+                None => {
+                    sound = false;
+                    break;
+                }
+            }
+        }
+        if sound { Some(combined) } else { None }
     }
 
     fn trace_within_block(
@@ -278,6 +303,8 @@ impl<'ctx> EscapeChecker<'ctx> {
         previous_round: &Table,
         state: &mut TraceState,
     ) -> Option<Origin> {
+        use mir::{Operand, Rvalue};
+
         let block = &self.function.blocks[block_id];
         for (index, statement) in block.statements.as_slice()[..before_index]
             .iter()
@@ -287,20 +314,22 @@ impl<'ctx> EscapeChecker<'ctx> {
             let mir::Statement::Assign(place, rvalue) = statement else {
                 continue;
             };
+
             if place.local != local || !place.projection.is_empty() {
                 continue;
             }
+
             return match rvalue {
-                mir::Rvalue::Use(mir::Operand::Copy(alias) | mir::Operand::Move(alias)) => {
+                Rvalue::Use(Operand::Copy(alias) | Operand::Move(alias)) => {
                     if !alias.projection.is_empty() {
                         None
                     } else {
                         self.trace_within_block(alias.local, block_id, index, previous_round, state)
                     }
                 }
-                mir::Rvalue::Ref {
-                    place: ref_place, ..
-                } => self.classify_ref(ref_place, block_id, index, previous_round, state),
+                Rvalue::Ref { place, .. } => {
+                    self.classify_ref(place, block_id, index, previous_round, state)
+                }
                 _ => None,
             };
         }
@@ -317,7 +346,8 @@ impl<'ctx> EscapeChecker<'ctx> {
             // so a parameter's own 0-based index is `local.index() - 1`.
             return Some(
                 if local.index() >= 1 && local.index() <= self.function.arg_count {
-                    Origin::TiedToParams(VecSet::from([local.index() - 1]))
+                    let zero_based_index = local.index() - 1;
+                    Origin::TiedToParams(VecSet::from([zero_based_index]))
                 } else {
                     Origin::Safe
                 },
@@ -344,26 +374,137 @@ impl<'ctx> EscapeChecker<'ctx> {
             .projection
             .iter()
             .position(|elem| matches!(elem, mir::PlaceElem::Deref));
-        match deref_position {
-            None => Some(Origin::Dangling(ref_place.local)),
-            Some(0) => match self
-                .declares
-                .get_type(self.function.locals[ref_place.local].ty)
-            {
-                Some(SolType::Pointer(_)) => Some(Origin::Safe),
-                Some(SolType::Reference(_)) => self.trace_within_block(
+
+        let Some(deref_position) = deref_position else {
+            return Some(Origin::Dangling(ref_place.local));
+        };
+
+        let prefix = &ref_place.projection[..deref_position];
+        match self.prefix_type(ref_place.local, prefix) {
+            Some(SolType::Pointer(_)) => Some(Origin::Safe),
+            Some(SolType::Reference(_)) => match prefix {
+                // `&*p` / `&this.field`: the reborrowed reference is a bare
+                // local, no projection prefix to resolve first.
+                [] => self.trace_within_block(
                     ref_place.local,
                     block_id,
                     at_index,
                     previous_round,
                     state,
                 ),
-                _ => None,
+                // `&o.p.value` where `o.p: &Obj2` — the reborrowed reference
+                // is stored in one of `o`'s own fields.
+                [mir::PlaceElem::Field(field_index)] => self.trace_field_within_block(
+                    ref_place.local,
+                    *field_index,
+                    block_id,
+                    at_index,
+                    previous_round,
+                    state,
+                ),
+                // Two or more steps, or a step that isn't `Field` (an
+                // `Index`, or another `Deref`), isn't refined by this slice
+                // — a known, narrower gap; unconditionally safe as before.
+                _ => Some(Origin::Safe),
             },
-            // A `Deref` reached through a field first isn't refined by this
-            // slice — a known, narrower gap; unconditionally safe as before.
-            Some(_) => Some(Origin::Safe),
+            _ => None,
         }
+    }
+
+    fn prefix_type(&self, local: LocalId, prefix: &[mir::PlaceElem]) -> Option<SolType> {
+        let mut ty = self
+            .declares
+            .get_type(self.function.locals[local].ty)?
+            .clone();
+
+        for elem in prefix {
+            ty = elem.step_type(&ty, self.declares, self.functions_module)?;
+        }
+        Some(ty)
+    }
+
+    /// Like `trace_within_block`, but for a single field of `local`
+    /// (`local.<field_index>`) reached as the sole prefix step before a
+    /// `Deref` in `classify_ref` — scans backward through *this block's own
+    /// statements only* (deliberately no predecessor walk, no cross-block
+    /// fixed point, unlike `trace_within_block`'s own general trace) for
+    /// either a direct field-store (`local.<field_index> = ..`) or the
+    /// field's own initializer inside `local`'s whole-place struct-literal
+    /// construction. Once either is found, tracing hands off to the fully
+    /// general `trace_within_block`/`classify_ref` — only this first hop
+    /// from the field back to its own last write is same-block-limited.
+    fn trace_field_within_block(
+        &self,
+        local: LocalId,
+        field_index: usize,
+        block_id: BlockId,
+        before_index: usize,
+        previous_round: &Table,
+        state: &mut TraceState,
+    ) -> Option<Origin> {
+        let block = &self.function.blocks[block_id];
+        for (index, statement) in block.statements[..before_index].iter().enumerate().rev() {
+            let mir::Statement::Assign(place, rvalue) = statement else {
+                continue;
+            };
+
+            if place.local != local {
+                continue;
+            }
+
+            match place.projection.as_slice() {
+                [mir::PlaceElem::Field(written)] if *written == field_index => {
+                    match rvalue {
+                        mir::Rvalue::Use(mir::Operand::Copy(alias) | mir::Operand::Move(alias)) => {
+                            if !alias.projection.is_empty() {
+                                return None;
+                            }
+
+                            return self.trace_within_block(
+                                alias.local,
+                                block_id,
+                                index,
+                                previous_round,
+                                state,
+                            );
+                        }
+                        mir::Rvalue::Ref { place, .. } => {
+                            return self.classify_ref(place, block_id, index, previous_round, state);
+                        }
+                        _ => return None,
+                    };
+                }
+                [] => {
+                    return match rvalue {
+                        mir::Rvalue::Aggregate(_, operands) => match operands.get(field_index) {
+                            Some(mir::Operand::Copy(alias) | mir::Operand::Move(alias))
+                                if alias.projection.is_empty() =>
+                            {
+                                self.trace_within_block(
+                                    alias.local,
+                                    block_id,
+                                    index,
+                                    previous_round,
+                                    state,
+                                )
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        Some(
+            if local.index() >= 1 && local.index() <= self.function.arg_count {
+                let zero_based_index = local.index() - 1;
+                Origin::TiedToParams(VecSet::from([zero_based_index]))
+            } else {
+                Origin::Safe
+            },
+        )
     }
 
     fn is_reference_typed(&self, local: LocalId) -> bool {

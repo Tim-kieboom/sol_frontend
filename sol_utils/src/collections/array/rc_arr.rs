@@ -1,6 +1,7 @@
 use core::slice;
 use std::{
-    ops::{Deref, Index},
+    ops::{Deref, Index, RangeFull, RangeTo},
+    range::{Range, RangeFrom, RangeInclusive, RangeToInclusive},
     rc::Rc,
 };
 
@@ -113,6 +114,53 @@ impl<T> Index<usize> for RcArr<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+impl<T> Index<Range<usize>> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, index: Range<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeInclusive<usize>> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeInclusive<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeTo<usize>> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeTo<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeFrom<usize>> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeFull> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, _index: RangeFull) -> &Self::Output {
+        &self.0[..]
+    }
+}
+
+impl<T> Index<RangeToInclusive<usize>> for RcArr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeToInclusive<usize>) -> &Self::Output {
         &self.0[index]
     }
 }

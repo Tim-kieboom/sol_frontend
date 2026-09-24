@@ -3658,6 +3658,93 @@ fn check_escapes_flags_a_dangling_argument_through_self_recursion() {
 }
 
 #[test]
+fn check_escapes_flags_a_dangling_reference_stored_through_a_struct_field() {
+    // The core motivating fix for the field-tracing slice: `h.r` is a
+    // reference-typed field, set (via the struct constructor) to `p`, a
+    // dangling reference to a body local — `&h.r.value` reborrows through
+    // that field. Previously any `Deref` reached through a field first was
+    // unconditionally `Safe`; this must now be flagged.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(): &int {\n    x := Obj2{value: 1}\n    p := &x\n    h := Holder{r: p}\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the dangling reference reached through h's own field to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_allows_a_safe_reference_stored_through_a_struct_field() {
+    // Same shape as the core fix, but `h.r` is built from a received
+    // reference parameter instead of a dangling local — proves the fix
+    // isn't over-broad: a struct field tied to a trusted parameter must
+    // still resolve to `TiedToParams`, not get flagged.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2): &int {\n    h := Holder{r: safe}\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert!(
+        faults.is_empty(),
+        "a struct field sourced from a trusted parameter should be accepted, got {:#?}",
+        faults
+    );
+}
+
+#[test]
+fn check_escapes_flags_a_dangling_reference_written_directly_into_a_struct_field() {
+    // Same bug, but `h.r` is set via a direct field-store assignment after
+    // construction, not via the constructor — exercises
+    // `trace_field_within_block`'s "exact field-store" branch specifically
+    // (distinct from the whole-place-`Aggregate` branch the test above
+    // exercises), and proves the backward scan correctly prefers this
+    // *later* write over `h`'s own earlier, now-stale safe construction.
+    let (mir, declares) = lower_source_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nf(safe: &Obj2): &int {\n    mut h := Holder{r: safe}\n    x := Obj2{value: 1}\n    h.r = &x\n    return &h.r.value\n}\n",
+        "f",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&function_map(mir), &declares);
+    assert_eq!(
+        faults.len(),
+        1,
+        "expected the direct field-store's dangling reference to be flagged, got {:#?}",
+        faults
+    );
+    assert!(matches!(faults[0].kind(), MirErrorKind::DanglingReference));
+}
+
+#[test]
+fn check_escapes_still_allows_a_struct_field_reassigned_in_an_earlier_block() {
+    // Documents the honest, still-open gap: `trace_field_within_block` only
+    // scans its own block, with no predecessor walk. Here `h.r` is set to a
+    // dangling reference in the entry block, then a call to `noop()` splits
+    // the function into a new block before the `return` — so the block
+    // actually holding `&h.r.value` never sees `h`'s own defining write at
+    // all, and this falls back to the pre-existing (permissive) default
+    // instead of being traced. Not a regression: the old code was
+    // unconditionally `Safe` for every field-Deref shape, so this is still
+    // no worse than before this slice, just not yet fixed.
+    let (functions, declares) = lower_all_with_declares(
+        "struct Obj2 { value: int }\nstruct Holder { r: &Obj2 }\nnoop() {}\nf(): &int {\n    x := Obj2{value: 1}\n    p := &x\n    mut h := Holder{r: p}\n    noop()\n    return &h.r.value\n}\n",
+    );
+
+    let faults = crate::borrow_checker::check_escapes(&functions, &declares);
+    assert!(
+        faults.is_empty(),
+        "a field write from an earlier block is a known, documented gap, not yet traced: expected no fault, got {:#?}",
+        faults
+    );
+}
+
+#[test]
 fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
     // The exact motivating example from scoping this slice: `mutRef` is
     // created, `ref` is created and used while `mutRef` is still pending

@@ -1,5 +1,8 @@
 use core::slice;
-use std::ops::{Deref, Index};
+use std::{
+    ops::{Deref, Index, RangeFull, RangeTo},
+    range::{Range, RangeFrom, RangeInclusive, RangeToInclusive},
+};
 
 /// A fixed-size, exclusively-owned array (`Box<[T]>` under the hood).
 ///
@@ -102,6 +105,53 @@ impl<T> Index<usize> for Arr<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+impl<T> Index<Range<usize>> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, index: Range<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeInclusive<usize>> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeInclusive<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeTo<usize>> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeTo<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeFrom<usize>> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T> Index<RangeFull> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, _index: RangeFull) -> &Self::Output {
+        &self.0[..]
+    }
+}
+
+impl<T> Index<RangeToInclusive<usize>> for Arr<T> {
+    type Output = [T];
+
+    fn index(&self, index: RangeToInclusive<usize>) -> &Self::Output {
         &self.0[index]
     }
 }

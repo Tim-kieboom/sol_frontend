@@ -293,10 +293,13 @@ that landing first, in order.
       rule conflated two different cases — dereferencing an *owning* heap pointer (genuinely safe
       regardless of caller) and reborrowing through a *reference* parameter (only as safe as whatever
       the caller passed for *that* parameter, the exact same class of problem this whole slice is
-      about). Scoped to `Deref` as the projection's own *first* element only (the two cases every
-      existing test actually exercises, `&this.field` and `&*p`) — a `Deref` reached through a field
-      first (e.g. `o.ptrField.innerField`) stays unconditionally `Safe`, an explicitly accepted,
-      narrower gap no test exercises.
+      about). Scoped to `Deref` as the projection's own *first* element only at the time (the two
+      cases every existing test actually exercised, `&this.field` and `&*p`) — a `Deref` reached
+      through a field first (e.g. `o.ptrField.innerField`) stayed unconditionally `Safe`, an
+      explicitly accepted, narrower gap no test exercised. **Narrowed further in a later slice** (see
+      the escape-checking field-tracing entry below): a `Deref` reached through exactly *one* `Field`
+      step is now traced too, same-block-only; two or more `Field` steps, or a step that isn't
+      `Field` (an `Index`, or another `Deref`), still stays unconditionally `Safe`.
     - **Integration**: replaced `check_escapes`'s own machinery outright (its signature changed from
       one function to the whole program's `VecMap<FunctionId, mir::Function>`) rather than adding a
       parallel, duplicated `check_interprocedural_escapes` — the new call-aware trace is a strict
@@ -336,7 +339,44 @@ that landing first, in order.
       done. What's left for *real* borrow/lifetime-conflict checking beyond that self-imposed bar:
       per-array-element (`Index`) disjointness for overlap-checking, and the narrower
       Deref-not-first-element gap this slice explicitly left in escape-checking's own reborrow
-      refinement — both logged as deliberate deferrals, not gaps this pass found by surprise.
+      refinement (**since narrowed further, not fully closed** — see the field-tracing entry below)
+      — both logged as deliberate deferrals, not gaps this pass found by surprise.
+  - [x] **Struct-field reborrow tracing for escape-checking** — narrows the Deref-not-first-element
+        gap left open by the reborrow refinement above. `/grill-me`'d "open M3 now" down to "finish
+        M2's own open deferrals first" (2026-09-24); walked the array-index-disjointness deferral
+        first and found it not worth implementing (a pure ergonomic false positive, never unsoundness
+        — logged to M4 below as an accepted limitation instead). This one is different: a struct
+        field holding a dangling reference (`h := Holder{r: p}; return &h.r.value`) was silently
+        accepted, a real soundness narrowing, so it was worth fixing. `EscapeChecker::classify_ref`
+        (`escape_check.rs`) generalized its type check from "only the projection's first element" to
+        any `Deref` position, via a small local `prefix_type` helper folding `PlaceElem::step_type`
+        over the projection prefix (mirrors `mir_parser::function::type::place_type`, not reachable
+        from this sibling module) — `EscapeChecker` gained a `module: Option<ModuleId>` field,
+        computed once in `new` the same way `FunctionLowerer::lower` seeds its own.
+    - **Scoped to exactly one `Field` step before the `Deref`** (`o.p.value` where `o.p: &Obj2`) — new
+      `trace_field_within_block` scans *only the current block's own statements*, deliberately not
+      walking predecessors or looping across blocks (mirrors how escape-checking itself was built
+      straight-line-first originally): finds either an exact field-store (`h.r = ..`) or a whole-place
+      struct construction (`h := Holder{r: ..}`, an `Aggregate`, operands in the struct's own declared
+      field order per `lower_struct_constructor`) and hands off to the existing, fully general
+      `trace_within_block`/`classify_ref` from there. Two or more `Field` steps, or an `Index`/another
+      `Deref` anywhere in the prefix, is still unconditionally `Safe` — an even narrower remaining
+      gap, explicitly deferred.
+    - **A real soundness correction found and fixed during design review, not by testing**: a
+      whole-place write to the field's own local (`h = other`) must stop the backward scan
+      immediately, regardless of whether its rvalue is a decodable `Aggregate` — continuing past it to
+      an earlier, now-stale write would produce a false "safe" verdict, the same false-positive-for-
+      safety category this module's own docs call unsoundness, not a missed diagnostic.
+    - Proven via 4 new `mir_parser` unit tests: the core fix (a dangling reference reached through a
+      struct field built by the constructor); the same shape safe (sourced from a trusted parameter);
+      a direct field-store variant (proving the exact-field-store search branch, and that the backward
+      scan prefers the later write over an earlier safe construction); and the still-open
+      same-block-only gap (a field set in an earlier block, split off by an intervening call, still
+      silently accepted — not a regression, the pre-existing behavior for every field-Deref shape
+      before this slice). Full `cargo test --workspace` (150 `mir_parser` tests, up from 146; zero
+      failures workspace-wide) and all 38 exe tests pass unchanged.
+    - Still open after this: two-or-more-`Field`/`Index`-containing prefixes, and the same-block-only
+      restriction on the new field search — both logged here, not gaps found by surprise.
   - [x] **First exe-level "expected to fail to compile" test** — every borrow-checker fault up to this
         point was only ever proven by a MIR-level unit/integration test calling a checker function (or
         `mir_run::to_mir`) directly; nothing proved a rejection actually fires through the real CLI
@@ -649,6 +689,20 @@ that landing first, in order.
 
 ### M4 — everything else (not sequenced)
 
+- [ ] **Per-array-element (`Index`) disjointness for overlap-checking** — deliberately deferred out
+      of M2 (`/grill-me`'d 2026-09-24). `check_borrow_overlaps`'s `fields_disjoint`
+      (`sol_mir/mir_parser/src/borrow_checker/overlap_check.rs:193`) already proves two borrows of
+      different *struct fields* disjoint (`&mut o.a` vs `&mut o.b` is accepted), but falls through
+      to "not proven disjoint ⇒ conflict" the instant it hits an `Index` or `Deref` projection step
+      — so `&mut arr[0]` and `&mut arr[1]` are rejected exactly like `&mut arr[i]` vs `&mut arr[i]`,
+      even though the former is provably safe. This is a **false positive, not a soundness bug**:
+      nothing unsafe is ever accepted, real but safe array-processing patterns (e.g. swapping two
+      elements via two runtime indices) just don't compile yet. Confirmed not worth implementing
+      right now — indices are always runtime MIR locals here (no constant folding ahead of this
+      pass), so proving disjointness for real would need genuine symbolic range analysis, a much
+      bigger analysis than anything else in the M2 checklist, for a purely ergonomic (not
+      correctness) payoff. Documented here as a known, accepted limitation rather than planned
+      work; revisit only if this actually blocks a real program.
 - [ ] **`mir_codegen` performance audit** — a `big.sol` benchmark (14,211 lines) showed `codegen`
       (70.55ms) taking 3x+ longer than `ast` (19.99ms), `name_resolve` (14.89ms), or `mir`
       (19.51ms) out of a 124.94ms total. Investigated (read-only, no fix applied yet) and found the
