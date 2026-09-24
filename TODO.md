@@ -616,15 +616,31 @@ that landing first, in order.
       slice element, earlier-block field, alias/slice/callee writes, must-vs-may callee writes,
       must-vs-may alias writes, recursive head/tail/summary updates, loop walking a list.
     - Slice order (every commit green-or-better on the soundness tests, never a silent hole):
-      - [ ] **Slice 1 — forward core**: place keys (`[*]`, type folding), strong updates for direct
-            writes, `*T`-as-local, `Dangling` default. **Stopgap**: any local with a `&mut` borrow
-            taken of it has every path rooted at it treated as `Dangling`, so the alias-write hole
-            is closed (conservatively) from the first commit. Expected: all non-alias holes green,
-            all pre-existing escape tests green, the alias *safe twins* temporarily red.
-      - [ ] **Slice 2 — intra-function alias writes**: must/may-alias of `&mut` locals replaces the
-            stopgap; alias safe twins go green again.
-      - [ ] **Slice 3 — callee `&mut`-param write summaries** (must/may + stored origin) and the new
-            store-into-`&mut`-param escape fault.
+      - [x] **Slice 1 — forward core** (absorbed the planned slice 2): `escape_check` is now a
+            directory module (`locations.rs`, `dataflow.rs`, `mod.rs`), a forward Kildall points-to
+            dataflow. **Deviated from the plan while building it**: syntactic place-path keys
+            couldn't pass the slice-element safe twin (`s := &a; &s[0].value` — the content under
+            `s`'s deref isn't keyed under `a`), so the state maps *abstract memory locations* to the
+            locations their stored references may point to. Bases: `Frame(local)` (a local's slot,
+            including what it owns inline or through `*T`), `Param(i)` (exactly what reference param
+            `i` points at), `ParamDeep(i)` (everything deeper reachable from it), `CallResult(block)`,
+            `Unknown(local)`; path steps `Field`/`[*]`/owned-`*T` deref, type-folded as agreed. A
+            write through a reference goes to every location it may point to — strong only when
+            exactly one non-summary target — so intra-function alias writes (`m.r = ..`,
+            `w[0] = ..`, a may-alias `m` after an `if`) are handled precisely and **the `&mut`-borrow
+            stopgap was never needed**. Also pulled forward from slice 3: the store-escape check
+            (a dangling reference left in `Param`/`ParamDeep` memory at a `return`), and the return
+            check now covers any return type containing references (structs, slices), not just
+            `&T`. Remaining **stopgap** (callee writes only): after a call, every reference
+            reachable through a `&mut`-containing argument is weakly joined with `Unknown(arg)`
+            (dangling); a write through a call's returned reference is leaked (visible to every
+            read). Fault message reworded to "a reference to a local escapes the function it
+            doesn't outlive" (exe test 36 updated). Result: 176/178 `mir_parser` tests, all 38 exe
+            tests; the 2 red are exactly the callee safe twins
+            (`allows_a_safe_reference_written_by_a_callee_through_a_mutable_parameter`,
+            `allows_a_dangling_field_overwritten_by_a_callee_that_always_writes`).
+      - [ ] **Slice 2 — callee `&mut`-param write summaries** (must/may + stored origin per `&mut`
+            param) replacing the call-site stopgap; turns the 2 callee twins green.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

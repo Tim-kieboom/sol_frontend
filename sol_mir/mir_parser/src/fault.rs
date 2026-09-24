@@ -162,15 +162,13 @@ pub enum MirErrorKind {
     #[error("value may have already been moved out of")]
     UseAfterMove,
 
-    /// The escape checker's own violation (see `mir_parser::escape_check`).
-    /// Points at the referenced local's own declaration span, for the same
-    /// reason `UseAfterMove` does — MIR statements don't carry their own
-    /// per-statement spans yet. Handles the full concrete (M1) CFG shape,
-    /// `for` loops included, and is interprocedural: a reference-typed
-    /// parameter's own safety is tied to whatever the caller actually
-    /// passes, verified transitively across the whole call graph (including
-    /// recursive calls) — see `escape_check`'s own docs.
-    #[error("returns a reference to a local that doesn't outlive this function")]
+    /// The escape checker's own violation (see `mir_parser::escape_check`):
+    /// a returned value, or a value stored through a `&mut` parameter, holds
+    /// a reference into storage that doesn't outlive the function. Points at
+    /// the referenced local's own declaration span, for the same reason
+    /// `UseAfterMove` does — MIR statements don't carry their own
+    /// per-statement spans yet.
+    #[error("a reference to a local escapes the function it doesn't outlive")]
     DanglingReference,
 
     /// The overlap checker's own violation (see
