@@ -12,13 +12,13 @@ use sol_utils::{
 
 use super::{
     Coverage, Origin, Summaries, Summary, combine,
-    locations::{Base, Location, Step, Types, is_pointer_like},
+    locations::{Base, LoanId, Location, Step, Types, is_pointer_like},
 };
 
-pub(super) type Targets = BTreeSet<Location>;
+pub(in crate::borrow_checker) type Targets = BTreeSet<Location>;
 
 #[derive(Clone, PartialEq, Eq, Default)]
-pub(super) struct State {
+pub(in crate::borrow_checker) struct State {
     // Only locations written so far; every other location holds its
     // `default_content`.
     contents: BTreeMap<Location, Targets>,
@@ -30,15 +30,15 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn written(&self) -> impl Iterator<Item = (&Location, &Targets)> {
+    pub(in crate::borrow_checker) fn written(&self) -> impl Iterator<Item = (&Location, &Targets)> {
         self.contents.iter()
     }
 
-    pub(super) fn is_always_written(&self, location: &Location) -> bool {
+    pub(in crate::borrow_checker) fn is_always_written(&self, location: &Location) -> bool {
         self.always_written.contains(location)
     }
 
-    pub(super) fn leaked(&self) -> &Targets {
+    pub(in crate::borrow_checker) fn leaked(&self) -> &Targets {
         &self.leaked
     }
 }
@@ -49,22 +49,22 @@ enum Update {
     Weak,
 }
 
-pub(super) struct Analyzer<'ctx> {
+pub(in crate::borrow_checker) struct Analyzer<'ctx> {
     types: Types<'ctx>,
     summaries: &'ctx Summaries,
 }
 
 impl<'ctx> Analyzer<'ctx> {
-    pub(super) fn new(types: Types<'ctx>, summaries: &'ctx Summaries) -> Self {
+    pub(in crate::borrow_checker) fn new(types: Types<'ctx>, summaries: &'ctx Summaries) -> Self {
         Self { types, summaries }
     }
 
-    pub(super) fn types(&self) -> &Types<'ctx> {
+    pub(in crate::borrow_checker) fn types(&self) -> &Types<'ctx> {
         &self.types
     }
 
     // Out-state of every reachable block once the analysis has converged.
-    pub(super) fn fixed_point(&self) -> VecMap<BlockId, State> {
+    pub(in crate::borrow_checker) fn fixed_point(&self) -> VecMap<BlockId, State> {
         let function = self.types.function();
         let mut out_states = VecMap::new();
         let Some((entry, _)) = function.blocks.entries().next() else {
@@ -100,15 +100,153 @@ impl<'ctx> Analyzer<'ctx> {
         out_states
     }
 
+    // In-state of every reachable block once the analysis has converged,
+    // for replaying a block statement by statement.
+    pub(in crate::borrow_checker) fn settled_in_states(&self) -> VecMap<BlockId, State> {
+        let function = self.types.function();
+        let out_states = self.fixed_point();
+        let mut in_states = VecMap::new();
+        let Some((entry, _)) = function.blocks.entries().next() else {
+            return in_states;
+        };
+
+        let order = crate::borrow_checker::postorder(function, entry);
+        let predecessors = predecessors(function, &order);
+        for block_id in order {
+            let state = self.in_state(block_id, entry, &predecessors, &out_states);
+            in_states.insert(block_id, state);
+        }
+        in_states
+    }
+
+    pub(in crate::borrow_checker) fn step_statement(
+        &self,
+        state: &mut State,
+        block_id: BlockId,
+        index: usize,
+        statement: &mir::Statement,
+    ) {
+        if let mir::Statement::Assign(place, rvalue) = statement {
+            let loan = LoanId {
+                block: block_id,
+                index,
+            };
+            self.assign(state, place, rvalue, loan);
+        }
+    }
+
+    pub(in crate::borrow_checker) fn step_terminator(&self, state: &mut State, block_id: BlockId) {
+        let block = &self.types.function().blocks[block_id];
+        if let mir::Terminator::Call {
+            id,
+            arguments,
+            destination,
+            ..
+        } = &block.terminator
+        {
+            self.call(
+                state,
+                block_id,
+                *id,
+                arguments.as_slice(),
+                destination.as_ref(),
+            );
+        }
+    }
+
+    // The memory `place` names, and the loans of every reference its path
+    // dereferences along the way; `None` when its shape can't be followed.
+    pub(in crate::borrow_checker) fn place_access(
+        &self,
+        state: &State,
+        place: &mir::Place,
+    ) -> Option<PlaceAccess> {
+        let mut ty = self.types.local_type(place.local)?;
+        let mut locations = Targets::from([Location::root(Base::Frame(place.local))]);
+        let mut through = Targets::new();
+
+        for elem in &place.projection {
+            let next_ty = self.types.place_elem_type(&ty, elem)?;
+            locations = match (elem, &ty) {
+                (mir::PlaceElem::Field(index), _) => self.step_all(&locations, Step::Field(*index)),
+                (mir::PlaceElem::Deref, SolType::Reference(_)) => {
+                    self.dereference(state, &locations, &mut through)
+                }
+                (mir::PlaceElem::Deref, SolType::Pointer(_)) => {
+                    self.step_all(&locations, Step::OwnedDeref)
+                }
+                (mir::PlaceElem::Index(_), _) if is_pointer_like(&ty) => {
+                    let pointees = self.dereference(state, &locations, &mut through);
+                    self.step_all(&pointees, Step::AnyIndex)
+                }
+                (mir::PlaceElem::Index(_), SolType::Array(_)) => {
+                    self.step_all(&locations, Step::AnyIndex)
+                }
+                _ => return None,
+            };
+            ty = next_ty;
+        }
+
+        Some(PlaceAccess { locations, through })
+    }
+
+    // What a reference (or slice) stored at `place` points at, with every
+    // loan it carries; `None` when `place` doesn't hold a reference.
+    pub(in crate::borrow_checker) fn reference_pointees(
+        &self,
+        state: &State,
+        place: &mir::Place,
+    ) -> Option<PlaceAccess> {
+        let ty = self.types.place_type(place)?;
+        if !is_pointer_like(&ty) {
+            return None;
+        }
+        let mut access = self.place_access(state, place)?;
+        let locations = self.dereference(state, &access.locations, &mut access.through);
+        Some(PlaceAccess {
+            locations,
+            through: access.through,
+        })
+    }
+
+    // Every loan the value held in `local` keeps alive: the loans of every
+    // reference reachable from it.
+    pub(in crate::borrow_checker) fn loans_held_by(
+        &self,
+        state: &State,
+        local: LocalId,
+    ) -> Targets {
+        let Some(start) = self.local_value_targets(state, local) else {
+            return Targets::new();
+        };
+        loans_in(&self.reachable(state, start))
+    }
+
+    // Loans that outlive the function body: stored into caller memory, or
+    // into memory the analysis couldn't name.
+    pub(in crate::borrow_checker) fn escaped_loans(&self, state: &State) -> Targets {
+        let mut start = state.leaked.clone();
+        for (location, targets) in &state.contents {
+            if matches!(location.base(), Base::Param(_) | Base::ParamDeep(_)) {
+                start.extend(targets.iter().cloned());
+            }
+        }
+        loans_in(&self.reachable(state, start))
+    }
+
     // The worst origin among `targets`, looking through a call result to
     // whatever it points into.
-    pub(super) fn origin_of(&self, state: &State, targets: &Targets) -> Origin {
+    pub(in crate::borrow_checker) fn origin_of(&self, state: &State, targets: &Targets) -> Origin {
         let mut visited_calls = BTreeSet::new();
         self.origin_of_inner(state, targets, &mut visited_calls)
     }
 
     // Everything stored in the references of `local`'s own value.
-    pub(super) fn local_value_targets(&self, state: &State, local: LocalId) -> Option<Targets> {
+    pub(in crate::borrow_checker) fn local_value_targets(
+        &self,
+        state: &State,
+        local: LocalId,
+    ) -> Option<Targets> {
         let ty = self.types.local_type(local)?;
         let root = Location::root(Base::Frame(local));
         let mut targets = Targets::new();
@@ -135,6 +273,7 @@ impl<'ctx> Analyzer<'ctx> {
                     Some(index) => Origin::TiedToParams(VecSet::from([index])),
                     None => Origin::Safe,
                 },
+                Base::Loan(_) => continue,
                 Base::CallResult(block_id) => {
                     if !visited_calls.insert(*block_id) {
                         continue;
@@ -195,30 +334,13 @@ impl<'ctx> Analyzer<'ctx> {
 
     fn transfer_block(&self, state: &mut State, block_id: BlockId) {
         let block = &self.types.function().blocks[block_id];
-        for statement in block.statements.iter() {
-            if let mir::Statement::Assign(place, rvalue) = statement {
-                self.assign(state, place, rvalue);
-            }
+        for (index, statement) in block.statements.iter().enumerate() {
+            self.step_statement(state, block_id, index, statement);
         }
-
-        if let mir::Terminator::Call {
-            id,
-            arguments,
-            destination,
-            ..
-        } = &block.terminator
-        {
-            self.call(
-                state,
-                block_id,
-                *id,
-                arguments.as_slice(),
-                destination.as_ref(),
-            );
-        }
+        self.step_terminator(state, block_id);
     }
 
-    fn assign(&self, state: &mut State, place: &mir::Place, rvalue: &mir::Rvalue) {
+    fn assign(&self, state: &mut State, place: &mir::Place, rvalue: &mir::Rvalue, loan: LoanId) {
         let Some(ty) = self.types.place_type(place) else {
             state.leaked.insert(unknown(place.local));
             return;
@@ -230,7 +352,7 @@ impl<'ctx> Analyzer<'ctx> {
 
         let values: Vec<Targets> = subs
             .iter()
-            .map(|sub| self.rvalue_targets(state, rvalue, sub, place.local))
+            .map(|sub| self.rvalue_targets(state, rvalue, sub, place.local, loan))
             .collect();
         self.store(state, place, &subs, values);
     }
@@ -286,7 +408,12 @@ impl<'ctx> Analyzer<'ctx> {
         }
 
         let Some(summary) = summary else {
-            return Some((subs, Targets::from([unknown(destination.local)])));
+            let mut value = Targets::from([unknown(destination.local)]);
+            for argument in arguments {
+                let start = self.operand_value_targets(state, argument);
+                value.extend(loans_in(&self.reachable(state, start)));
+            }
+            return Some((subs, value));
         };
         let indices = match &summary.returned {
             Origin::TiedToParams(indices) => indices,
@@ -342,7 +469,7 @@ impl<'ctx> Analyzer<'ctx> {
                 continue;
             }
 
-            let pointees = self.as_pointees(self.operand_targets(state, argument, &[]));
+            let pointees = self.memory_of(self.operand_targets(state, argument, &[]));
             let single = pointees.len() == 1;
             for pointee in &pointees {
                 if pointee.base().is_opaque() {
@@ -377,13 +504,17 @@ impl<'ctx> Analyzer<'ctx> {
             };
 
             match target.base() {
+                // The callee stored a reference into the argument's memory,
+                // so it also carries the argument's own loans.
                 Base::Param(_) => {
-                    for pointee in self.as_pointees(self.operand_targets(state, argument, &[])) {
+                    let value = self.operand_targets(state, argument, &[]);
+                    translated.extend(loans_in(&value));
+                    for pointee in self.memory_of(value) {
                         translated.insert(self.types.extend(&pointee, target.path()));
                     }
                 }
                 Base::Incoming(prior) if matches!(prior.base(), Base::Param(_)) => {
-                    for pointee in self.as_pointees(self.operand_targets(state, argument, &[])) {
+                    for pointee in self.memory_of(self.operand_targets(state, argument, &[])) {
                         let slot = self.types.extend(&pointee, prior.path());
                         translated.extend(self.content(state, &slot));
                     }
@@ -429,6 +560,9 @@ impl<'ctx> Analyzer<'ctx> {
         let mut slots = Vec::new();
         let mut reached_opaque = false;
         for location in self.reachable(state, start) {
+            if matches!(location.base(), Base::Loan(_)) {
+                continue;
+            }
             if location.base().is_opaque() {
                 reached_opaque = true;
                 continue;
@@ -502,6 +636,7 @@ impl<'ctx> Analyzer<'ctx> {
         rvalue: &mir::Rvalue,
         sub: &[Step],
         blame: LocalId,
+        loan: LoanId,
     ) -> Targets {
         use mir::{AggregateKind, Rvalue};
 
@@ -509,9 +644,18 @@ impl<'ctx> Analyzer<'ctx> {
             (Rvalue::Use(operand) | Rvalue::Cast(operand, _), _) => {
                 self.operand_targets(state, operand, sub)
             }
-            (Rvalue::Ref { place, .. }, []) => self
-                .place_locations(state, place)
-                .unwrap_or_else(|| Targets::from([unknown(place.local)])),
+            (Rvalue::Ref { place, .. }, []) => {
+                let mut targets = match self.place_access(state, place) {
+                    Some(access) => {
+                        let mut targets = access.locations;
+                        targets.extend(access.through);
+                        targets
+                    }
+                    None => Targets::from([unknown(place.local)]),
+                };
+                targets.insert(Location::root(Base::Loan(loan)));
+                targets
+            }
             (
                 Rvalue::Aggregate(AggregateKind::Struct | AggregateKind::Tuple, operands),
                 [Step::Field(index), rest @ ..],
@@ -570,29 +714,8 @@ impl<'ctx> Analyzer<'ctx> {
     // The locations `place` names, or `None` when its shape can't be
     // followed.
     fn place_locations(&self, state: &State, place: &mir::Place) -> Option<Targets> {
-        let mut ty = self.types.local_type(place.local)?;
-        let mut locations = Targets::from([Location::root(Base::Frame(place.local))]);
-
-        for elem in &place.projection {
-            let next_ty = self.types.place_elem_type(&ty, elem)?;
-            locations = match (elem, &ty) {
-                (mir::PlaceElem::Field(index), _) => self.step_all(&locations, Step::Field(*index)),
-                (mir::PlaceElem::Deref, SolType::Reference(_)) => self.pointees(state, &locations),
-                (mir::PlaceElem::Deref, SolType::Pointer(_)) => {
-                    self.step_all(&locations, Step::OwnedDeref)
-                }
-                (mir::PlaceElem::Index(_), _) if is_pointer_like(&ty) => {
-                    self.step_all(&self.pointees(state, &locations), Step::AnyIndex)
-                }
-                (mir::PlaceElem::Index(_), SolType::Array(_)) => {
-                    self.step_all(&locations, Step::AnyIndex)
-                }
-                _ => return None,
-            };
-            ty = next_ty;
-        }
-
-        Some(locations)
+        self.place_access(state, place)
+            .map(|access| access.locations)
     }
 
     fn step_all(&self, locations: &Targets, step: Step) -> Targets {
@@ -602,12 +725,29 @@ impl<'ctx> Analyzer<'ctx> {
             .collect()
     }
 
-    fn pointees(&self, state: &State, locations: &Targets) -> Targets {
-        let mut pointees = Targets::new();
+    // The memory the references stored at `locations` point at, adding the
+    // loans they carry to `through`.
+    fn dereference(&self, state: &State, locations: &Targets, through: &mut Targets) -> Targets {
+        let mut contents = Targets::new();
         for location in locations {
-            pointees.extend(self.content(state, location));
+            contents.extend(self.content(state, location));
         }
-        self.as_pointees(pointees)
+        through.extend(loans_in(&contents));
+        // A call's result carries the loans of the arguments it came from.
+        for target in &contents {
+            if matches!(target.base(), Base::CallResult(_)) {
+                through.extend(loans_in(&self.content(state, target)));
+            }
+        }
+        self.memory_of(contents)
+    }
+
+    // `as_pointees` without the loan markers: only the memory itself.
+    fn memory_of(&self, targets: Targets) -> Targets {
+        self.as_pointees(targets)
+            .into_iter()
+            .filter(|target| !matches!(target.base(), Base::Loan(_)))
+            .collect()
     }
 
     // A reference's stored value, read as the memory it points at: an
@@ -673,7 +813,7 @@ impl<'ctx> Analyzer<'ctx> {
             Base::Param(_) | Base::ParamDeep(_) => {
                 Targets::from([Location::root(Base::Incoming(Box::new(location.clone())))])
             }
-            Base::CallResult(_) | Base::Incoming(_) => Targets::new(),
+            Base::CallResult(_) | Base::Incoming(_) | Base::Loan(_) => Targets::new(),
             Base::Unknown(local) => Targets::from([unknown(*local)]),
         }
     }
@@ -697,4 +837,20 @@ fn predecessors(function: &mir::Function, order: &[BlockId]) -> VecMap<BlockId, 
         }
     }
     predecessors
+}
+
+// The loan markers among `targets`.
+fn loans_in(targets: &Targets) -> Targets {
+    targets
+        .iter()
+        .filter(|target| matches!(target.base(), Base::Loan(_)))
+        .cloned()
+        .collect()
+}
+
+// The memory a place (or a reference's pointee) names, plus the loans of
+// every reference followed to reach it.
+pub(in crate::borrow_checker) struct PlaceAccess {
+    pub(in crate::borrow_checker) locations: Targets,
+    pub(in crate::borrow_checker) through: Targets,
 }

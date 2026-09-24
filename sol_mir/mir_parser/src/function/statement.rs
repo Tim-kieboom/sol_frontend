@@ -257,6 +257,7 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         let mut args = Vec::with_capacity(call.arguments.len() + expects_receiver as usize);
+        let mut deferred_receiver = None;
         if expects_receiver {
             let Some(receiver_expr) = receiver_expr else {
                 // Defensive: the resolver only ever matches a receiver-typed
@@ -268,20 +269,27 @@ impl<'a> FunctionLowerer<'a> {
                     Some(span),
                 ));
             };
-            let receiver_operand = match signature.function_kind {
+            match signature.function_kind {
+                // Borrowed only once the arguments are evaluated (right before
+                // the call), so an argument reading the receiver —
+                // `c.set(c.get())` — never overlaps this `&mut`. A path with
+                // no index in it has no side effects, so nothing observable
+                // moves.
+                ast::FunctionThisKind::MutRef if self.is_plain_place(receiver_expr) => {
+                    deferred_receiver = Some(receiver_expr);
+                }
                 ast::FunctionThisKind::MutRef => {
-                    self.lower_receiver_ref(receiver_expr, true, span)?
+                    args.push(self.lower_receiver_ref(receiver_expr, true, span)?);
                 }
                 ast::FunctionThisKind::ConstRef => {
-                    self.lower_receiver_ref(receiver_expr, false, span)?
+                    args.push(self.lower_receiver_ref(receiver_expr, false, span)?);
                 }
                 // A consuming `this` receiver is structurally the same bare-
                 // variable operand as an ordinary argument below (`obj.consume()`
                 // reads `obj` exactly like `consume(obj)` would) — same
                 // Move-eligibility treatment.
-                _ => self.lower_move_aware_operand(receiver_expr)?,
-            };
-            args.push(receiver_operand);
+                _ => args.push(self.lower_move_aware_operand(receiver_expr)?),
+            }
         }
         for (index, argument) in call.arguments.iter().enumerate() {
             if argument.name.is_some() {
@@ -295,6 +303,11 @@ impl<'a> FunctionLowerer<'a> {
             } else {
                 args.push(self.lower_move_aware_operand(argument.value)?);
             }
+        }
+
+        if let Some(receiver_expr) = deferred_receiver {
+            let receiver = self.lower_receiver_ref(receiver_expr, true, span)?;
+            args.insert(0, receiver);
         }
 
         let is_none_return = return_type_id == TypeId::NONE;
@@ -318,6 +331,19 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         Ok(destination_local.map(|local| mir::Operand::Copy(mir::Place::local(local))))
+    }
+
+    // A variable, or a chain of field accesses and derefs on one: a place
+    // whose evaluation has no side effects.
+    fn is_plain_place(&self, expr_id: ast::ExpressionId) -> bool {
+        match &self.store.expressions[expr_id].node {
+            ast::ExpressionKind::Variable(_) => true,
+            ast::ExpressionKind::FieldAccess(field_access) => {
+                self.is_plain_place(field_access.object)
+            }
+            ast::ExpressionKind::Deref(deref) => self.is_plain_place(deref.value),
+            _ => false,
+        }
     }
 
     /// Flattens `varargs.[a, b, c]` into zero or more extra trailing

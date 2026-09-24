@@ -12,7 +12,7 @@ use sol_utils::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Base {
+pub(in crate::borrow_checker) enum Base {
     // A local's own storage, including everything it owns inline or through
     // an owning `*T`.
     Frame(LocalId),
@@ -25,6 +25,9 @@ pub(super) enum Base {
     CallResult(BlockId),
     // Memory the analysis can't name, conservatively blamed on local `.0`.
     Unknown(LocalId),
+    // Not memory: a marker, carried alongside a reference's pointees, naming
+    // the loan (the `Ref` statement) that reference derives from.
+    Loan(LoanId),
     // Whatever the caller had stored at a `Param`/`ParamDeep` location
     // before the call. Only ever appears as a location's content: once
     // dereferenced it is just memory reachable from that parameter.
@@ -32,7 +35,7 @@ pub(super) enum Base {
 }
 
 impl Base {
-    pub(super) fn new_incoming(location: &Location) -> Self {
+    pub(in crate::borrow_checker) fn new_incoming(location: &Location) -> Self {
         Self::Incoming(location.clone().into())
     }
 
@@ -40,27 +43,38 @@ impl Base {
     fn is_summary(&self) -> bool {
         matches!(
             self,
-            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_) | Base::Incoming(_)
+            Base::ParamDeep(_)
+                | Base::CallResult(_)
+                | Base::Unknown(_)
+                | Base::Incoming(_)
+                | Base::Loan(_)
         )
     }
 
     // The 0-based parameter whose caller-supplied memory this base names.
-    pub(super) fn param(&self) -> Option<usize> {
+    pub(in crate::borrow_checker) fn param(&self) -> Option<usize> {
         match self {
             Base::Param(index) | Base::ParamDeep(index) => Some(*index),
             Base::Incoming(location) => location.base.param(),
-            Base::Frame(_) | Base::CallResult(_) | Base::Unknown(_) => None,
+            Base::Frame(_) | Base::CallResult(_) | Base::Unknown(_) | Base::Loan(_) => None,
         }
     }
 
     // Bases a write can't be applied to at all, only leaked.
-    pub(super) fn is_opaque(&self) -> bool {
+    pub(in crate::borrow_checker) fn is_opaque(&self) -> bool {
         matches!(self, Base::CallResult(_) | Base::Unknown(_))
     }
 }
 
+// The statement (block, index) of the `Ref` that created a loan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Step {
+pub(in crate::borrow_checker) struct LoanId {
+    pub(in crate::borrow_checker) block: BlockId,
+    pub(in crate::borrow_checker) index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::borrow_checker) enum Step {
     Field(usize),
     // Every element of an array at once: indices are runtime values.
     AnyIndex,
@@ -69,7 +83,7 @@ pub(super) enum Step {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Location {
+pub(in crate::borrow_checker) struct Location {
     base: Base,
     path: RcArr<Step>,
     // Stands for more than one concrete place, so it only ever gets weak
@@ -78,7 +92,7 @@ pub(super) struct Location {
 }
 
 impl Location {
-    pub(super) fn root(base: Base) -> Self {
+    pub(in crate::borrow_checker) fn root(base: Base) -> Self {
         let summary = base.is_summary();
         Self {
             base,
@@ -87,20 +101,20 @@ impl Location {
         }
     }
 
-    pub(super) fn base(&self) -> &Base {
+    pub(in crate::borrow_checker) fn base(&self) -> &Base {
         &self.base
     }
 
-    pub(super) fn path(&self) -> &[Step] {
+    pub(in crate::borrow_checker) fn path(&self) -> &[Step] {
         &self.path
     }
 
-    pub(super) fn is_summary(&self) -> bool {
+    pub(in crate::borrow_checker) fn is_summary(&self) -> bool {
         self.summary
     }
 }
 
-pub(super) fn is_pointer_like(ty: &SolType) -> bool {
+pub(in crate::borrow_checker) fn is_pointer_like(ty: &SolType) -> bool {
     match ty {
         SolType::Reference(_) => true,
         SolType::Array(array) => matches!(array.kind, ArrayKind::MutSlice | ArrayKind::ConstSlice),
@@ -108,14 +122,17 @@ pub(super) fn is_pointer_like(ty: &SolType) -> bool {
     }
 }
 
-pub(super) struct Types<'ctx> {
+pub(in crate::borrow_checker) struct Types<'ctx> {
     function: &'ctx mir::Function,
     declares: &'ctx DeclareStore,
     module: Option<ModuleId>,
 }
 
 impl<'ctx> Types<'ctx> {
-    pub(super) fn new(function: &'ctx mir::Function, declares: &'ctx DeclareStore) -> Self {
+    pub(in crate::borrow_checker) fn new(
+        function: &'ctx mir::Function,
+        declares: &'ctx DeclareStore,
+    ) -> Self {
         let module = declares
             .get_function(function.id)
             .map(|(_, module)| *module);
@@ -127,22 +144,22 @@ impl<'ctx> Types<'ctx> {
         }
     }
 
-    pub(super) fn function(&self) -> &'ctx mir::Function {
+    pub(in crate::borrow_checker) fn function(&self) -> &'ctx mir::Function {
         self.function
     }
 
     // `LocalId` values start at 1 and parameters are allocated first.
-    pub(super) fn param_index(&self, local: LocalId) -> Option<usize> {
+    pub(in crate::borrow_checker) fn param_index(&self, local: LocalId) -> Option<usize> {
         let index = local.index();
         (index >= 1 && index <= self.function.arg_count).then(|| index - 1)
     }
 
-    pub(super) fn local_type(&self, local: LocalId) -> Option<SolType> {
+    pub(in crate::borrow_checker) fn local_type(&self, local: LocalId) -> Option<SolType> {
         let decl = self.function.locals.get(local)?;
         self.declares.get_type(decl.ty).cloned()
     }
 
-    pub(super) fn place_type(&self, place: &mir::Place) -> Option<SolType> {
+    pub(in crate::borrow_checker) fn place_type(&self, place: &mir::Place) -> Option<SolType> {
         let mut ty = self.local_type(place.local)?;
         for elem in &place.projection {
             ty = self.place_elem_type(&ty, elem)?;
@@ -150,16 +167,24 @@ impl<'ctx> Types<'ctx> {
         Some(ty)
     }
 
-    pub(super) fn place_elem_type(&self, ty: &SolType, elem: &mir::PlaceElem) -> Option<SolType> {
+    pub(in crate::borrow_checker) fn place_elem_type(
+        &self,
+        ty: &SolType,
+        elem: &mir::PlaceElem,
+    ) -> Option<SolType> {
         elem.step_type(ty, self.declares, self.module)
     }
 
-    pub(super) fn extend(&self, location: &Location, steps: &[Step]) -> Location {
+    pub(in crate::borrow_checker) fn extend(
+        &self,
+        location: &Location,
+        steps: &[Step],
+    ) -> Location {
         let path = location.path.iter().chain(steps).copied();
         self.normalize(location.base.clone(), path)
     }
 
-    pub(super) fn location_type(&self, location: &Location) -> Option<SolType> {
+    pub(in crate::borrow_checker) fn location_type(&self, location: &Location) -> Option<SolType> {
         let mut ty = self.base_type(&location.base)?;
         for step in &location.path {
             ty = self.step_type(&ty, *step)?;
@@ -170,7 +195,7 @@ impl<'ctx> Types<'ctx> {
     // Relative paths from a value of type `ty` to every reference (or slice)
     // it contains, stopping where a struct type would appear a third time
     // on the path — `normalize` folds anything deeper back onto those.
-    pub(super) fn ref_subpaths(&self, ty: &SolType) -> Vec<Arr<Step>> {
+    pub(in crate::borrow_checker) fn ref_subpaths(&self, ty: &SolType) -> Vec<Arr<Step>> {
         let mut subpaths = Vec::new();
         let mut prefix = Vec::new();
         let mut structs_on_path = Vec::new();
@@ -178,7 +203,7 @@ impl<'ctx> Types<'ctx> {
         subpaths
     }
 
-    pub(super) fn contains_mutable_reference(&self, ty: &SolType) -> bool {
+    pub(in crate::borrow_checker) fn contains_mutable_reference(&self, ty: &SolType) -> bool {
         let mut visited = Vec::new();
         self.contains_mutable_reference_inner(ty, &mut visited)
     }
@@ -197,7 +222,11 @@ impl<'ctx> Types<'ctx> {
                     _ => None,
                 }
             }
-            Base::ParamDeep(_) | Base::CallResult(_) | Base::Unknown(_) | Base::Incoming(_) => None,
+            Base::ParamDeep(_)
+            | Base::CallResult(_)
+            | Base::Unknown(_)
+            | Base::Incoming(_)
+            | Base::Loan(_) => None,
         }
     }
 

@@ -4436,19 +4436,28 @@ fn check_escapes_converges_when_a_loop_walks_a_recursive_type() {
     );
 }
 
+// Borrow conflicts are checked across the whole program (a call result
+// carries the loans of the arguments it derives from), so every function in
+// `source` is lowered and checked.
+fn overlaps_in(source: &str) -> Vec<crate::fault::MirFault> {
+    let (functions, declares) = lower_all_with_declares(source);
+    crate::borrow_checker::check_borrow_overlaps(&functions, &declares)
+}
+
+fn moves_while_borrowed_in(source: &str) -> Vec<crate::fault::MirFault> {
+    let (functions, declares) = lower_all_with_declares(source);
+    crate::borrow_checker::check_move_while_borrowed(&functions, &declares)
+}
+
 #[test]
 fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
     // The exact motivating example from scoping this slice: `mutRef` is
     // created, `ref` is created and used while `mutRef` is still pending
     // its own later use — their live ranges overlap, and one side is
     // mutable.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    useMut(mutRef)\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4462,13 +4471,9 @@ fn check_borrow_overlaps_flags_a_mutable_borrow_overlapping_a_shared_borrow() {
 fn check_borrow_overlaps_allows_two_overlapping_shared_borrows() {
     // Unlimited simultaneous shared borrows are always fine — neither side
     // is mutable, so this must never be flagged regardless of overlap.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r1 := &var\n    r2 := &var\n    useRef(r1)\n    useRef(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two overlapping shared borrows should never be flagged, got {:#?}",
@@ -4482,13 +4487,9 @@ fn check_borrow_overlaps_traces_a_reborrow_through_an_intermediate_local() {
     // the trace has to follow it back to `r1`'s own `Ref` to realize `r2`
     // and `mutRef` actually conflict. `r1` itself (last used only by the
     // `r2 := r1` read, before `mutRef` even exists) must NOT be flagged.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &var\n    r2 := r1\n    mutRef := &mut var\n    useRef(r2)\n    useMut(mutRef)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4504,13 +4505,9 @@ fn check_borrow_overlaps_allows_sequential_non_overlapping_mutable_borrows() {
     // use is strictly before `r2` is even created, so their live ranges
     // don't actually overlap even though both are `&mut` borrows of the
     // same local within the same function.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf() {\n    mut var := Obj{}\n    r1 := &mut var\n    useMut(r1)\n    r2 := &mut var\n    useMut(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "sequential, non-overlapping mutable borrows should be accepted, got {:#?}",
@@ -4526,13 +4523,9 @@ fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_bodyless_if_bran
     // after it: on the path where `cond` is true, both are genuinely live
     // at the same time, a real conflict every earlier straight-line-only
     // slice would have missed.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    if cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4551,13 +4544,9 @@ fn check_borrow_overlaps_allows_two_mutable_borrows_in_mutually_exclusive_branch
     // branches, so at most one of them ever exists at runtime. Proves the
     // CFG-aware liveness respects branch exclusivity, not just that it
     // catches more cases than straight-line code did.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    if cond {\n        r1 := &mut var\n        useMut(r1)\n    } else {\n        r2 := &mut var\n        useMut(r2)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two mutable borrows confined to sibling branches should never be flagged, got {:#?}",
@@ -4571,13 +4560,9 @@ fn check_borrow_overlaps_now_flags_an_overlap_reached_through_a_for_loop() {
     // have been skipped unanalyzed the moment it contained a loop at all) —
     // `mutRef` remains live throughout the loop body, `ref` is read right
     // after: a real conflict every earlier slice would have missed.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    mutRef := &mut var\n    ref := &var\n    for cond {\n        useMut(mutRef)\n    }\n    useRef(ref)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4592,13 +4577,9 @@ fn check_borrow_overlaps_allows_a_borrow_confined_to_one_loop_iteration() {
     // A loop is now genuinely analyzed, not just "any loop ⇒ reject" — `r`
     // is created and used entirely within the loop body's own single pass
     // (dies before the back edge), so it never conflicts with anything.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool) {\n    mut var := Obj{}\n    for cond {\n        r := &mut var\n        useMut(r)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "a borrow confined to a single pass through the loop body should never be flagged, got {:#?}",
@@ -4615,13 +4596,9 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_nested_inside_a_loop_body() {
     // for loop's own body, that the old "any for loop ⇒ skip" gate would
     // have missed entirely (`check_borrow_overlaps` never analyzed a single
     // statement of any function containing a `for` before this slice).
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Obj {}\nuseMut(r: &mut Obj) {}\nf(cond: bool, branch: bool) {\n    mut var := Obj{}\n    r1 := &mut var\n    for cond {\n        if branch {\n            r2 := &mut var\n            useMut(r2)\n        }\n        useMut(r1)\n    }\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4637,13 +4614,9 @@ fn check_borrow_overlaps_allows_two_mutable_borrows_of_disjoint_fields() {
     // both live at the same time, but of two different fields of the same
     // struct — genuinely disjoint memory, so this must be accepted even
     // though a whole-locals-only check would (wrongly) flag it.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    ra := &mut var.a\n    rb := &mut var.b\n    useMut(ra)\n    useMut(rb)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert!(
         faults.is_empty(),
         "two mutable borrows of disjoint fields should never be flagged, got {:#?}",
@@ -4656,13 +4629,9 @@ fn check_borrow_overlaps_flags_two_mutable_borrows_of_the_same_field() {
     // Same shape as the disjoint-fields case, but both borrows target the
     // exact same field — proves field-disjointness isn't over-broad; a
     // real conflict on the same field must still be caught.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMut(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    r1 := &mut var.a\n    r2 := &mut var.a\n    useMut(r1)\n    useMut(r2)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4678,13 +4647,9 @@ fn check_borrow_overlaps_flags_a_whole_struct_borrow_overlapping_a_field_borrow(
     // places, so it must still conflict with a live field borrow — the
     // "one place is a prefix of the other ⇒ overlapping" half of this
     // slice's own scoping, not just the "genuinely disjoint fields" half.
-    let mir = lower_source(
+    let faults = overlaps_in(
         "struct Pair {\n    a: int\n    b: int\n}\nuseMutPair(r: &mut Pair) {}\nuseMutField(r: &mut int) {}\nf() {\n    mut var := Pair{a: 1, b: 2}\n    rWhole := &mut var\n    rField := &mut var.a\n    useMutPair(rWhole)\n    useMutField(rField)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_borrow_overlaps(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4694,6 +4659,195 @@ fn check_borrow_overlaps_flags_a_whole_struct_borrow_overlapping_a_field_borrow(
     assert!(matches!(faults[0].kind(), MirErrorKind::OverlappingBorrows));
 }
 
+// Loan-based conflict tests: a `Ref` creates a loan of a place, every
+// reference derived from it (copies, aliases joined across branches, fields
+// it is stored in, call results, reborrows) carries that loan, and an access
+// to an overlapping place while a conflicting loan is still needed is an
+// error unless the access goes through the loan itself.
+const LOAN_TYPES: &str = "struct Obj {\n    n: int\n}\nstruct Holder {\n    r: &mut Obj\n}\nstruct Inner {\n    n: int\n    grow(&mut this) {\n        this.n = this.n + 1\n    }\n}\nstruct Outer {\n    inner: Inner\n    count: int\n}\nuseRef(r: &Obj) {}\nuseMut(r: &mut Obj) {}\nid(r: &mut Obj): &mut Obj {\n    return r\n}\n";
+
+fn loan_faults(function: &str) -> Vec<crate::fault::MirFault> {
+    overlaps_in(&format!("{LOAN_TYPES}{function}"))
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_by_an_alias_joined_across_branches() {
+    let faults = loan_faults(
+        "f(c: bool) {\n    mut a := Obj{n: 1}\n    mut b := Obj{n: 2}\n    mut r := &mut a\n    if c {\n        r = &mut b\n    }\n    s := r\n    t := &a\n    useMut(s)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while s may still carry &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_two_mutable_reborrows_through_a_parameter() {
+    let faults = loan_faults(
+        "f(p: &mut Obj) {\n    x := &mut *p\n    y := &mut *p\n    useMut(x)\n    useMut(y)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "a second &mut *p while the first is live to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_parent_reference_used_while_its_reborrow_is_live() {
+    let faults =
+        loan_faults("f(p: &mut Obj) {\n    x := &mut *p\n    useMut(p)\n    useMut(x)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "using p while &mut *p is still needed to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_through_a_struct_field() {
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    ra := &mut a\n    h := Holder{r: ra}\n    q := h.r\n    t := &a\n    useMut(q)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while q still carries &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_loan_carried_by_a_call_result() {
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    ra := &mut a\n    r := id(ra)\n    t := &a\n    useMut(r)\n    useRef(t)\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "&a while id's result still carries &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_read_of_a_place_while_it_is_mutably_borrowed() {
+    let faults = loan_faults(
+        "f(): int {\n    mut a := Obj{n: 1}\n    r := &mut a\n    x := a.n\n    useMut(r)\n    return x\n}\n",
+    );
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "reading a.n under a live &mut a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_flags_a_write_to_a_place_while_it_is_borrowed() {
+    let faults =
+        loan_faults("f() {\n    mut a := Obj{n: 1}\n    r := &a\n    a.n = 2\n    useRef(r)\n}\n");
+    assert_single_fault(
+        &faults,
+        MirErrorKind::OverlappingBorrows,
+        "writing a.n under a live &a to be flagged",
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_parent_reference_used_after_its_reborrows_last_use() {
+    let faults =
+        loan_faults("f(p: &mut Obj) {\n    x := &mut *p\n    useMut(x)\n    useMut(p)\n}\n");
+    assert!(
+        faults.is_empty(),
+        "using p after &mut *p is done should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_two_shared_reborrows_through_a_parameter() {
+    let faults =
+        loan_faults("f(p: &Obj) {\n    x := &*p\n    y := &*p\n    useRef(x)\n    useRef(y)\n}\n");
+    assert!(
+        faults.is_empty(),
+        "two shared reborrows should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_mutable_method_call_on_a_field_of_a_mutable_parameter() {
+    // The motivating reborrow: `o.inner.grow()` borrows `(*o).inner` for
+    // the call only, so writing `o.count` afterwards is fine.
+    let faults = loan_faults("f(o: &mut Outer) {\n    o.inner.grow()\n    o.count = 1\n}\n");
+    assert!(
+        faults.is_empty(),
+        "a field method call then a sibling write should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_writing_through_a_mutable_borrow_while_it_is_live() {
+    // An access *through* the loan is never a conflict with that loan.
+    let faults = loan_faults(
+        "f() {\n    mut a := Obj{n: 1}\n    r := &mut a\n    r.n = 2\n    useMut(r)\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "writing through the live borrow itself should be accepted, got {faults:#?}"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_reading_a_place_after_its_mutable_borrow_ends() {
+    let faults = loan_faults(
+        "f(): int {\n    mut a := Obj{n: 1}\n    r := &mut a\n    useMut(r)\n    return a.n\n}\n",
+    );
+    assert!(
+        faults.is_empty(),
+        "reading a after r's last use should be accepted, got {faults:#?}"
+    );
+}
+
+// `c.set(c.get())`: the `&mut` receiver of `set` must only be created once
+// its arguments are evaluated, so `get`'s shared receiver never overlaps it.
+const COUNTER: &str = "struct Counter {\n    n: int\n    get(&this): int {\n        return this.n\n    }\n    set(&mut this, v: int) {\n        this.n = v\n    }\n}\n";
+
+#[test]
+fn mutable_receiver_ref_is_created_after_the_call_arguments_are_evaluated() {
+    let mir = lower_source(
+        &format!("{COUNTER}f() {{\n    mut c := Counter{{n: 1}}\n    c.set(c.get())\n}}\n"),
+        "f",
+    )
+    .expect("expected successful lowering");
+
+    let set_block = mir
+        .blocks
+        .values()
+        .find(|block| {
+            matches!(&block.terminator, mir_model::Terminator::Call { arguments, .. } if arguments.len() == 2)
+        })
+        .expect("expected the two-argument call to `set`");
+    let creates_mutable_receiver = set_block.statements.iter().any(|statement| {
+        matches!(
+            statement,
+            mir_model::Statement::Assign(_, Rvalue::Ref { mutable: true, .. })
+        )
+    });
+    assert!(
+        creates_mutable_receiver,
+        "expected the &mut receiver to be created in the block that calls `set`, after `get` returns"
+    );
+}
+
+#[test]
+fn check_borrow_overlaps_allows_a_mutable_method_call_whose_argument_reads_the_receiver() {
+    let faults = overlaps_in(&format!(
+        "{COUNTER}f() {{\n    mut c := Counter{{n: 1}}\n    c.set(c.get())\n}}\n"
+    ));
+    assert!(
+        faults.is_empty(),
+        "c.set(c.get()) should be accepted, got {faults:#?}"
+    );
+}
+
 #[test]
 fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed() {
     // The core case, and proof the conflict rule really is mutability-
@@ -4701,13 +4855,9 @@ fn check_move_while_borrowed_flags_a_move_while_a_shared_borrow_is_still_needed(
     // ever a *shared* borrow of `var`, but `var` is moved into `consume`
     // while `r` is still needed for the `useRef(r)` right after — a real
     // conflict, since `r` would dereference storage that's already gone.
-    let mir = lower_source(
+    let faults = moves_while_borrowed_in(
         "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    consume(var)\n    useRef(r)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    );
     assert_eq!(
         faults.len(),
         1,
@@ -4723,13 +4873,9 @@ fn check_move_while_borrowed_allows_a_move_after_the_borrows_last_use() {
     // before the move — `r` is no longer live by the time `var` is moved,
     // so this is legal: real NLL-style liveness, not "the borrow's lexical
     // scope hasn't ended yet."
-    let mir = lower_source(
+    let faults = moves_while_borrowed_in(
         "struct Obj {}\nconsume(o: Obj) {}\nuseRef(r: &Obj) {}\nf() {\n    var := Obj{}\n    r := &var\n    useRef(r)\n    consume(var)\n}\n",
-        "f",
-    )
-    .expect("expected successful lowering");
-
-    let faults = crate::borrow_checker::check_move_while_borrowed(&mir);
+    );
     assert!(
         faults.is_empty(),
         "a move after the borrow's own last use should be accepted, got {:#?}",
@@ -4744,8 +4890,7 @@ fn field_move_while_borrowed_faults(function: &str) -> Vec<crate::fault::MirFaul
     let source = format!(
         "{PARTIAL_MOVE_TYPES}useBox(r: &Box2) {{}}\nuseTwo(r: &Two) {{}}\nuseP(r: &*int) {{}}\n{function}"
     );
-    let mir = lower_source(&source, "f").expect("expected successful lowering");
-    crate::borrow_checker::check_move_while_borrowed(&mir)
+    moves_while_borrowed_in(&source)
 }
 
 #[test]

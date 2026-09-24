@@ -178,12 +178,12 @@ pub enum MirErrorKind {
     DanglingReference,
 
     /// The overlap checker's own violation (see
-    /// `mir_parser::borrow_checker::overlap_check`). Points at the
-    /// later-created borrow's own declaration span. Whole-locals only (no
-    /// per-field disjointness) and reference-vs-reference only — a live
-    /// borrow blocking a *move* of its target is `MoveWhileBorrowed` below,
-    /// a separate check.
-    #[error("a mutable borrow overlaps another live borrow of the same value")]
+    /// `mir_parser::borrow_checker::overlap_check`): a read, write, or new
+    /// borrow of a value while a conflicting borrow of it is still live.
+    /// Points at the new borrow's holder, or the accessed local's own
+    /// declaration span. A live borrow blocking a *move* is
+    /// `MoveWhileBorrowed` below.
+    #[error("value is accessed while a conflicting borrow of it is still live")]
     OverlappingBorrows,
 
     /// `mir_parser::borrow_checker::overlap_check::check_move_while_borrowed`'s

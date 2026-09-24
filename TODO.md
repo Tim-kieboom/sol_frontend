@@ -659,7 +659,7 @@ that landing first, in order.
     - **Escape-checking has no known soundness hole left.** Remaining conservative spots (false
       positives only): an extern handed a `&mut`, a write through a call's returned reference
       (leaked to every read), `[*]`/recursive-summary weak updates.
-  - [ ] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
+  - [x] **Other M2 checkers still break the "no known soundness hole" exit criterion** — found
         while closing the escape-checking item, not yet addressed:
     - [x] **Partial moves** (`/grill-me`'d 2026-09-24). A projected move-only source
       (`consume(b.p)`, `q := b.p` with `p: *T`) was lowered as `Operand::Copy`: two owners of one
@@ -687,11 +687,40 @@ that landing first, in order.
       - **Deferred, logged**: recursive struct drop (a struct still frees none of its `*T`
         fields — a leak, not unsound), and drop-before-assign (`b.p = new(..)` over a live
         `b.p` leaks the old allocation).
-    - **Overlap-checking's `Resolved::Disagreement`**: a borrow whose alias resolves to
-      `Disagreement` (e.g. a reference reassigned to different places on two branches, or one
-      reaching an untracked parameter) is simply not tracked, so an overlapping `&mut` goes
-      unreported — the same "unfamiliar ⇒ accept" pattern escape-checking had. Candidate fix:
-      reuse escape-checking's points-to state for overlap's alias resolution.
+    - [x] **Overlap-checking's `Resolved::Disagreement`** (`/grill-me`'d 2026-09-24). A borrow
+      only got tracked when its alias resolved to exactly one `Value`; everything else was
+      silently skipped: aliases joined across branches, every reborrow through a `Deref`,
+      references copied out of fields, reference parameters, call results. Decisions:
+      - **Loan-based conflicts (NLL-style), not ref-vs-ref**: applying ref-vs-ref honestly to
+        reborrows rejects `this.inner.grow()` then `this.count = 1`. A `Ref` creates a loan;
+        every reference derived from it carries it; a loan is live while a live local's value
+        (or caller-owned/leaked memory) still carries it. An access (read, write, new borrow,
+        move, or *using* a reference, which accesses its pointee) to memory overlapping a live
+        loan conflicts unless the access goes through that loan or both sides are shared. This
+        also newly catches plain reads/writes of a borrowed place (`r := &mut a; x := a.n`).
+        A loan whose creation conflicts isn't enforced afterwards, and accesses through it
+        aren't re-checked, so one mistake is reported once.
+      - **One shared engine (option (i))**: escape-checking's dataflow moved to
+        `borrow_checker/points_to/` (`locations.rs`, `dataflow.rs`, `mod.rs` with origins,
+        summaries and call-graph convergence); escape-checking keeps only its two fault checks.
+        Loans ride in the same `Targets` sets as `Base::Loan(LoanId)` markers (never memory),
+        so copies, joins, fields, call results and callee writes carry them for free; an extern
+        call result carries every argument's loans. `overlap_check.rs` was rewritten outright
+        (per-statement liveness + replaying each block's settled state); the old alias-tracing
+        machinery is gone. Checker APIs are now whole-program `(functions, declares)`, like
+        `check_escapes`.
+      - **Receiver autoref after the arguments** (instead of two-phase borrows): a `&mut this`
+        receiver whose path is a plain place (variables, fields, derefs — no index, so no side
+        effects) is borrowed right before the `Call`, so `c.set(c.get())` is accepted. This had
+        been an *existing* false positive under ref-vs-ref too.
+      - +15 tests (7 loan holes, 5 reborrow/through-the-loan guards, receiver-order lowering +
+        checker guard); 15 existing overlap/move-while-borrowed tests migrated to the
+        whole-program API, all keeping their verdicts. `OverlappingBorrows` reworded to "value is
+        accessed while a conflicting borrow of it is still live". 720/720 workspace, 40/40 exe,
+        no new clippy warnings.
+      - Known cost: `mir_run` converges callee summaries twice (once per checker).
+      - Found in passing, split off as a separate task: method calls on a bare reference-typed
+        receiver (`c.set(1)` with `c: &mut Counter`) don't resolve at all.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

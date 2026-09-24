@@ -1,6 +1,7 @@
 mod escape_check;
 mod move_check;
 mod overlap_check;
+mod points_to;
 pub use escape_check::check_escapes;
 pub use move_check::{check_and_elaborate_moves, check_moves, elaborate_drops};
 pub use overlap_check::{

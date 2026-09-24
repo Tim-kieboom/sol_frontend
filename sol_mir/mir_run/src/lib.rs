@@ -63,10 +63,9 @@ pub fn to_mir(
         context.faults.push(fault);
     }
 
-    for function in functions.values() {
-        for fault in borrow_checker::check_overlaps_and_moves_while_borrowed(function) {
-            context.faults.push(fault);
-        }
+    for fault in borrow_checker::check_overlaps_and_moves_while_borrowed(&functions, &ast.declares)
+    {
+        context.faults.push(fault);
     }
 
     MirProgram { functions, externs }
