@@ -584,6 +584,47 @@ that landing first, in order.
           to a runtime flag for the genuinely ambiguous cases — edge-splitting would only ever be a size/
           speed micro-optimization layered on top of that fallback for its one narrow acyclic single-
           value case, not a replacement for it.
+  - [ ] **Close escape-checking's soundness holes — the M2 exit criterion** (`/grill-me`'d
+        2026-09-24). M2 closes when no known soundness hole remains, which is unreachable while
+        unrecognized shapes default to `Safe`: `classify_ref`'s `_ => Safe`, every `None`
+        ("unknown ⇒ silent"), and `Pointer(_) => Safe`, which became a real use-after-free once
+        slice 3b/3c made `Drop` free owning locals *and* owning parameters (the old
+        `allows_dereferencing_an_owning_heap_pointer` test asserted exactly that bug as OK).
+        Decisions:
+    - Unrecognized shapes default to `Dangling`, never `Safe`/silent.
+    - An owning `*T` is treated like a local: a deref through it is `Dangling` unless the pointer
+      itself is reached through a reference parameter (`&*h.p` with `h: &Holder` stays safe).
+    - Every shape is traced for real, not blanket-rejected — each failing test has a safe,
+      parameter-sourced twin that must stay green, so "reject everything unfamiliar" can't pass.
+    - Writes through aliases are followed (`m := &mut h; m.r = ..`, `w[0] = ..` through a
+      `[&mut]` slice, callee writes through `&mut` params), with **strong** updates only for a
+      direct write or a must-alias target, **weak** (join with the old origin) otherwise.
+    - Callee summaries gain per-`&mut`-param **must-write / may-write** sets (mirroring
+      `move_check`'s definite/maybe pair) plus the origin stored, so an unconditional `set(hm, r)`
+      replaces the old value while a conditional one only joins. A callee storing its own local
+      into a `&mut` param is itself a new escape fault (no return needed).
+    - **Rewrite `escape_check` as a forward place-origin dataflow** (Kildall, like `move_check`),
+      replacing the demand-driven backward trace; the return check becomes one read of settled
+      state per `Return`. The backward trace structurally couldn't see alias writes.
+    - Place keys are bounded: all `Index` steps collapse to one `[*]` key (every index write is
+      weak — accepted), and paths are folded **per type**: the head's own fields (`n.r`) stay
+      distinct strong keys, while every path at/below the first repeated struct type
+      (`n.next.*`) folds onto one summary key that is only ever weakly updated (accepted false
+      positive: overwriting a tail field never clears a dangling value there).
+    - Failing tests written first in `mir_parser/src/tests/mod.rs` (18 failing, 12 twins/guards
+      passing): heap-pointer param/local, 2-field paths, field copy-out, projected call argument,
+      slice element, earlier-block field, alias/slice/callee writes, must-vs-may callee writes,
+      must-vs-may alias writes, recursive head/tail/summary updates, loop walking a list.
+    - Slice order (every commit green-or-better on the soundness tests, never a silent hole):
+      - [ ] **Slice 1 — forward core**: place keys (`[*]`, type folding), strong updates for direct
+            writes, `*T`-as-local, `Dangling` default. **Stopgap**: any local with a `&mut` borrow
+            taken of it has every path rooted at it treated as `Dangling`, so the alias-write hole
+            is closed (conservatively) from the first commit. Expected: all non-alias holes green,
+            all pre-existing escape tests green, the alias *safe twins* temporarily red.
+      - [ ] **Slice 2 — intra-function alias writes**: must/may-alias of `&mut` locals replaces the
+            stopgap; alias safe twins go green again.
+      - [ ] **Slice 3 — callee `&mut`-param write summaries** (must/may + stored origin) and the new
+            store-into-`&mut`-param escape fault.
 - [ ] **Pipeline architecture cleanup** (`/grill-me`'d 2026-09-17, paused the borrow-checker's own
       "extend move-check to `if`/`for`" slice to do this first) — considered adding a HIR stage
       (`AST → HIR → MIR`) to fix a felt "MIR does too much" discomfort, then talked it back down:

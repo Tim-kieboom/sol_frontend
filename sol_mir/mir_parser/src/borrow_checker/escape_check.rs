@@ -469,7 +469,13 @@ impl<'ctx> EscapeChecker<'ctx> {
                             );
                         }
                         mir::Rvalue::Ref { place, .. } => {
-                            return self.classify_ref(place, block_id, index, previous_round, state);
+                            return self.classify_ref(
+                                place,
+                                block_id,
+                                index,
+                                previous_round,
+                                state,
+                            );
                         }
                         _ => return None,
                     };
