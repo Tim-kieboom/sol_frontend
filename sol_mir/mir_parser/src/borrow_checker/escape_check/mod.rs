@@ -123,10 +123,10 @@ impl<'ctx> EscapeChecker<'ctx> {
         let states = self.analyzer.fixed_point();
         for (_, state) in self.return_states(&states) {
             if let Some(Origin::Dangling(local)) = self.returned_origin(state) {
-                faults.push(self.dangling_fault(local));
+                faults.push(self.err_dangling_fault(local));
             }
             if let Some(local) = self.stored_escape(state) {
-                faults.push(self.dangling_fault(local));
+                faults.push(self.err_dangling_fault(local));
             }
         }
     }
@@ -176,8 +176,9 @@ impl<'ctx> EscapeChecker<'ctx> {
             if !matches!(location.base(), Base::Param(_) | Base::ParamDeep(_)) {
                 continue;
             }
-            let unchanged =
-                Targets::from([Location::root(Base::Incoming(Box::new(location.clone())))]);
+
+            let root = Location::root(Base::new_incoming(location));
+            let unchanged = Targets::from([root]);
             if *targets == unchanged {
                 continue;
             }
@@ -249,7 +250,7 @@ impl<'ctx> EscapeChecker<'ctx> {
         None
     }
 
-    fn dangling_fault(&self, local: LocalId) -> MirFault {
+    fn err_dangling_fault(&self, local: LocalId) -> MirFault {
         let span = self.analyzer.types().function().locals[local].span;
         Fault::error_with_kind(MirErrorKind::DanglingReference, Some(span))
     }

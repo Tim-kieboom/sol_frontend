@@ -7,7 +7,7 @@ use ast_model::SolType;
 use mir_model::{self as mir, BlockId, LocalId};
 use sol_utils::{
     FunctionId,
-    collections::{vec_map::VecMap, vec_set::VecSet},
+    collections::{array::Arr, vec_map::VecMap, vec_set::VecSet},
 };
 
 use super::{
@@ -66,12 +66,12 @@ impl<'ctx> Analyzer<'ctx> {
     // Out-state of every reachable block once the analysis has converged.
     pub(super) fn fixed_point(&self) -> VecMap<BlockId, State> {
         let function = self.types.function();
-        let mut out_states: VecMap<BlockId, State> = VecMap::new();
+        let mut out_states = VecMap::new();
         let Some((entry, _)) = function.blocks.entries().next() else {
             return out_states;
         };
 
-        let mut order = super::super::postorder(function, entry);
+        let mut order = crate::borrow_checker::postorder(function, entry);
         order.reverse();
         let predecessors = predecessors(function, &order);
 
@@ -275,7 +275,7 @@ impl<'ctx> Analyzer<'ctx> {
         arguments: &[mir::Operand],
         summary: Option<&Summary>,
         destination: &mir::Place,
-    ) -> Option<(Vec<Vec<Step>>, Targets)> {
+    ) -> Option<(Vec<Arr<Step>>, Targets)> {
         let Some(ty) = self.types.place_type(destination) else {
             state.leaked.insert(unknown(destination.local));
             return None;
@@ -450,7 +450,7 @@ impl<'ctx> Analyzer<'ctx> {
         &self,
         state: &mut State,
         place: &mir::Place,
-        subs: &[Vec<Step>],
+        subs: &[Arr<Step>],
         values: Vec<Targets>,
     ) {
         let Some(destinations) = self.place_locations(state, place) else {

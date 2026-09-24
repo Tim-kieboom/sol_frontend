@@ -16,7 +16,9 @@ use std::{
 /// [`Arr`](crate::collections::array::Arr), whose refcount-free clone is
 /// pure overhead when nothing shares the data. Reach for `Vec` when the list
 /// is mutated (`push`/`pop`) after its initial construction.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RcArr<T>(Rc<[T]>);
 impl<T> RcArr<T> {
     /// Creates a new, empty `RcArr` with no allocation.

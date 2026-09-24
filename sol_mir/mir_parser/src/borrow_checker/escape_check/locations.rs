@@ -3,7 +3,13 @@
 
 use ast_model::{ArrayKind, NodeId, SolType, TupleKind, declare_store::DeclareStore};
 use mir_model::{self as mir, BlockId, LocalId};
-use sol_utils::{collections::vec_map::VecMapIndex, span::ModuleId};
+use sol_utils::{
+    collections::{
+        array::{Arr, RcArr},
+        vec_map::VecMapIndex,
+    },
+    span::ModuleId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Base {
@@ -26,6 +32,10 @@ pub(super) enum Base {
 }
 
 impl Base {
+    pub(super) fn new_incoming(location: &Location) -> Self {
+        Self::Incoming(location.clone().into())
+    }
+
     // Bases standing for many concrete places at once; they carry no path.
     fn is_summary(&self) -> bool {
         matches!(
@@ -61,7 +71,7 @@ pub(super) enum Step {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Location {
     base: Base,
-    path: Vec<Step>,
+    path: RcArr<Step>,
     // Stands for more than one concrete place, so it only ever gets weak
     // updates.
     summary: bool,
@@ -72,8 +82,8 @@ impl Location {
         let summary = base.is_summary();
         Self {
             base,
-            path: Vec::new(),
             summary,
+            path: RcArr::new(),
         }
     }
 
@@ -160,7 +170,7 @@ impl<'ctx> Types<'ctx> {
     // Relative paths from a value of type `ty` to every reference (or slice)
     // it contains, stopping where a struct type would appear a third time
     // on the path — `normalize` folds anything deeper back onto those.
-    pub(super) fn ref_subpaths(&self, ty: &SolType) -> Vec<Vec<Step>> {
+    pub(super) fn ref_subpaths(&self, ty: &SolType) -> Vec<Arr<Step>> {
         let mut subpaths = Vec::new();
         let mut prefix = Vec::new();
         let mut structs_on_path = Vec::new();
@@ -219,9 +229,11 @@ impl<'ctx> Types<'ctx> {
             return Location::root(base);
         }
 
+        let mut path = vec![];
         let mut location = Location::root(base);
         let Some(mut ty) = self.base_type(&location.base) else {
-            location.path.extend(steps);
+            path.extend(steps);
+            location.path = path.into();
             location.summary = true;
             return location;
         };
@@ -239,7 +251,7 @@ impl<'ctx> Types<'ctx> {
             if step == Step::AnyIndex {
                 location.summary = true;
             }
-            location.path.push(step);
+            path.push(step);
             ty = next;
 
             let Some(id) = self.struct_id(&ty) else {
@@ -259,12 +271,13 @@ impl<'ctx> Types<'ctx> {
                 }
                 [_, second, ..] => {
                     let second = *second;
-                    location.path.truncate(second);
+                    path.truncate(second);
                     struct_positions.retain(|(_, position)| *position <= second);
                 }
             }
         }
 
+        location.path = path.into();
         location
     }
 
@@ -273,10 +286,10 @@ impl<'ctx> Types<'ctx> {
         ty: &SolType,
         prefix: &mut Vec<Step>,
         structs_on_path: &mut Vec<NodeId>,
-        subpaths: &mut Vec<Vec<Step>>,
+        subpaths: &mut Vec<Arr<Step>>,
     ) {
         if is_pointer_like(ty) {
-            subpaths.push(prefix.clone());
+            subpaths.push(prefix.clone().into());
             return;
         }
 
