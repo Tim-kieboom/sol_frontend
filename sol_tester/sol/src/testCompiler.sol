@@ -135,7 +135,7 @@ struct IntArray {
 
     This.[]u8(array) => This{
         len: array.len(),
-        array: array.intoIter().map(int.).toArray(),
+        array: array.intoSelect(int.).toArray(),
     }
 }
 

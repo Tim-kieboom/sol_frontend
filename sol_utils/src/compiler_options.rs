@@ -1,11 +1,5 @@
 use crate::{bitflags, fault::Severity};
 
-bitflags! {
-    pub struct MirOptions: u8 {
-        CHECK_ALGORITHMIC_OVERFLOW = 1 << 0,
-        CHECK_INDEX_OUT_OF_BOUNDS = 1 << 1,
-    }
-}
 pub struct CompilerOptions {
     pub platform: PlatformInfo,
     pub panic_mode: PanicMode,
@@ -20,6 +14,13 @@ impl CompilerOptions {
             panic_mode: PanicMode::Abort,
             mir: MirOptions::all(),
         }
+    }
+}
+
+bitflags! {
+    pub struct MirOptions: u8 {
+        CHECK_ALGORITHMIC_OVERFLOW = 1 << 0,
+        CHECK_INDEX_OUT_OF_BOUNDS = 1 << 1,
     }
 }
 
