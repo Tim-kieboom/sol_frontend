@@ -10,7 +10,7 @@ ARC-style reference counting (à la Swift) — same language, two backends. Gol 
 
 ## Status
 
-**Sol doesn't compile or run real programs yet.** The pipeline (lexer → parser → AST →
+**Sol doesn't compile or run real programs yet.** The pipeline (lexer → AST →
 name/typecheck → MIR → LLVM IR → `.exe`) works end-to-end for a concrete, non-generic subset —
 ints, structs, non-generic traits, no borrow checking. Move/borrow checking itself is **in
 progress**, not shipped: it's runnable against test files today, but not yet wired through the
@@ -34,8 +34,12 @@ immutable-by-default, with nothing extra needed for the common case.
 
 ```sol
 CONST :: 1        // associated constant or global static
-immut := 1        // immutable local
-mut mutable := 1  // mutable local
+function() {
+    immut := 1        // immutable local (no global)
+    
+    mut mutable := 1  // mutable local (no global)
+    mutable = 2
+}
 ```
 
 **Any type can grow new methods, from anywhere.** `Type.method(...)` extends *any* type —
@@ -49,6 +53,28 @@ int.add(this, a: int): int => this + a
 
 // called as int.parse("42"), a namespaced function
 int.parse(value: &str): Res<int> { ... }  
+
+// calling mulitple method's or namespaced function
+int {
+    increment(&mut this) => this += 1
+    decrement(&mut this) => this -= 1
+}
+
+
+#[test]
+methods() {
+    mut number := int.parse("1").Err{panic}
+    assert(number == 1)
+    
+    number = number.add(2)
+    assert(number == 3)
+
+    number.increment()
+    assert(number == 4)
+    
+    number.decrement()
+    assert(number == 3)
+}
 ```
 
 **One construction syntax, dispatched by shape.** `Type.(...)` builds a value, and which
@@ -61,26 +87,32 @@ constructor.
 ```sol
 struct Number {
     mut inner: f64
+    
     // Number.()          → the default constructor
-    This.() => This{inner: 0.0}                   
+    This.() => This{inner: 0.0}          
+    
     // Number.(f64.(2))   → dispatches on the f64 arg
     This.(float: f64) => This{inner: float}     
+    
     // Number.(int.(1))   → dispatches on the int arg
     This.(num: int) => This{inner: f64.(num)}   
 }
 
-struct IntArray {
-    array: []int
+struct IntArray<N as uint> {
+    array: [N]int
+    
     // IntArray.[1, 2, 3] → array-literal constructor
-    This.[int](array) => This{array: []int.(array)}            
+    This.[int](array) => This{array}            
 }
 
-main() {
+#[test]
+constructors() {
     mut num := Number.()
     num = Number.(1_int)
     num = Number.(1_f64)
 
     arr := IntArray.[1, 2, 3]
+    assert(arr.typeof == IntArray<3>)
 }
 ```
 
@@ -107,8 +139,12 @@ everywhere; the explicit `'a` syntax only shows up in the rare cases that actual
 a struct holding a borrow.
 
 ```sol
+struct Object {buffer: RawPtr}
+
 // runs automatically at scope-exit
-impl Drop drop(&mut this) { free(this.buffer) }   
+Object impl Drop drop(&mut this) => unsafe { 
+    intrinsic.ptr.free(this.buffer) 
+}    
 
 // explicit, independent duplicate — a keyword, not a method call
 b := a.copy   
@@ -137,11 +173,10 @@ for condition { ... }           // while loop
 for { ... }                     // infinite loop (while true)
 
 // capped loop → Res<none, LimitExceeded>
-result := for counter <= 0 limit 4 { 
+for counter <= 0 limit 4 { 
     counter -= 1 
 }
-
-result.Err{err => panic(f"handle error: {err}")}
+.Err{panic(f"handle error: {it}")}
 ```
 
 **Unions and match-chains instead of verbose `match` blocks.** Unions (Sol's sum types) support a
@@ -171,7 +206,7 @@ that generalizes to any similarly-shaped union, not something hardcoded to `Res`
 too, but strictly for programmer errors, not expected failure.
 
 ```sol
-union Res<O = none, E = str> {
+union Res<O = none, E = *dyn Error> {
     Ok(O),
     #[pass]
     Err(E),

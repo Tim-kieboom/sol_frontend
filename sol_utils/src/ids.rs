@@ -16,6 +16,7 @@ macro_rules! impl_sol_ids {
             pub struct $ty(usize);
 
             impl $ty {
+                #[allow(unused)]
                 pub const ERROR: $ty = $ty(0);
             }
 

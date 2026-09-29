@@ -3,7 +3,7 @@
 Sol is a systems language with a Rust-style borrow checker and a terser, more expression-oriented
 surface syntax. Its planned companion, **Gol**, is a transpile target that wraps heap values in
 reference-counted boxes (ARC, à la Swift) for a runtime memory model instead of static borrow
-checking — same language, two backends. Goul is not designed yet; see §18.
+checking — same language, two backends. Gol is not designed yet; see §18.
 
 This document is both a reference and an introduction: it explains *why* a feature works the way
 it does, not just its syntax, so it can be read cover-to-cover to learn the language or used as a
