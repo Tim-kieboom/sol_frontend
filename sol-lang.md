@@ -256,7 +256,7 @@ C++/Swift do. **The one exception is the `This.(name: T)` constructor form (§6)
 declare several of these, each distinguished by its single parameter's type, and the compiler
 dispatches on the argument's type at the call site. This is a narrow, special-cased carve-out
 for construction specifically — not a general overloading mechanism — and it's the same
-type-dispatch principle behind the array-literal constructor `This.[T](param)` (§6) accepting
+type-dispatch principle behind the array-literal constructor `This.[]T(param)` (§6) accepting
 multiple element types too.
 
 ---
@@ -271,7 +271,7 @@ pub struct List<T> {
     mut buffer: []?T = []
 
     pub This.() => This{..}
-    pub This.[int](array) => This{ buffer: array, len: array.len() }
+    pub This.[]int(array) => This{ buffer: array, len: array.len() }
 
     pub len(&this): uint => this.len
 }
@@ -303,7 +303,7 @@ pub struct List<T> {
    always means `This.()`; one-arg always means this type-dispatched form — the two are cleanly
    split by arity. This is also the real mechanism behind primitive conversions like `f32.(2)`,
    `u8.(1)`: built-in constructors the language ships for its own primitive types.
-3. **`This.[T](param)` — the array-literal constructor.** Its own mechanism, since it routes a
+3. **`This.[]T(param)` — the array-literal constructor.** Its own mechanism, since it routes a
    *literal syntax form* rather than converting a single value. **A struct can declare more than
    one, for different element types**, following the same type-dispatch principle as (2):
    ```sol
@@ -311,20 +311,33 @@ pub struct List<T> {
        array: []int
        len: uint
 
-       This.[int](array) => This{
+       This.[]int(array) => This{
            len: array.len(),
            array,
        }
 
-       This.[u8](array) => This{
+       This.[]u8(array) => This{
            len: array.len(),
            array: array.intoIter().map(int.).toArray(),
        }
    }
 
-   mut array := IntArray.[1, 2, 3, 4]   // routes to This.[int](array)
-   array = IntArray.[1_u8, 2, 3, 4]     // routes to This.[u8](array)
+   mut array := IntArray.[1, 2, 3, 4]   // routes to This.[]int(array)
+   array = IntArray.[1_u8, 2, 3, 4]     // routes to This.[]u8(array)
    assertEq(array.typeof, IntArray)
+   ```
+   The array type after `This.` may also fix the length, so a constructor only accepts literals
+   of exactly that size (`[]T` accepts any length):
+   ```sol
+   struct Rgba {
+       r: u8
+       g: u8
+       b: u8
+       a: u8
+       This.[4]u8(array) {
+           This{r: array[0], g: array[1], b: array[2], a: array[3]}
+       }
+   }
    ```
 
 **Fallibility is signaled by the return type, with no separate keyword.** Every constructor
@@ -830,11 +843,11 @@ panic and reports just that one test as failed — the rest of the suite still r
 
 ---
 
-## 18. Goul (Planned)
+## 18. Gol (Planned)
 
 Not designed yet. The intended relationship: same syntax as Sol, but heap values are
 automatically wrapped in reference-counted boxes, and the borrow checker either turns off,
-stays on for cross-thread safety only, or some hybrid — undecided. Interop between Sol and Goul
+stays on for cross-thread safety only, or some hybrid — undecided. Interop between Sol and Gol
 modules in one project is also open.
 
 ---
@@ -1056,7 +1069,7 @@ either because it's a large standalone design surface or because nothing current
 - **Reflection** — exact shape of `PrimitiveKind`/`VariantInfo`/`EnumVariantInfo`; whether generic
   per-field *value* access through an `&any` is possible (needed for a generic serializer) —
   deliberately left for a dedicated future session, §19.3.
-- **Goul** — essentially everything (§18) — deliberately out of scope until Sol itself settles.
+- **Gol** — essentially everything (§18) — deliberately out of scope until Sol itself settles.
 - **Type aliases** — how broadly const generics are allowed beyond `Limit<T, RANGE>`'s one need
   (§20); Sol's general operator-precedence table (above) also covers how `..`/`..=` interact with
   other operators.

@@ -72,7 +72,7 @@ struct Number {
 struct IntArray {
     array: []int
     // IntArray.[1, 2, 3] → array-literal constructor
-    This.[int](array) => This{array: []int.(array)}            
+    This.[]int(array) => This{array: []int.(array)}            
 }
 
 main() {

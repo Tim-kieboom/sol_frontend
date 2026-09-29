@@ -26,7 +26,7 @@ use crate::{
     utils::{
         ARRAY, ARROW_LEFT, ARROW_RIGHT, ASSIGN, COLON, COMMA, CONST, CURLY_OPEN, DOT,
         DOUBLE_QUESTION, LAMBDA_ARROW, OPTIONAL, REF, ROUND_CLOSE, ROUND_OPEN, SEMI_COLON,
-        SQUARE_CLOSE, SQUARE_OPEN, STAMENT_END_TOKENS,
+        SQUARE_OPEN, STAMENT_END_TOKENS,
     },
 };
 const CONTRUCTOR_STR: &str = "This__ctor";
@@ -459,8 +459,8 @@ impl<'a, 'f> Parser<'a, 'f> {
 
                 Ok(Spanned::new(methode, self.span_combine(start_span)))
             }
-            SQUARE_OPEN => self.parse_array_contructor(method_type, start_span),
-            _ => Err(self.get_expect_any_error(&[ROUND_OPEN, SQUARE_OPEN])),
+            SQUARE_OPEN | ARRAY => self.parse_array_contructor(method_type, start_span),
+            _ => Err(self.get_expect_any_error(&[ROUND_OPEN, SQUARE_OPEN, ARRAY])),
         }
     }
 
@@ -469,18 +469,20 @@ impl<'a, 'f> Parser<'a, 'f> {
         method_type: &SolType,
         start_span: Span,
     ) -> Result<Spanned<Function>, crate::fault::AstFault> {
-        self.bump();
-
         let name = Ident::new(ARRAY_CONTRUCTOR_STR, start_span);
-        let array_type = self.try_parse_type().merge_to_result()?;
-        let array_type_id = self.intern_type(array_type);
+        let array_type = match self.try_parse_type().merge_to_result()? {
+            // `This.[]T(..)` accepts an array literal of any length
+            SolType::Array(ArrayType {
+                of_type,
+                kind: ArrayKind::HeapArray,
+            }) => SolType::Array(ArrayType {
+                of_type,
+                kind: ArrayKind::StackArrayWildcard,
+            }),
+            SolType::Array(array_type) => SolType::Array(array_type),
+            _ => return Err(self.get_expect_any_error(&[SQUARE_OPEN, ARRAY])),
+        };
 
-        let array_type = SolType::Array(ArrayType {
-            of_type: array_type_id,
-            kind: ArrayKind::StackArrayWildcard,
-        });
-
-        self.expect(&SQUARE_CLOSE)?;
         self.expect(&ROUND_OPEN)?;
 
         let arg = self.try_bump_consume_ident()?;

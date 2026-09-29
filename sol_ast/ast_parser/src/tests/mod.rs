@@ -1765,3 +1765,15 @@ fn named_variant_type_variable() {
         other => panic!("expected NamedVariant, got {:?}", other),
     }
 }
+
+#[test]
+fn array_constructor_accepts_heap_and_fixed_length_array_types() {
+    let source = "struct Rgba {\n    r: u8\n    g: u8\n    b: u8\n    a: u8\n    This.[]u8(array) => This{r: array[0], g: array[1], b: array[2], a: array[3]}\n    This.[4]u8(array) {\n        This{r: array[0], g: array[1], b: array[2], a: array[3]}\n    }\n}\n";
+    let (_module, _store, context) = parse(source);
+    assert_eq!(
+        context.faults.count_severity(Severity::Error),
+        0,
+        "{:#?}",
+        context.faults.into_vec()
+    );
+}

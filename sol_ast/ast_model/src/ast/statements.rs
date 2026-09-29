@@ -405,7 +405,7 @@ define_symbols!(
 pub enum FunctionThisKind {
     /// `This.(..)`
     Ctor,
-    /// `This.[T](array)`
+    /// `This.[]T(array)`
     ArrayCtor,
     /// `func(..)`
     Static,

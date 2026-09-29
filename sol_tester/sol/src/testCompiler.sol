@@ -115,7 +115,7 @@ pub struct List<T> {
     mut buffer: []?T = []
 
     pub This.() => This{..}
-    pub This.[int](array) => This{ buffer: array, len: array.len() }
+    pub This.[]int(array) => This{ buffer: array, len: array.len() }
 
     pub len(&this): uint => this.len
 }
@@ -131,9 +131,9 @@ struct IntArray {
     array: []int
     len: uint
 
-    This.[int](array) => This{ len: array.len(), array }
+    This.[]int(array) => This{ len: array.len(), array }
 
-    This.[u8](array) => This{
+    This.[]u8(array) => This{
         len: array.len(),
         array: array.intoIter().map(int.).toArray(),
     }

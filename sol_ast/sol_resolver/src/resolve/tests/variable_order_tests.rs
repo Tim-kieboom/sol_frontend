@@ -47,12 +47,12 @@ fn function_parameter_used_in_body_reports_no_fault() {
 
 #[test]
 fn array_constructor_operator_overload_parameter_reports_no_fault() {
-    // Regression test: `This.[Type](param) => body` used to allocate the
+    // Regression test: `This.[]Type(param) => body` used to allocate the
     // parameter's NodeId *after* parsing `body`, so every use of `param`
     // inside `body` looked like it came before the parameter's own
     // declaration.
     let ast = resolve_source(
-        "struct IntArray {\n    array: []int\n    len: uint\n\n    This.[int](array) => This{ len: array.len(), array }\n}\n",
+        "struct IntArray {\n    array: []int\n    len: uint\n\n    This.[]int(array) => This{ len: array.len(), array }\n}\n",
     );
     assert_eq!(
         fault_count_matching(&ast, is_variable_used_before_declaration),
