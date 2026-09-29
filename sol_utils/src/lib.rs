@@ -13,19 +13,17 @@ use crate::{
 pub mod char_colors;
 pub mod collections;
 pub mod compiler_options;
-#[cfg(test)]
-mod compiler_options_tests;
 pub mod crate_id;
 pub mod error;
 pub mod fault;
-#[cfg(test)]
-mod fault_tests;
 pub mod ids;
 pub mod intrinsics;
 pub mod linkage;
 pub mod literal;
 pub mod sol_names;
 pub mod span;
+#[cfg(test)]
+mod tests;
 
 impl_sol_ids!(FunctionId);
 
